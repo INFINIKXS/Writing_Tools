@@ -1,0 +1,163 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply text-slate-300 font-sans min-h-screen antialiased;
+    background-color: #000000;
+  }
+}
+
+@layer components {
+
+  /* ─── Silver Frosted Glass ─── */
+  .glass-card {
+    background: rgba(255, 255, 255, 0.04);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 1rem;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+      0 8px 32px rgba(0, 0, 0, 0.5);
+    transition: all 0.3s ease;
+  }
+
+  .glass-card:hover {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.14);
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.04) inset,
+      0 12px 40px rgba(0, 0, 0, 0.6);
+  }
+
+  .glass-card-static {
+    background: rgba(255, 255, 255, 0.03);
+    backdrop-filter: blur(20px) saturate(1.2);
+    -webkit-backdrop-filter: blur(20px) saturate(1.2);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    border-radius: 1rem;
+    box-shadow:
+      0 0 0 1px rgba(255, 255, 255, 0.02) inset,
+      0 8px 32px rgba(0, 0, 0, 0.4);
+  }
+
+  .glass-inner {
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid rgba(255, 255, 255, 0.05);
+    border-radius: 0.75rem;
+  }
+
+  /* ─── Stats ─── */
+  .stat-value {
+    @apply text-4xl font-extrabold text-white;
+  }
+
+  /* ─── Navigation ─── */
+  .nav-item {
+    @apply flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl cursor-pointer transition-all duration-200 text-neutral-600;
+  }
+
+  .nav-item:hover {
+    @apply text-neutral-300;
+    background: rgba(255, 255, 255, 0.04);
+  }
+
+  .nav-item.active {
+    @apply text-white;
+    background: rgba(255, 255, 255, 0.08);
+    border: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  /* ─── Badges ─── */
+  .badge {
+    @apply text-[10px] font-bold uppercase tracking-wider px-2.5 py-1 rounded-full;
+  }
+
+  .badge-green {
+    @apply bg-white/5 text-emerald-400 border border-emerald-400/20;
+  }
+
+  .badge-blue {
+    @apply bg-white/5 text-blue-400 border border-blue-400/20;
+  }
+
+  .badge-amber {
+    @apply bg-white/5 text-amber-400 border border-amber-400/20;
+  }
+
+  .badge-purple {
+    @apply bg-white/5 text-purple-400 border border-purple-400/20;
+  }
+
+  /* ─── Button ─── */
+  .btn-accent {
+    @apply bg-white text-black font-bold py-3 px-6 rounded-xl transition-all duration-300;
+    box-shadow: 0 4px 20px rgba(255, 255, 255, 0.1);
+  }
+
+  .btn-accent:hover:not(:disabled) {
+    @apply bg-neutral-200;
+    box-shadow: 0 4px 30px rgba(255, 255, 255, 0.15);
+    transform: translateY(-1px);
+  }
+
+  .btn-accent:disabled {
+    @apply opacity-40 cursor-not-allowed;
+  }
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Animations */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-glow {
+
+  0%,
+  100% {
+    box-shadow: 0 0 12px rgba(255, 255, 255, 0.05);
+  }
+
+  50% {
+    box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+  }
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s ease-out forwards;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}

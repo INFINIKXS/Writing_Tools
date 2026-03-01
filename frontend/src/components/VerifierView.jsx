@@ -1,0 +1,338 @@
+import React, { useState, useRef } from 'react';
+import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck } from 'lucide-react';
+
+const STAGE_CONFIG = {
+    parsing: { icon: FileSearch, label: 'Parsing Document', step: 1 },
+    extracted: { icon: BookOpen, label: 'Text Extracted', step: 2 },
+    analyzing: { icon: Brain, label: 'AI Analysis', step: 3 },
+    processing: { icon: Loader2, label: 'Processing', step: 3 },
+    verifying: { icon: ShieldCheck, label: 'Verification', step: 4 },
+    extracting: { icon: BookOpen, label: 'Source Extraction', step: 5 },
+    complete: { icon: CheckCircle2, label: 'Complete', step: 6 },
+    error: { icon: AlertCircle, label: 'Error', step: 0 },
+};
+
+export default function VerifierView() {
+    const [file, setFile] = useState(null);
+    const [loading, setLoading] = useState(false);
+    const [results, setResults] = useState(null);
+    const [error, setError] = useState('');
+    const [isDragActive, setIsDragActive] = useState(false);
+    const [progressStage, setProgressStage] = useState('');
+    const [progressMessage, setProgressMessage] = useState('');
+    const [progressLog, setProgressLog] = useState([]);
+    const fileInputRef = useRef(null);
+
+    const handleDragOver = (e) => { e.preventDefault(); setIsDragActive(true); };
+    const handleDragLeave = (e) => { e.preventDefault(); setIsDragActive(false); };
+    const handleDrop = (e) => {
+        e.preventDefault(); setIsDragActive(false);
+        if (e.dataTransfer.files?.[0]) handleFileSelected(e.dataTransfer.files[0]);
+    };
+    const handleFileChange = (e) => { if (e.target.files?.[0]) handleFileSelected(e.target.files[0]); };
+    const handleFileSelected = (f) => {
+        if (f.name.toLowerCase().endsWith('.pdf') || f.name.toLowerCase().endsWith('.docx') || f.name.toLowerCase().endsWith('.doc')) { setFile(f); setError(''); }
+        else { setError('Please upload a PDF, DOCX, or DOC file.'); setFile(null); }
+    };
+
+    const verifyFile = async () => {
+        if (!file) return;
+        setLoading(true); setResults(null); setError('');
+        setProgressStage(''); setProgressMessage(''); setProgressLog([]);
+
+        const formData = new FormData();
+        formData.append('file', file);
+
+        try {
+            const res = await fetch('/api/verify', { method: 'POST', body: formData });
+
+            const reader = res.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop(); // keep incomplete line in buffer
+
+                for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                        try {
+                            const event = JSON.parse(line.slice(6));
+                            setProgressStage(event.stage);
+                            setProgressMessage(event.message);
+                            setProgressLog(prev => [...prev, { stage: event.stage, message: event.message }]);
+
+                            if (event.stage === 'complete' && event.data) {
+                                setResults(event.data);
+                                setLoading(false);
+                            } else if (event.stage === 'error') {
+                                setError(event.message);
+                                setLoading(false);
+                            }
+                        } catch (parseErr) { /* skip malformed events */ }
+                    }
+                }
+            }
+        } catch (err) {
+            setError(err.message || 'Connection failed');
+            setLoading(false);
+        }
+    };
+
+    const currentStep = STAGE_CONFIG[progressStage]?.step || 0;
+    const totalSteps = 5;
+
+    const [copiedIdx, setCopiedIdx] = useState(null);
+    const copyToClipboard = (text, idx) => {
+        navigator.clipboard.writeText(text).then(() => {
+            setCopiedIdx(idx);
+            setTimeout(() => setCopiedIdx(null), 2000);
+        });
+    };
+
+    return (
+        <div className="space-y-4 animate-fade-in-up">
+            <header className="mb-6">
+                <h1 className="text-3xl font-extrabold text-white mb-1">Citation Verifier</h1>
+                <p className="text-sm text-neutral-500">Cross-check inline citations against your reference list using Gemini AI.</p>
+            </header>
+
+            {/* Upload Zone */}
+            {!results && !loading && (
+                <>
+                    <div
+                        className={`glass-card p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[320px] group
+              ${isDragActive ? 'border-white/20 bg-white/[0.06]' : ''}`}
+                        onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
+                        onClick={() => !file && fileInputRef.current?.click()}
+                    >
+                        {!file ? (
+                            <>
+                                <div className={`w-20 h-20 rounded-full border border-white/10 bg-white/5 flex items-center justify-center mb-6 transition-transform ${isDragActive ? 'scale-110' : 'group-hover:scale-105'}`}>
+                                    <UploadCloud size={40} className="text-neutral-400" />
+                                </div>
+                                <h3 className="text-xl font-bold text-white mb-2">DRAG & DROP YOUR FILES</h3>
+                                <p className="text-sm text-neutral-600 mb-4">Supports <strong className="text-neutral-400">PDF</strong>, <strong className="text-neutral-400">DOCX</strong>, and <strong className="text-neutral-400">DOC</strong> (Max 50MB)</p>
+                                <button className="btn-accent text-sm py-2.5 px-8 rounded-lg">UPLOAD FILES</button>
+                            </>
+                        ) : (
+                            <div className="w-full max-w-md flex flex-col items-center">
+                                <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mb-5">
+                                    <CheckCircle2 size={32} className="text-white" />
+                                </div>
+                                <div className="w-full bg-white/3 border border-white/5 rounded-xl p-4 flex items-center gap-3 mb-6">
+                                    <File size={20} className="text-neutral-400 shrink-0" />
+                                    <span className="truncate flex-1 text-sm font-medium text-neutral-200">{file.name}</span>
+                                    <button onClick={(e) => { e.stopPropagation(); setFile(null); }} className="p-1.5 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-red-400 transition-colors">
+                                        <XCircle size={18} />
+                                    </button>
+                                </div>
+                                <button onClick={(e) => { e.stopPropagation(); verifyFile(); }} className="btn-accent w-full py-3.5 text-base rounded-xl">
+                                    Run Citation Verification
+                                </button>
+                            </div>
+                        )}
+                        <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,.docx,.doc" className="hidden" />
+                    </div>
+
+                    {error && (
+                        <div className="flex items-center gap-3 bg-red-500/10 text-red-300 px-5 py-3.5 rounded-xl border border-red-500/20">
+                            <AlertCircle size={18} className="text-red-400 shrink-0" /> <p className="text-sm font-medium">{error}</p>
+                        </div>
+                    )}
+                </>
+            )}
+
+            {/* Progress Tracker */}
+            {loading && (
+                <div className="glass-card min-h-[400px] flex flex-col items-center justify-center p-8">
+                    {/* Progress Bar */}
+                    <div className="w-full max-w-md mb-8">
+                        <div className="flex justify-between mb-2">
+                            <span className="text-xs font-semibold text-neutral-400">Progress</span>
+                            <span className="text-xs font-semibold text-white">Step {Math.min(currentStep, totalSteps)} of {totalSteps}</span>
+                        </div>
+                        <div className="w-full h-1.5 bg-white/5 rounded-full overflow-hidden">
+                            <div
+                                className="h-full bg-gradient-to-r from-white/40 to-white/70 rounded-full transition-all duration-700 ease-out"
+                                style={{ width: `${(currentStep / totalSteps) * 100}%` }}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Current Stage Icon */}
+                    {(() => {
+                        const StageIcon = STAGE_CONFIG[progressStage]?.icon || Loader2;
+                        return (
+                            <div className="w-16 h-16 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mb-5">
+                                <StageIcon size={32} className={`text-white ${progressStage === 'analyzing' || progressStage === 'processing' ? 'animate-spin' : ''}`} />
+                            </div>
+                        );
+                    })()}
+
+                    <h3 className="text-xl font-bold text-white mb-2">
+                        {STAGE_CONFIG[progressStage]?.label || 'Initializing...'}
+                    </h3>
+                    <p className="text-sm text-neutral-400 mb-8 text-center max-w-md">{progressMessage}</p>
+
+                    {/* Activity Log */}
+                    <div className="w-full max-w-md space-y-2">
+                        {progressLog.map((entry, i) => {
+                            const EntryIcon = STAGE_CONFIG[entry.stage]?.icon || Loader2;
+                            const isLatest = i === progressLog.length - 1;
+                            return (
+                                <div key={i} className={`flex items-center gap-3 text-xs py-1.5 transition-opacity ${isLatest ? 'text-white opacity-100' : 'text-neutral-600 opacity-60'}`}>
+                                    <EntryIcon size={14} className={isLatest ? 'text-white' : 'text-neutral-600'} />
+                                    <span className="font-medium">{entry.message}</span>
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+            )}
+
+            {/* Results */}
+            {results && !loading && (
+                <div className="space-y-3 animate-fade-in-up">
+                    <div className="glass-card-static flex items-center justify-between px-5 py-3 sticky top-0 z-20">
+                        <div className="flex items-center gap-3">
+                            <BarChart3 size={20} className="text-white" />
+                            <h2 className="text-base font-bold text-white">Analysis Report</h2>
+                        </div>
+                        <button onClick={() => { setResults(null); setFile(null); }} className="text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-4 py-2 rounded-lg transition-colors">
+                            New Scan
+                        </button>
+                    </div>
+
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                        {[
+                            { label: 'Citations', value: results.num_unique_citations || 0 },
+                            { label: 'References', value: results.num_references || 0 },
+                            { label: 'Missing Refs', value: results.missing_references_for_citations?.length || 0 },
+                            { label: 'Unused Refs', value: results.unused_references?.length || 0 },
+                        ].map((stat, i) => (
+                            <div key={i} className="glass-card p-5 border-l-4 border-l-white/20">
+                                <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-2">{stat.label}</div>
+                                <div className="text-4xl font-extrabold text-white">{stat.value}</div>
+                            </div>
+                        ))}
+                    </div>
+
+                    {(results.missing_references_for_citations?.length > 0 || results.unused_references?.length > 0) && (
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                            {results.missing_references_for_citations?.length > 0 && (
+                                <div className="glass-card overflow-hidden">
+                                    <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
+                                        <FileX size={16} className="text-red-400" />
+                                        <h3 className="text-sm font-bold text-red-200">Citations Missing References</h3>
+                                    </div>
+                                    <div className="p-4 max-h-[250px] overflow-y-auto space-y-2">
+                                        {results.missing_references_for_citations.map((c, i) => (
+                                            <div key={i} className="bg-white/3 p-3 rounded-lg border border-white/5 text-sm text-red-200 font-mono">{c}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                            {results.unused_references?.length > 0 && (
+                                <div className="glass-card overflow-hidden">
+                                    <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
+                                        <AlertCircle size={16} className="text-amber-400" />
+                                        <h3 className="text-sm font-bold text-amber-200">Unused References</h3>
+                                    </div>
+                                    <div className="p-4 max-h-[250px] overflow-y-auto space-y-2">
+                                        {results.unused_references.map((r, i) => (
+                                            <div key={i} className="bg-white/3 p-3 rounded-lg border border-white/5 text-sm text-neutral-300 leading-relaxed">{r}</div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {results.irregularities?.length > 0 && (
+                        <div className="glass-card overflow-hidden">
+                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
+                                <AlertCircle size={16} className="text-purple-400" />
+                                <h3 className="text-sm font-bold text-purple-200">Irregularities ({results.irregularities.length})</h3>
+                            </div>
+                            <div className="p-4 max-h-[350px] overflow-y-auto space-y-3">
+                                {results.irregularities.map((irr, i) => (
+                                    <div key={i} className="bg-white/[0.02] p-4 rounded-xl border border-white/5 border-l-4 border-l-white/15">
+                                        <span className="badge badge-purple mb-3 inline-block">{irr.type}</span>
+                                        <p className="text-sm text-neutral-300 mb-3">{irr.details}</p>
+                                        <div className="grid md:grid-cols-2 gap-3">
+                                            <div className="bg-white/3 p-3 rounded-lg border border-white/5">
+                                                <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1">Citation</div>
+                                                <div className="font-mono text-xs text-neutral-300">{irr.citation}</div>
+                                            </div>
+                                            <div className="bg-white/3 p-3 rounded-lg border border-white/5">
+                                                <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1">Reference</div>
+                                                <div className="font-mono text-xs text-neutral-300">{irr.ref}</div>
+                                            </div>
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {results.string_verification?.confirmed_matches?.length > 0 && (
+                        <div className="glass-card overflow-hidden">
+                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <CheckCircle2 size={16} className="text-emerald-400" />
+                                    <h3 className="text-sm font-bold text-emerald-200">Confirmed Matches ({results.string_verification.confirmed_matches.length})</h3>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        const allVerbatim = results.string_verification.confirmed_matches
+                                            .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref)
+                                            .join('\n\n');
+                                        copyToClipboard(allVerbatim, 'all');
+                                    }}
+                                    className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors"
+                                >
+                                    {copiedIdx === 'all' ? <ClipboardCheck size={13} /> : <Copy size={13} />}
+                                    {copiedIdx === 'all' ? 'Copied All!' : 'Copy All'}
+                                </button>
+                            </div>
+                            <div className="p-4 max-h-[400px] overflow-y-auto space-y-2">
+                                {results.string_verification.confirmed_matches.map((m, i) => {
+                                    const verbatimData = results.verbatim_references?.[m.matched_ref];
+                                    const verbatimText = verbatimData?.verbatim || m.matched_ref;
+                                    const confidence = verbatimData?.confidence || 0;
+                                    return (
+                                        <div key={i} className="bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 border-l-white/15">
+                                            <div className="flex items-start gap-3 mb-2">
+                                                <div className="flex-1">
+                                                    <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">{m.citation}</div>
+                                                    <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1 flex items-center gap-2">
+                                                        Source Reference
+                                                        {confidence >= 0.8 && <span className="text-emerald-500">(✓ exact match)</span>}
+                                                        {confidence > 0 && confidence < 0.8 && <span className="text-amber-500">(~{Math.round(confidence * 100)}% match)</span>}
+                                                    </div>
+                                                    <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
+                                                </div>
+                                                <button
+                                                    onClick={() => copyToClipboard(verbatimText, i)}
+                                                    className="shrink-0 p-2 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-colors"
+                                                    title="Copy verbatim reference"
+                                                >
+                                                    {copiedIdx === i ? <ClipboardCheck size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
