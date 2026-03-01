@@ -1,14 +1,16 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck, ScanSearch, GitCompare } from 'lucide-react';
 
 const STAGE_CONFIG = {
     parsing: { icon: FileSearch, label: 'Parsing Document', step: 1 },
     extracted: { icon: BookOpen, label: 'Text Extracted', step: 2 },
-    analyzing: { icon: Brain, label: 'AI Analysis', step: 3 },
-    processing: { icon: Loader2, label: 'Processing', step: 3 },
-    verifying: { icon: ShieldCheck, label: 'Verification', step: 4 },
-    extracting: { icon: BookOpen, label: 'Source Extraction', step: 5 },
-    complete: { icon: CheckCircle2, label: 'Complete', step: 6 },
+    scanning: { icon: ScanSearch, label: 'Python Regex Scan', step: 3 },
+    analyzing: { icon: Brain, label: 'AI Matching', step: 4 },
+    processing: { icon: Loader2, label: 'Processing', step: 4 },
+    validating: { icon: GitCompare, label: 'Cross-Validation', step: 5 },
+    verifying: { icon: ShieldCheck, label: 'String Verification', step: 6 },
+    extracting: { icon: BookOpen, label: 'Source Extraction', step: 7 },
+    complete: { icon: CheckCircle2, label: 'Complete', step: 8 },
     error: { icon: AlertCircle, label: 'Error', step: 0 },
 };
 
@@ -84,7 +86,7 @@ export default function VerifierView() {
     };
 
     const currentStep = STAGE_CONFIG[progressStage]?.step || 0;
-    const totalSteps = 5;
+    const totalSteps = 7;
 
     const [copiedIdx, setCopiedIdx] = useState(null);
     const copyToClipboard = (text, idx) => {
@@ -253,6 +255,63 @@ export default function VerifierView() {
                         </div>
                     )}
 
+                    {results.cross_validation && (
+                        <div className="glass-card overflow-hidden">
+                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
+                                <GitCompare size={16} className="text-sky-400" />
+                                <h3 className="text-sm font-bold text-sky-200">Cross-Validation (Python vs AI)</h3>
+                            </div>
+                            <div className="p-4 space-y-3">
+                                <div className="grid grid-cols-3 gap-3">
+                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
+                                        <div className="text-lg font-bold text-emerald-400">{results.cross_validation.confirmed_by_both?.length || 0}</div>
+                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">Confirmed</div>
+                                    </div>
+                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
+                                        <div className="text-lg font-bold text-sky-400">{results.cross_validation.python_only?.length || 0}</div>
+                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">Python Only</div>
+                                    </div>
+                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
+                                        <div className="text-lg font-bold text-red-400">{results.cross_validation.ai_only_potential_hallucination?.length || 0}</div>
+                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">AI Only ⚠</div>
+                                    </div>
+                                </div>
+                                {results.cross_validation.python_only?.length > 0 && (
+                                    <div className="bg-sky-500/5 p-3 rounded-lg border border-sky-500/20">
+                                        <div className="text-[10px] font-bold uppercase tracking-widest text-sky-400 mb-2">Found by Python regex only (AI missed these)</div>
+                                        {results.cross_validation.python_only.map((c, i) => (
+                                            <div key={i} className="text-xs text-neutral-300 font-mono bg-white/[0.02] px-2 py-1 rounded mb-1">{c}</div>
+                                        ))}
+                                    </div>
+                                )}
+                                {results.cross_validation.ai_only_potential_hallucination?.length > 0 && (
+                                    <div className="bg-red-500/5 p-3 rounded-lg border border-red-500/20">
+                                        <div className="text-[10px] font-bold uppercase tracking-widest text-red-400 mb-2">⚠ AI-only citations (not found in document by Python — possible hallucination)</div>
+                                        {results.cross_validation.ai_only_potential_hallucination.map((c, i) => (
+                                            <div key={i} className="text-xs text-neutral-300 font-mono bg-white/[0.02] px-2 py-1 rounded mb-1">{c}</div>
+                                        ))}
+                                    </div>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {results.ai_additional_citations?.length > 0 && (
+                        <div className="glass-card overflow-hidden border border-amber-500/20">
+                            <div className="bg-amber-500/5 border-b border-amber-500/10 px-5 py-3 flex items-center gap-2">
+                                <ScanSearch size={16} className="text-amber-400" />
+                                <h3 className="text-sm font-bold text-amber-200">AI Found Additional Citations ({results.ai_additional_citations.length})</h3>
+                                <span className="ml-auto text-[9px] uppercase tracking-widest text-amber-400/60 bg-amber-500/10 px-2 py-0.5 rounded-full">Review Required</span>
+                            </div>
+                            <div className="p-4 space-y-2">
+                                <p className="text-xs text-neutral-400 mb-3">These citations were found by AI but not by Python regex. They may be valid citations in an unusual format, or they may be false positives. Please review each one.</p>
+                                {results.ai_additional_citations.map((c, i) => (
+                                    <div key={i} className="bg-white/[0.02] p-3 rounded-lg border border-amber-500/10 text-sm text-neutral-300 font-mono">{c}</div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {results.irregularities?.length > 0 && (
                         <div className="glass-card overflow-hidden">
                             <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
@@ -305,8 +364,9 @@ export default function VerifierView() {
                                     const verbatimData = results.verbatim_references?.[m.matched_ref];
                                     const verbatimText = verbatimData?.verbatim || m.matched_ref;
                                     const confidence = verbatimData?.confidence || 0;
+                                    const conflict = verbatimData?.conflict;
                                     return (
-                                        <div key={i} className="bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 border-l-white/15">
+                                        <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${conflict ? 'border-l-amber-500/50' : 'border-l-white/15'}`}>
                                             <div className="flex items-start gap-3 mb-2">
                                                 <div className="flex-1">
                                                     <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">{m.citation}</div>
@@ -316,6 +376,12 @@ export default function VerifierView() {
                                                         {confidence > 0 && confidence < 0.8 && <span className="text-amber-500">(~{Math.round(confidence * 100)}% match)</span>}
                                                     </div>
                                                     <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
+                                                    {conflict && (
+                                                        <div className="mt-2 flex items-center gap-2 text-[10px] text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20">
+                                                            <AlertCircle size={12} className="shrink-0" />
+                                                            <span>{conflict}</span>
+                                                        </div>
+                                                    )}
                                                 </div>
                                                 <button
                                                     onClick={() => copyToClipboard(verbatimText, i)}

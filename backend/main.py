@@ -200,45 +200,127 @@ def count_references_and_citations(analysis):
 def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     """
     For each reference identified by the AI, find the closest verbatim match
-    in the original document text. Uses fuzzy matching so even if the AI slightly
-    altered a reference, we can still locate the original.
+    in the original document text. Includes safeguards against DOI bleeding
+    and cross-reference mixups.
     
-    Returns a dict mapping AI reference -> verbatim source text.
+    Returns a dict mapping AI reference -> verbatim source text with confidence.
     """
     from difflib import SequenceMatcher
     
-    # Split the document into lines — references are typically line-separated
-    doc_lines = [line.strip() for line in full_text.split('\n') if line.strip()]
+    # ─── STEP 1: Isolate the reference section ───
+    # Find where the reference list starts (look for common headings)
+    ref_section = full_text
+    ref_heading_patterns = [
+        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
+    ]
+    ref_start_idx = None
+    for pattern in ref_heading_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            ref_start_idx = match.end()
+            break
     
-    # Also build multi-line candidates (some references span 2-3 lines)
-    candidates = list(doc_lines)
-    for i in range(len(doc_lines) - 1):
-        candidates.append(doc_lines[i] + ' ' + doc_lines[i + 1])
-    for i in range(len(doc_lines) - 2):
-        candidates.append(doc_lines[i] + ' ' + doc_lines[i + 1] + ' ' + doc_lines[i + 2])
+    if ref_start_idx is not None:
+        ref_section = full_text[ref_start_idx:]
+    
+    # ─── STEP 2: Smart atomic splitting ───
+    # Split the reference section into individual reference entries.
+    # A new reference starts with a line that looks like an author name:
+    #   "Surname, I." or "Surname, Initial" or "[1]" or "1."
+    # Lines starting with DOI/URL/http are CONTINUATIONS, not new entries.
+    
+    ref_start_pattern = re.compile(
+        r'^(?:'
+        r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'       # Surname followed by comma (e.g., "Smith,")
+        r'|\[\d+\]'                             # Numbered reference [1]
+        r'|\d+\.\s+[A-Z]'                       # Numbered reference "1. Author"
+        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]'   # Two capitalized words (e.g., "World Health...")
+        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('       # Surname followed by "(" (e.g., "Smith (2020)")
+        r'|[A-Z]\.?\s*,?\s*\('                   # Single letter + date (e.g., "A. (2020)" or "A (2020)")
+        r'|[A-Z]\.?\s*,'                         # Single letter + comma (e.g., "A, B." or "A.,")
+        r'|\(\d{4}\)'                             # Year-first format "(2020) Report..."
+        r')',
+    )
+    
+    # Patterns that indicate a CONTINUATION line (never starts a new reference)
+    continuation_pattern = re.compile(
+        r'^(?:'
+        r'https?://'                             # URL
+        r'|doi[\s.:]+'                           # DOI
+        r'|Available\s+at'                       # "Available at:"
+        r'|Accessed'                             # "Accessed 12 March"
+        r'|pp?\.\s*\d'                           # "p. 123" or "pp. 45-67"
+        r'|Vol\.|Issue|Retrieved'                # Volume/Issue/Retrieved
+        r')',
+        re.IGNORECASE
+    )
+    
+    lines = ref_section.split('\n')
+    atomic_refs = []
+    current_ref_lines = []
+    
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+        
+        is_continuation = continuation_pattern.match(stripped)
+        is_new_ref = ref_start_pattern.match(stripped) and not is_continuation
+        
+        if is_new_ref and current_ref_lines:
+            # Save the previous complete reference
+            atomic_refs.append(' '.join(current_ref_lines))
+            current_ref_lines = [stripped]
+        else:
+            # Continuation of current reference (including DOIs, URLs, etc.)
+            current_ref_lines.append(stripped)
+    
+    # Don't forget the last reference
+    if current_ref_lines:
+        atomic_refs.append(' '.join(current_ref_lines))
+    
+    # Filter out very short entries (likely not actual references)
+    atomic_refs = [r for r in atomic_refs if len(r) > 20]
+    
+    # ─── STEP 3: Match using author + year compound key ───
+    def extract_author_year(text):
+        """Extract (first_author_surname, year) from a reference string."""
+        author = None
+        year = None
+        # First author: take text before first comma or parenthesis
+        author_match = re.match(r'^[^a-z]*?([A-Z][a-zA-Zà-öø-ÿ\'\-]+)', text.strip())
+        if author_match:
+            author = author_match.group(1).lower()
+        # Year: find a 4-digit year
+        year_match = re.search(r'\b(19|20)\d{2}\b', text)
+        if year_match:
+            year = year_match.group(0)
+        return (author, year)
     
     verbatim_map = {}
+    used_candidates = {}  # Track which candidate was matched by which AI ref
     
     for ai_ref in ai_references:
         best_score = 0
-        best_match = ai_ref  # fallback to AI version
-        
-        # Normalize the AI reference for comparison
+        best_match = ai_ref  # fallback to AI version if no match found
+        ai_author, ai_year = extract_author_year(ai_ref)
         ai_ref_lower = ai_ref.lower().strip()
         
-        for candidate in candidates:
+        for candidate in atomic_refs:
             candidate_lower = candidate.lower().strip()
             
-            # Quick filter: skip candidates that are too short or too different in length
-            if len(candidate_lower) < 15:
-                continue
+            # Quick filter: skip candidates too different in length
             len_ratio = len(candidate_lower) / max(len(ai_ref_lower), 1)
             if len_ratio < 0.3 or len_ratio > 3.0:
                 continue
             
-            # Check if the first author name appears in the candidate
-            first_word = ai_ref_lower.split(',')[0].split('(')[0].strip()[:15]
-            if first_word and first_word not in candidate_lower:
+            # Compound key check: author AND year must both appear
+            cand_author, cand_year = extract_author_year(candidate)
+            
+            author_ok = (not ai_author) or (not cand_author) or (ai_author == cand_author)
+            year_ok = (not ai_year) or (not cand_year) or (ai_year == cand_year)
+            
+            if not author_ok or not year_ok:
                 continue
             
             score = SequenceMatcher(None, ai_ref_lower, candidate_lower).ratio()
@@ -246,12 +328,246 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
                 best_score = score
                 best_match = candidate
         
-        verbatim_map[ai_ref] = {
+        # ─── STEP 4: Conflict detection ───
+        conflict = None
+        if best_match in used_candidates.values():
+            # Another AI reference already matched this same verbatim text
+            conflicting_ref = [k for k, v in used_candidates.items() if v == best_match]
+            conflict = f"Warning: This verbatim text was also matched by: {conflicting_ref[0][:50]}..."
+        
+        used_candidates[ai_ref] = best_match
+        
+        result = {
             "verbatim": best_match,
             "confidence": round(best_score, 2)
         }
+        if conflict:
+            result["conflict"] = conflict
+        
+        verbatim_map[ai_ref] = result
     
     return verbatim_map
+
+# ─── PYTHON-GUIDED CITATION EXTRACTION ───
+
+# Phase 1: Detect multi-citation blocks (parens with semicolons + years)
+MULTI_CITATION_PATTERN = re.compile(
+    r'\([^()]*\b\d{4}[a-z]?\b[^()]*;[^()]*\b\d{4}[a-z]?\b[^()]*\)'
+)
+
+# Phase 2: Individual citation patterns (most specific first)
+CITATION_PATTERNS = [
+    # ── Author-Date Parenthetical ──
+    # Org abbreviation: (WHO, 2020) or (CDC, 2020)
+    (re.compile(r'\(\s*[A-Z]{2,}[,\s]+\d{4}[a-z]?\s*\)'), 'ORG_ABBREV'),
+
+    # With initials: (J. Smith, 2020)
+    (re.compile(r'\(\s*[A-Z]\.\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?\s*\)'), 'INITIALS'),
+
+    # Et al.: (Smith et al., 2020) or (Smith et al., 2020, p. 45)
+    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*[,\s]*\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\s*\)'), 'PAR_ETAL'),
+
+    # Two authors (and/&): (Smith and Jones, 2020) or (Smith & Jones, 2020)
+    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\s*\)'), 'PAR_TWO'),
+
+    # No date: (Smith, n.d.)
+    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+n\.d\.\s*\)'), 'PAR_NO_DATE'),
+
+    # Single author with optional page/colon-page: (Smith, 2020) or (Smith, 2020, p. 45) or (Smith, 2020:45)
+    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?(?:[,:]\s*(?:pp?\.\s*)?[\d\-–]+)?\s*\)'), 'PAR_SINGLE'),
+
+    # ── Author-Date Narrative ──
+    # Et al. narrative: Smith et al. (2020)
+    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_ETAL'),
+
+    # Two authors narrative: Smith and Jones (2020)
+    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_TWO'),
+
+    # Single author narrative: Smith (2020) or Smith (2020, p. 45)
+    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_SINGLE'),
+
+    # ── Numbered Styles (Vancouver/IEEE) ──
+    # Mixed/multiple numbers: [1, 3-5, 7]
+    (re.compile(r'\[\d+(?:\s*[,\-–]\s*\d+)+\]'), 'NUM_MIXED'),
+
+    # Single number: [1]
+    (re.compile(r'\[\d+\]'), 'NUM_SINGLE'),
+
+    # ── MLA Style (Author Page) ──
+    # (Smith 45) or (Smith 45-67)
+    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\d+(?:\s*[\-–]\s*\d+)?\s*\)'), 'MLA_PAGE'),
+]
+
+# Patterns to match individual citations inside multi-citation blocks (after semicolon split)
+# These don't need parentheses — they match the inner text
+INNER_CITATION_PATTERNS = [
+    # Org abbreviation: WHO, 2020
+    (re.compile(r'^\s*[A-Z]{2,}[,\s]+\d{4}[a-z]?\s*$'), 'ORG_ABBREV'),
+    # Et al.: Smith et al., 2020
+    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*[,\s]*\d{4}[a-z]?'), 'PAR_ETAL'),
+    # Two authors: Smith and Jones, 2020 or Smith & Jones, 2020
+    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?'), 'PAR_TWO'),
+    # Single author: Smith, 2020
+    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?'), 'PAR_SINGLE'),
+    # Just a year (same author continuation): 2020
+    (re.compile(r'^\s*\d{4}[a-z]?\s*$'), 'YEAR_ONLY'),
+]
+
+def extract_reference_section(full_text: str) -> tuple:
+    """
+    Split the document into body text and reference section.
+    Returns (body_text, reference_text).
+    """
+    ref_heading_patterns = [
+        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
+    ]
+    
+    for pattern in ref_heading_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            body = full_text[:match.start()]
+            refs = full_text[match.end():]
+            return (body, refs)
+    
+    # Fallback: if no heading found, return full text as body
+    return (full_text, "")
+
+def extract_citations_regex(body_text: str) -> list:
+    """
+    Extract all in-text citations from the body text using regex patterns.
+    Uses two-phase approach for multi-citations:
+      Phase 1: detect multi-citation blocks, split by semicolon
+      Phase 2: match individual citations against single patterns
+    
+    Returns list of dicts: [{"text": "(Smith, 2020)", "type": "PAR_SINGLE"}, ...]
+    """
+    found_citations = []
+    seen_texts = set()  # Deduplication
+    
+    # Track positions already matched to avoid double-matching
+    matched_spans = []
+    
+    def is_overlapping(start, end):
+        for s, e in matched_spans:
+            if start < e and end > s:
+                return True
+        return False
+    
+    # Phase 1: Find and split multi-citation blocks
+    for match in MULTI_CITATION_PATTERN.finditer(body_text):
+        if is_overlapping(match.start(), match.end()):
+            continue
+        matched_spans.append((match.start(), match.end()))
+        
+        full_block = match.group(0)
+        # Strip outer parentheses and split by semicolon
+        inner = full_block[1:-1]  # Remove ( and )
+        parts = [p.strip() for p in inner.split(';')]
+        
+        for part in parts:
+            part_clean = part.strip()
+            if not part_clean:
+                continue
+            
+            # Try to classify each piece
+            classified = False
+            for pattern, label in INNER_CITATION_PATTERNS:
+                if pattern.search(part_clean):
+                    citation_text = f"({part_clean})"
+                    if citation_text not in seen_texts:
+                        found_citations.append({"text": citation_text, "type": label})
+                        seen_texts.add(citation_text)
+                    classified = True
+                    break
+            
+            # If no inner pattern matched but it has a year, still include it
+            if not classified and re.search(r'\d{4}', part_clean):
+                citation_text = f"({part_clean})"
+                if citation_text not in seen_texts:
+                    found_citations.append({"text": citation_text, "type": "UNKNOWN"})
+                    seen_texts.add(citation_text)
+    
+    # Phase 2: Find standalone citations
+    for pattern, label in CITATION_PATTERNS:
+        for match in pattern.finditer(body_text):
+            if is_overlapping(match.start(), match.end()):
+                continue
+            
+            citation_text = match.group(0).strip()
+            if citation_text not in seen_texts:
+                found_citations.append({"text": citation_text, "type": label})
+                seen_texts.add(citation_text)
+                matched_spans.append((match.start(), match.end()))
+    
+    return found_citations
+
+def cross_validate(python_citations: list, ai_citations: list, ai_references: list) -> dict:
+    """
+    Compare Python-extracted citations with AI-extracted citations.
+    Flags discrepancies — citations found by Python but missed by AI,
+    and citations claimed by AI but not found by Python (potential hallucination).
+    """
+    python_texts = set(c["text"] for c in python_citations)
+    ai_texts = set(ai_citations)
+    
+    # Normalize for comparison (lowercase, strip whitespace)
+    python_normalized = {t.lower().strip(): t for t in python_texts}
+    ai_normalized = {t.lower().strip(): t for t in ai_texts}
+    
+    # Find discrepancies
+    python_only = []  # Python found but AI missed
+    ai_only = []      # AI found but Python didn't (possible hallucination)
+    confirmed = []    # Both agree
+    
+    for norm, original in python_normalized.items():
+        if norm in ai_normalized:
+            confirmed.append(original)
+        else:
+            # Fuzzy check: maybe AI formatted slightly differently
+            found_match = False
+            for ai_norm, ai_orig in ai_normalized.items():
+                # Check if core content overlaps (first author + year)
+                py_author = re.search(r'[A-Za-z\'\-]{2,}', norm)
+                ai_author = re.search(r'[A-Za-z\'\-]{2,}', ai_norm)
+                py_year = re.search(r'\d{4}', norm)
+                ai_year = re.search(r'\d{4}', ai_norm)
+                
+                if (py_author and ai_author and py_year and ai_year and 
+                    py_author.group().lower() == ai_author.group().lower() and
+                    py_year.group() == ai_year.group()):
+                    confirmed.append(original)
+                    found_match = True
+                    break
+            
+            if not found_match:
+                python_only.append(original)
+    
+    for norm, original in ai_normalized.items():
+        if norm not in python_normalized:
+            # Check fuzzy match as above
+            found_match = False
+            for py_norm in python_normalized:
+                py_author = re.search(r'[A-Za-z\'\-]{2,}', py_norm)
+                ai_author = re.search(r'[A-Za-z\'\-]{2,}', norm)
+                py_year = re.search(r'\d{4}', py_norm)
+                ai_year = re.search(r'\d{4}', norm)
+                
+                if (py_author and ai_author and py_year and ai_year and 
+                    py_author.group().lower() == ai_author.group().lower() and
+                    py_year.group() == ai_year.group()):
+                    found_match = True
+                    break
+            
+            if not found_match:
+                ai_only.append(original)
+    
+    return {
+        "confirmed_by_both": confirmed,
+        "python_only": python_only,
+        "ai_only_potential_hallucination": ai_only,
+        "python_total": len(python_citations),
+        "ai_total": len(ai_citations),
+    }
 
 @app.post("/api/verify")
 async def verify_citations(file: UploadFile = File(...)):
@@ -296,42 +612,64 @@ async def verify_citations(file: UploadFile = File(...)):
         yield f"data: {json.dumps({'stage': 'extracted', 'message': f'Extracted {word_count:,} words from document'})}\n\n"
         await asyncio.sleep(0.1)
 
-        # Stage 2: AI Analysis
-        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending to Gemini AI for citation analysis...'})}\n\n"
+        # Stage 2: Python citation extraction (deterministic — no hallucination)
+        yield f"data: {json.dumps({'stage': 'scanning', 'message': 'Python regex scanning for in-text citations...'})}\n\n"
+        await asyncio.sleep(0.1)
+
+        body_text, ref_section_text = extract_reference_section(full_text)
+        python_citations = extract_citations_regex(body_text)
+
+        py_count = len(python_citations)
+        type_counts = {}
+        for c in python_citations:
+            t = c["type"]
+            type_counts[t] = type_counts.get(t, 0) + 1
+        type_summary = ", ".join(f"{v} {k}" for k, v in type_counts.items())
+        yield f"data: {json.dumps({'stage': 'scanning', 'message': f'Found {py_count} citations via regex ({type_summary})'})}\n\n"
+        await asyncio.sleep(0.1)
+
+        # Stage 3: AI Semantic Analysis (receives pre-extracted data — verify only)
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending to Gemini AI for semantic matching...'})}\n\n"
         await asyncio.sleep(0.1)
 
         try:
             client = get_client()
-            prompt = f"""
-    Analyze the following document text for citations and references. Identify all in-text citations (e.g., (Author, Year), [1], Author (Year), etc.) and extract the reference list (typically at the end, under headings like 'References', 'Bibliography', etc.).
 
-    Tasks:
-    1. List all unique in-text citations found.
-    2. Extract and list all references from the reference section.
-    3. Match each citation to its corresponding reference.
-    4. Identify mismatches:
-       - Citations in text without a matching reference (missing references).
-       - References without a corresponding citation in text (unused references).
-       - Irregularities: Date mismatches, author name inconsistencies (e.g., 'Smith 2020' cited but 'Smyth 2019' in refs), formatting issues, duplicates, etc.
+            citations_list = json.dumps([c["text"] for c in python_citations], indent=2)
 
-    Output in strict JSON format only:
-    {{
-        "in_text_citations": ["citation1", "citation2", ...],
-        "references": ["ref1", "ref2", ...],
-        "missing_references_for_citations": ["unmatched_citation1", ...],
-        "unused_references": ["extra_ref1", ...],
-        "irregularities": [
-            {{"type": "date_mismatch", "citation": "Author (2020)", "ref": "Author (2019)", "details": "Year differs"}},
-            {{"type": "name_mismatch", "citation": "Smith", "ref": "Smyth", "details": "Spelling error"}}
-        ],
-        "summary": "Brief overview of issues found."
-    }}
+            prompt = f"""You are a citation verification assistant. Python has already extracted the following in-text citations from a document using regex. Your PRIMARY source of truth is this pre-extracted list.
 
-    Document text:
-    {full_text[:1000000]}
-    """
+PRE-EXTRACTED IN-TEXT CITATIONS (found by Python regex — these are confirmed):
+{citations_list}
 
-            yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is reading your document...'})}\n\n"
+DOCUMENT TEXT (for reference matching, irregularity detection, AND independent scanning):
+{full_text[:1000000]}
+
+Your tasks:
+1. Extract and list all references from the reference section of the document (typically at the end, under headings like 'References', 'Bibliography', etc.).
+2. Match each pre-extracted citation to its corresponding reference.
+3. Identify mismatches:
+   - Citations without a matching reference (missing references).
+   - References without a corresponding citation (unused references).
+   - Irregularities: Date mismatches, author name inconsistencies, formatting issues, duplicates.
+4. INDEPENDENTLY scan the document for any in-text citations that Python may have MISSED. Report these separately as "ai_additional_citations". These are NOT confirmed — they are warnings for the user to review.
+
+Output in strict JSON format only:
+{{
+    "in_text_citations": {citations_list},
+    "references": ["ref1", "ref2", ...],
+    "ai_additional_citations": ["any citations YOU found that are NOT in the pre-extracted list above"],
+    "missing_references_for_citations": ["unmatched_citation1", ...],
+    "unused_references": ["extra_ref1", ...],
+    "irregularities": [
+        {{"type": "date_mismatch", "citation": "Author (2020)", "ref": "Author (2019)", "details": "Year differs"}},
+        {{"type": "name_mismatch", "citation": "Smith", "ref": "Smyth", "details": "Spelling error"}}
+    ],
+    "summary": "Brief overview of issues found."
+}}
+"""
+
+            yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
             
             response = client.models.generate_content(
                 model='gemini-3-flash-preview',
@@ -344,7 +682,7 @@ async def verify_citations(file: UploadFile = File(...)):
         yield f"data: {json.dumps({'stage': 'processing', 'message': 'Parsing AI response...'})}\n\n"
         await asyncio.sleep(0.1)
 
-        # Stage 3: Parse response
+        # Stage 4: Parse response and cross-validate
         try:
             output_text = response.text.strip()
             if output_text.startswith('```json'):
@@ -355,20 +693,46 @@ async def verify_citations(file: UploadFile = File(...)):
 
             analysis = count_references_and_citations(analysis)
 
+            # Stage 5: Cross-validate Python vs AI
+            yield f"data: {json.dumps({'stage': 'validating', 'message': 'Cross-validating Python extraction vs AI analysis...'})}\n\n"
+            await asyncio.sleep(0.1)
+
+            validation = cross_validate(
+                python_citations,
+                analysis.get("in_text_citations", []),
+                analysis.get("references", [])
+            )
+            analysis["cross_validation"] = validation
+            analysis["python_citations"] = [c["text"] for c in python_citations]
+            analysis["python_citation_types"] = {c["text"]: c["type"] for c in python_citations}
+
             num_cit = analysis.get("num_unique_citations", 0)
             num_ref = analysis.get("num_references", 0)
-            verify_msg = f"Found {num_cit} citations and {num_ref} references. Running string verification..."
+            py_only = len(validation.get("python_only", []))
+            ai_only = len(validation.get("ai_only_potential_hallucination", []))
+            ai_additional = len(analysis.get("ai_additional_citations", []))
+            validate_msg = f"Validated {num_cit} citations, {num_ref} references"
+            if py_only:
+                validate_msg += f" | {py_only} found by Python only"
+            if ai_only:
+                validate_msg += f" | {ai_only} AI-only (review needed)"
+            if ai_additional:
+                validate_msg += f" | {ai_additional} additional found by AI"
+            yield f"data: {json.dumps({'stage': 'validating', 'message': validate_msg})}\n\n"
+            await asyncio.sleep(0.1)
+
+            # Stage 6: String verification
+            verify_msg = f"Running string verification on {num_ref} references..."
             yield f"data: {json.dumps({'stage': 'verifying', 'message': verify_msg})}\n\n"
             await asyncio.sleep(0.1)
 
-            # Stage 4: String verification
             verification = verify_matches_with_string_search(
                 analysis.get("in_text_citations", []),
                 analysis.get("references", []),
             )
             analysis["string_verification"] = verification
 
-            # Stage 5: Extract verbatim references from source document
+            # Stage 7: Extract verbatim references from source document
             yield f"data: {json.dumps({'stage': 'extracting', 'message': 'Extracting verbatim references from source document...'})}\n\n"
             await asyncio.sleep(0.1)
 
