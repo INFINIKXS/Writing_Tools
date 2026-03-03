@@ -2,6 +2,7 @@ import os
 import io
 import json
 import re
+import asyncio
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -15,6 +16,7 @@ import olefile
 from dotenv import load_dotenv
 
 from harvard_guide import HARVARD_GUIDE
+from apa_guide import APA_GUIDE
 
 # Load env variables
 load_dotenv()
@@ -197,6 +199,74 @@ def count_references_and_citations(analysis):
     analysis["num_references"] = num_references
     return analysis
 
+def apply_italic_formatting(ref_text: str) -> str:
+    """
+    Apply <i> tags to parts of a reference that should be italicized
+    per academic conventions (Harvard, APA). Uses regex pattern matching.
+    
+    Rules:
+    - Journal/periodical names → italic
+    - Book/report/media titles → italic
+    - Article/chapter titles → NOT italic
+    """
+    import html as html_mod
+    ref = html_mod.escape(ref_text)
+    
+    # === 1. JOURNAL / PERIODICAL: detected by volume(issue) OR bare page range ===
+    vol_issue = re.search(r',\s*\d{1,4}\s*\(\d{1,4}\)', ref)
+    page_range = re.search(r',\s*\d+\s*[-–]\s*\d+', ref)
+    periodical_marker = vol_issue or page_range
+    if periodical_marker:
+        before = ref[:periodical_marker.start()]
+        last_dot = before.rfind('. ')
+        if last_dot >= 0:
+            journal_name = before[last_dot + 2:].rstrip(', ')
+            # Safety check: the ". " before the journal name must NOT be the one
+            # right after the year — otherwise this text is the title (book), not
+            # a journal name. This prevents false positives like book titles
+            # containing date ranges (e.g. "History of science, 1900-2000").
+            year_dot = re.search(r'\)\.\s', before)
+            year_dot_pos = year_dot.start() + 1 if year_dot else -1
+            if last_dot > year_dot_pos and len(journal_name) > 2 and not journal_name.startswith('http'):
+                pos = last_dot + 2
+                return ref[:pos] + '<i>' + journal_name + '</i>' + ref[pos + len(journal_name):]
+        return ref
+    
+    # === 2. EDITED CHAPTER: contains "In ... (Ed.), " or "In ... (Eds.), " ===
+    ed_match = re.search(r'\bIn\s+.*?\(Eds?\.\)[,.]?\s*', ref)
+    if ed_match:
+        title_start = ed_match.end()
+        rest = ref[title_start:]
+        # Book title ends at next period, or "(pp." or bracket
+        title_end = re.search(r'(?:\.|\s\(pp?\.)', rest)
+        if title_end:
+            title = rest[:title_end.start()]
+            if len(title) > 2:
+                return ref[:title_start] + '<i>' + title + '</i>' + ref[title_start + len(title):]
+        return ref
+    
+    # === 3. BOOK / REPORT / MEDIA: italicize the title after the year ===
+    # Find year pattern: (2020) or (2020, May) or (2020, May 8) or (n.d.)
+    year = re.search(r'\((?:\d{4}[a-z]?(?:,\s+\w+(?:\s+\d{1,2})?(?:[–\-]\d{1,2})?)?|n\.d\.)\)\.?\s*', ref)
+    if year:
+        after_year = ref[year.end():]
+        # Split into sentence-like segments
+        segments = re.split(r'(?<=\.)\s+(?=[A-Z])', after_year, maxsplit=3)
+        
+        if len(segments) >= 2:
+            first = segments[0].rstrip('.')
+            if len(first) > 2:
+                pos = year.end()
+                return ref[:pos] + '<i>' + first + '</i>' + ref[pos + len(first):]
+        elif len(segments) == 1:
+            title = segments[0].rstrip('.')
+            if len(title) > 2:
+                pos = year.end()
+                return ref[:pos] + '<i>' + title + '</i>' + ref[pos + len(title):]
+    
+    return ref
+
+
 def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     """
     For each reference identified by the AI, find the closest verbatim match
@@ -234,26 +304,33 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'       # Surname followed by comma (e.g., "Smith,")
         r'|\[\d+\]'                             # Numbered reference [1]
         r'|\d+\.\s+[A-Z]'                       # Numbered reference "1. Author"
-        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]'   # Two capitalized words (e.g., "World Health...")
         r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('       # Surname followed by "(" (e.g., "Smith (2020)")
         r'|[A-Z]\.?\s*,?\s*\('                   # Single letter + date (e.g., "A. (2020)" or "A (2020)")
         r'|[A-Z]\.?\s*,'                         # Single letter + comma (e.g., "A, B." or "A.,")
         r'|\(\d{4}\)'                             # Year-first format "(2020) Report..."
         r')',
     )
+
+    # Separate pattern for organizational names — requires a year nearby to avoid matching titles
+    org_name_pattern = re.compile(r'^[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]')
     
     # Patterns that indicate a CONTINUATION line (never starts a new reference)
     continuation_pattern = re.compile(
         r'^(?:'
         r'https?://'                             # URL
-        r'|doi[\s.:]+'                           # DOI
-        r'|Available\s+at'                       # "Available at:"
-        r'|Accessed'                             # "Accessed 12 March"
+        r'|[Dd]oi[\s.:]+'                        # DOI (case variants)
+        r'|[Aa]vailable\s+at'                    # "Available at:"
+        r'|[Aa]ccessed'                          # "Accessed 12 March"
         r'|pp?\.\s*\d'                           # "p. 123" or "pp. 45-67"
-        r'|Vol\.|Issue|Retrieved'                # Volume/Issue/Retrieved
-        r')',
-        re.IGNORECASE
+        r'|[Vv]ol\.|[Ii]ssue|[Rr]etrieved'      # Volume/Issue/Retrieved
+        r'|(?:The|A|An|In|On|Of|For|And|Their|Its|Effects?|Impact)\s'  # Common title-start words
+        r'|[a-z]'                                # Starts with lowercase letter (always continuation)
+        r'|["\'\u201c\u2018]'                    # Starts with opening quotation mark (title)
+        r')'
     )
+    
+    # Year pattern to validate organizational name lines
+    has_year = re.compile(r'\b(?:19|20)\d{2}\b')
     
     lines = ref_section.split('\n')
     atomic_refs = []
@@ -265,7 +342,14 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             continue
         
         is_continuation = continuation_pattern.match(stripped)
-        is_new_ref = ref_start_pattern.match(stripped) and not is_continuation
+        
+        # For "two capitalized words" (org names), only treat as new ref if a year is found nearby
+        is_org_name = org_name_pattern.match(stripped) and not is_continuation
+        if is_org_name:
+            # Only accept as new ref if line contains a year in first 80 chars
+            is_org_name = bool(has_year.search(stripped[:80]))
+        
+        is_new_ref = (ref_start_pattern.match(stripped) or is_org_name) and not is_continuation
         
         if is_new_ref and current_ref_lines:
             # Save the previous complete reference
@@ -281,6 +365,29 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     
     # Filter out very short entries (likely not actual references)
     atomic_refs = [r for r in atomic_refs if len(r) > 20]
+
+    # ─── POST-SPLIT PASS: detect merged references within a single entry ───
+    # Sometimes PDFs put two references on the same line (DOI followed immediately
+    # by the next author's name). Detect and split these.
+    demerge_pattern = re.compile(
+        r'(?<=[0-9])'                          # after a digit (end of DOI/year)
+        r'\s+'                                  # whitespace
+        r'(?=[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,)'   # next author surname + comma
+    )
+    demerged_refs = []
+    for ref in atomic_refs:
+        # Check if entry contains multiple DOIs — strong signal of merge
+        doi_count = len(re.findall(r'(?:doi[\s.:]+|https?://doi\.org/)', ref, re.IGNORECASE))
+        if doi_count >= 2:
+            # Split at the boundary between DOI end + next author start
+            parts = demerge_pattern.split(ref, maxsplit=1)
+            if len(parts) > 1:
+                demerged_refs.extend([p.strip() for p in parts if len(p.strip()) > 20])
+            else:
+                demerged_refs.append(ref)
+        else:
+            demerged_refs.append(ref)
+    atomic_refs = demerged_refs
     
     # ─── STEP 3: Match using author + year compound key ───
     def extract_author_year(text):
@@ -577,7 +684,6 @@ async def verify_citations(file: UploadFile = File(...)):
     file_bytes = await file.read()
 
     async def event_stream():
-        import asyncio
 
         # Stage 1: Detect file format
         yield f"data: {json.dumps({'stage': 'parsing', 'message': 'Detecting file format...'})}\n\n"
@@ -671,9 +777,10 @@ Output in strict JSON format only:
 
             yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
             
-            response = client.models.generate_content(
+            response = await asyncio.to_thread(
+                client.models.generate_content,
                 model='gemini-3-flash-preview',
-                contents=prompt
+                contents=prompt,
             )
         except Exception as e:
             yield f"data: {json.dumps({'stage': 'error', 'message': f'Gemini API error: {str(e)}'})}\n\n"
@@ -737,6 +844,10 @@ Output in strict JSON format only:
             await asyncio.sleep(0.1)
 
             verbatim_map = extract_verbatim_references(full_text, analysis.get("references", []))
+            # Apply italic formatting to each verbatim reference
+            for key in verbatim_map:
+                plain = verbatim_map[key].get("verbatim", key)
+                verbatim_map[key]["verbatim_html"] = apply_italic_formatting(plain)
             analysis["verbatim_references"] = verbatim_map
 
             yield f"data: {json.dumps({'stage': 'complete', 'message': 'Analysis complete!', 'data': analysis})}\n\n"
@@ -751,20 +862,33 @@ Output in strict JSON format only:
 
 class FormatRequest(BaseModel):
     references: List[str]
+    style: str = "harvard"
 
 @app.post("/api/format")
 async def format_references(req: FormatRequest):
     client = get_client()
     
+    # Select guide based on style
+    if req.style == "apa":
+        guide = APA_GUIDE
+        style_name = "APA 7th Edition"
+    else:
+        guide = HARVARD_GUIDE
+        style_name = "Harvard"
+    
     formatted_refs = []
     for ref in req.references:
         prompt = f"""
-        Using the Harvard referencing guide provided below, classify the following input reference and reformat it to match the exact Harvard style for its type (e.g., Book, Journal Article, Web page, etc.).
+        Using the {style_name} referencing guide provided below, classify the following input reference and reformat it to match the exact {style_name} style for its type (e.g., Book, Journal Article, Web page, etc.).
 
-        If the input is already in Harvard style, confirm and output it as is. If not, identify the type and apply the correct format.
+        If the input is already in {style_name} style, confirm and output it as is. If not, identify the type and apply the correct format.
+
+        IMPORTANT: In the "formatted" output, wrap parts that should be italicized with <i>...</i> HTML tags.
+        Per {style_name} conventions, italicize: journal/periodical names, book titles, report titles, film titles, etc.
+        Do NOT italicize: article titles, chapter titles, or webpage titles.
 
         Guide:
-        {HARVARD_GUIDE}
+        {guide}
 
         Input reference:
         {ref}
@@ -773,13 +897,14 @@ async def format_references(req: FormatRequest):
         {{
             "original": "copy the exact input reference here",
             "type": "classified_type (e.g., Book, Journal Article)",
-            "formatted": "reformatted Harvard reference"
+            "formatted": "reformatted {style_name} reference with <i>italic</i> tags where appropriate"
         }}
         """
 
-        response = client.models.generate_content(
+        response = await asyncio.to_thread(
+            client.models.generate_content,
             model='gemini-3-flash-preview',
-            contents=prompt
+            contents=prompt,
         )
         
         try:

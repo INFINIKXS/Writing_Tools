@@ -1,11 +1,19 @@
 import React, { useState } from 'react';
-import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2 } from 'lucide-react';
+import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2, ChevronDown } from 'lucide-react';
+
+const STYLES = [
+    { id: 'harvard', label: 'Harvard', desc: 'Cite Them Right (10th ed.)' },
+    { id: 'apa', label: 'APA 7th', desc: 'Publication Manual (7th ed.)' },
+];
 
 export default function FormatterView() {
     const [inputText, setInputText] = useState('');
     const [loading, setLoading] = useState(false);
     const [results, setResults] = useState([]);
     const [copiedIndex, setCopiedIndex] = useState(null);
+    const [style, setStyle] = useState('harvard');
+
+    const currentStyle = STYLES.find(s => s.id === style);
 
     const handleFormat = async () => {
         if (!inputText.trim()) return;
@@ -13,21 +21,43 @@ export default function FormatterView() {
         if (!refs.length) return;
         setLoading(true); setResults([]);
         try {
-            const res = await fetch('/api/format', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ references: refs }) });
+            const res = await fetch('/api/format', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ references: refs, style }) });
             if (!res.ok) throw new Error('Formatting failed');
             const data = await res.json();
             setResults(data.formatted_references || []);
         } catch (err) { alert(err.message); } finally { setLoading(false); }
     };
 
-    const copy = (text, idx) => { navigator.clipboard.writeText(text); setCopiedIndex(idx); setTimeout(() => setCopiedIndex(null), 2000); };
-    const copyAll = () => { copy(results.map(r => r.formatted || r.original).join('\n\n'), 'all'); };
+    const sanitizeHtml = (html) => html.replace(/<(?!\/?(?:i|em)\b)[^>]*>/gi, '');
+    const stripHtml = (html) => html.replace(/<\/?[^>]*>/g, '');
+
+    const copyRich = (htmlText, idx) => {
+        const html = sanitizeHtml(htmlText);
+        const plain = stripHtml(htmlText);
+        const htmlBlob = new Blob([html], { type: 'text/html' });
+        const textBlob = new Blob([plain], { type: 'text/plain' });
+        navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })]).then(() => {
+            setCopiedIndex(idx);
+            setTimeout(() => setCopiedIndex(null), 2000);
+        });
+    };
+
+    const copyAll = () => {
+        const allHtml = results.map(r => sanitizeHtml(r.formatted || r.original)).join('<br><br>');
+        const allPlain = results.map(r => stripHtml(r.formatted || r.original)).join('\n\n');
+        const htmlBlob = new Blob([allHtml], { type: 'text/html' });
+        const textBlob = new Blob([allPlain], { type: 'text/plain' });
+        navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })]).then(() => {
+            setCopiedIndex('all');
+            setTimeout(() => setCopiedIndex(null), 2000);
+        });
+    };
 
     return (
         <div className="animate-fade-in-up h-full flex flex-col">
             <header className="mb-6">
-                <h1 className="text-3xl font-extrabold text-white mb-1">Harvard Formatter</h1>
-                <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect Harvard style using AI.</p>
+                <h1 className="text-3xl font-extrabold text-white mb-1">Reference Formatter</h1>
+                <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect {currentStyle.label} style using AI.</p>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-[500px]">
@@ -38,15 +68,29 @@ export default function FormatterView() {
                             <Quote size={16} className="text-neutral-400" />
                             <h3 className="text-sm font-bold text-white">Raw References</h3>
                         </div>
-                        <span className="badge badge-green">Input</span>
+                        <div className="flex items-center gap-2">
+                            <div className="relative">
+                                <select
+                                    value={style}
+                                    onChange={(e) => setStyle(e.target.value)}
+                                    className="appearance-none bg-white/5 border border-white/10 text-xs font-semibold text-neutral-300 px-3 py-1.5 pr-7 rounded-lg cursor-pointer hover:bg-white/10 transition-colors outline-none focus:border-white/20"
+                                >
+                                    {STYLES.map(s => (
+                                        <option key={s.id} value={s.id} className="bg-neutral-900 text-white">{s.label}</option>
+                                    ))}
+                                </select>
+                                <ChevronDown size={12} className="absolute right-2 top-1/2 -translate-y-1/2 text-neutral-500 pointer-events-none" />
+                            </div>
+                            <span className="badge badge-green">Input</span>
+                        </div>
                     </div>
                     <div className="p-4 flex-1 flex flex-col">
                         <p className="text-xs text-neutral-600 mb-3 bg-white/3 p-2.5 rounded-lg border border-white/5">
-                            Paste one reference per line for optimal results.
+                            Paste one reference per line for optimal results. Style: <strong className="text-neutral-400">{currentStyle.label}</strong> ({currentStyle.desc})
                         </p>
                         <textarea
                             className="flex-1 w-full bg-white/[0.02] border border-white/8 rounded-xl p-4 text-sm text-neutral-200 font-mono leading-relaxed resize-none outline-none focus:border-white/20 focus:ring-1 focus:ring-white/10 transition-colors placeholder-neutral-700"
-                            placeholder="Smith, J. 2020. The history of science. London: Penguin.&#10;Bloggs, Joe (2019) 'Why I love science', Science Monthly, 14(2), pp.1-10."
+                            placeholder={"Smith, J. 2020. The history of science. London: Penguin.\nBloggs, Joe (2019) 'Why I love science', Science Monthly, 14(2), pp.1-10."}
                             spellCheck="false"
                             value={inputText}
                             onChange={(e) => setInputText(e.target.value)}
@@ -55,7 +99,7 @@ export default function FormatterView() {
                             {loading ? (
                                 <><Loader2 size={18} className="animate-spin" /> Formatting...</>
                             ) : (
-                                <><Sparkles size={18} /> Format to Harvard Style</>
+                                <><Sparkles size={18} /> Format to {currentStyle.label} Style</>
                             )}
                         </button>
                     </div>
@@ -104,7 +148,7 @@ export default function FormatterView() {
                                 <div key={i} className="glass-card p-4 border-l-4 border-l-white/15 group relative overflow-hidden">
                                     <div className="flex justify-between items-start mb-3">
                                         <span className="badge badge-green">{r.type || 'Processed'}</span>
-                                        <button onClick={() => copy(r.formatted || r.original, i)} className="p-1.5 bg-white/3 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-all active:scale-90">
+                                        <button onClick={() => copyRich(r.formatted || r.original, i)} className="p-1.5 bg-white/3 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-all active:scale-90">
                                             {copiedIndex === i ? <Check size={14} className="text-white" /> : <Copy size={14} />}
                                         </button>
                                     </div>
@@ -117,8 +161,8 @@ export default function FormatterView() {
                                                 <p className="text-xs text-neutral-500 font-mono bg-white/3 p-2.5 rounded-lg border border-white/5 line-clamp-2">{r.original}</p>
                                             </div>
                                             <div>
-                                                <div className="text-[9px] font-bold uppercase tracking-widest text-neutral-500 mb-1">Harvard Style</div>
-                                                <p className="text-sm text-white bg-white/[0.04] p-3 rounded-lg border border-white/8 leading-relaxed font-medium">{r.formatted}</p>
+                                                <div className="text-[9px] font-bold uppercase tracking-widest text-neutral-500 mb-1">{currentStyle.label} Style</div>
+                                                <div className="text-sm text-white bg-white/[0.04] p-3 rounded-lg border border-white/8 leading-relaxed font-medium" dangerouslySetInnerHTML={{ __html: sanitizeHtml(r.formatted) }} />
                                             </div>
                                         </>
                                     )}

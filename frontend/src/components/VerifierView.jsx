@@ -89,11 +89,21 @@ export default function VerifierView() {
     const totalSteps = 7;
 
     const [copiedIdx, setCopiedIdx] = useState(null);
-    const copyToClipboard = (text, idx) => {
-        navigator.clipboard.writeText(text).then(() => {
-            setCopiedIdx(idx);
-            setTimeout(() => setCopiedIdx(null), 2000);
-        });
+    const sanitizeHtml = (html) => html.replace(/<(?!\/?(?:i|em)\b)[^>]*>/gi, '');
+    const copyRichText = (plainText, htmlText, idx) => {
+        if (htmlText) {
+            const htmlBlob = new Blob([htmlText], { type: 'text/html' });
+            const textBlob = new Blob([plainText], { type: 'text/plain' });
+            navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })]).then(() => {
+                setCopiedIdx(idx);
+                setTimeout(() => setCopiedIdx(null), 2000);
+            });
+        } else {
+            navigator.clipboard.writeText(plainText).then(() => {
+                setCopiedIdx(idx);
+                setTimeout(() => setCopiedIdx(null), 2000);
+            });
+        }
     };
 
     return (
@@ -339,64 +349,120 @@ export default function VerifierView() {
                         </div>
                     )}
 
-                    {results.string_verification?.confirmed_matches?.length > 0 && (
-                        <div className="glass-card overflow-hidden">
-                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <CheckCircle2 size={16} className="text-emerald-400" />
-                                    <h3 className="text-sm font-bold text-emerald-200">Confirmed Matches ({results.string_verification.confirmed_matches.length})</h3>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        const allVerbatim = results.string_verification.confirmed_matches
-                                            .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref)
-                                            .join('\n\n');
-                                        copyToClipboard(allVerbatim, 'all');
-                                    }}
-                                    className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                    {copiedIdx === 'all' ? <ClipboardCheck size={13} /> : <Copy size={13} />}
-                                    {copiedIdx === 'all' ? 'Copied All!' : 'Copy All'}
-                                </button>
-                            </div>
-                            <div className="p-4 max-h-[400px] overflow-y-auto space-y-2">
-                                {results.string_verification.confirmed_matches.map((m, i) => {
-                                    const verbatimData = results.verbatim_references?.[m.matched_ref];
-                                    const verbatimText = verbatimData?.verbatim || m.matched_ref;
-                                    const confidence = verbatimData?.confidence || 0;
-                                    const conflict = verbatimData?.conflict;
-                                    return (
-                                        <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${conflict ? 'border-l-amber-500/50' : 'border-l-white/15'}`}>
-                                            <div className="flex items-start gap-3 mb-2">
-                                                <div className="flex-1">
-                                                    <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">{m.citation}</div>
-                                                    <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1 flex items-center gap-2">
-                                                        Source Reference
-                                                        {confidence >= 0.8 && <span className="text-emerald-500">(✓ exact match)</span>}
-                                                        {confidence > 0 && confidence < 0.8 && <span className="text-amber-500">(~{Math.round(confidence * 100)}% match)</span>}
-                                                    </div>
-                                                    <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
-                                                    {conflict && (
-                                                        <div className="mt-2 flex items-center gap-2 text-[10px] text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20">
-                                                            <AlertCircle size={12} className="shrink-0" />
-                                                            <span>{conflict}</span>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                <button
-                                                    onClick={() => copyToClipboard(verbatimText, i)}
-                                                    className="shrink-0 p-2 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-colors"
-                                                    title="Copy verbatim reference"
-                                                >
-                                                    {copiedIdx === i ? <ClipboardCheck size={16} className="text-emerald-400" /> : <Copy size={16} />}
-                                                </button>
+                    {results.string_verification?.confirmed_matches?.length > 0 && (() => {
+                        const allMatches = results.string_verification.confirmed_matches;
+                        const goodMatches = allMatches.filter(m => {
+                            const conf = results.verbatim_references?.[m.matched_ref]?.confidence || 0;
+                            return conf >= 0.75;
+                        });
+                        const problemMatches = allMatches.filter(m => {
+                            const conf = results.verbatim_references?.[m.matched_ref]?.confidence || 0;
+                            return conf < 0.75;
+                        });
+
+                        const renderMatch = (m, i, isProblem) => {
+                            const verbatimData = results.verbatim_references?.[m.matched_ref];
+                            const verbatimText = verbatimData?.verbatim || m.matched_ref;
+                            const verbatimHtml = verbatimData?.verbatim_html ? sanitizeHtml(verbatimData.verbatim_html) : null;
+                            const confidence = verbatimData?.confidence || 0;
+                            const conflict = verbatimData?.conflict;
+                            const borderClass = isProblem ? 'border-l-amber-500/50' : conflict ? 'border-l-amber-500/50' : 'border-l-white/15';
+                            return (
+                                <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${borderClass}`}>
+                                    <div className="flex items-start gap-3 mb-2">
+                                        <div className="flex-1">
+                                            <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">{m.citation}</div>
+                                            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1 flex items-center gap-2">
+                                                Source Reference
+                                                {confidence >= 0.8 && <span className="text-emerald-500">(✓ exact match)</span>}
+                                                {confidence > 0 && confidence < 0.8 && <span className="text-amber-500">(~{Math.round(confidence * 100)}% match)</span>}
                                             </div>
+                                            {verbatimHtml ? (
+                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5" dangerouslySetInnerHTML={{ __html: verbatimHtml }} />
+                                            ) : (
+                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
+                                            )}
+                                            {isProblem && (
+                                                <div className="mt-2 text-[10px] text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20 space-y-1">
+                                                    <div className="font-bold uppercase tracking-widest">⚠ Why this match is flagged:</div>
+                                                    {confidence < 0.6 && <div>• Very low similarity ({Math.round(confidence * 100)}%) — source text may contain merged references</div>}
+                                                    {confidence >= 0.6 && confidence < 0.75 && <div>• Moderate similarity ({Math.round(confidence * 100)}%) — possible formatting differences or partial extraction</div>}
+                                                    {verbatimText.length > 400 && <div>• Unusually long source text ({verbatimText.length} chars) — may contain multiple merged references</div>}
+                                                    {conflict && <div>• Conflict: {conflict}</div>}
+                                                </div>
+                                            )}
+                                            {!isProblem && conflict && (
+                                                <div className="mt-2 flex items-center gap-2 text-[10px] text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20">
+                                                    <AlertCircle size={12} className="shrink-0" />
+                                                    <span>{conflict}</span>
+                                                </div>
+                                            )}
                                         </div>
-                                    );
-                                })}
+                                        <button
+                                            onClick={() => copyRichText(verbatimText, verbatimHtml, `${isProblem ? 'p' : 'g'}-${i}`)}
+                                            className="shrink-0 p-2 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-colors"
+                                            title="Copy reference with formatting"
+                                        >
+                                            {copiedIdx === `${isProblem ? 'p' : 'g'}-${i}` ? <ClipboardCheck size={16} className="text-emerald-400" /> : <Copy size={16} />}
+                                        </button>
+                                    </div>
+                                </div>
+                            );
+                        };
+
+                        return (
+                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                {/* Left panel — Good Matches */}
+                                <div className="glass-card overflow-hidden">
+                                    <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <CheckCircle2 size={16} className="text-emerald-400" />
+                                            <h3 className="text-sm font-bold text-emerald-200">Confirmed Matches ({goodMatches.length})</h3>
+                                        </div>
+                                        <button
+                                            onClick={() => {
+                                                const allPlain = goodMatches
+                                                    .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref)
+                                                    .join('\n\n');
+                                                const allHtml = goodMatches
+                                                    .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim_html)
+                                                    .filter(Boolean)
+                                                    .map(h => sanitizeHtml(h));
+                                                copyRichText(allPlain, allHtml.length > 0 ? allHtml.join('<br><br>') : null, 'all-good');
+                                            }}
+                                            className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors"
+                                        >
+                                            {copiedIdx === 'all-good' ? <ClipboardCheck size={13} /> : <Copy size={13} />}
+                                            {copiedIdx === 'all-good' ? 'Copied!' : 'Copy All'}
+                                        </button>
+                                    </div>
+                                    <div className="p-4 max-h-[500px] overflow-y-auto space-y-2">
+                                        {goodMatches.length > 0 ? goodMatches.map((m, i) => renderMatch(m, i, false)) : (
+                                            <div className="text-xs text-neutral-500 text-center py-4">No high-confidence matches</div>
+                                        )}
+                                    </div>
+                                </div>
+
+                                {/* Right panel — Problematic Matches */}
+                                <div className="glass-card overflow-hidden border border-amber-500/15">
+                                    <div className="bg-amber-500/5 border-b border-amber-500/10 px-5 py-3 flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <AlertCircle size={16} className="text-amber-400" />
+                                            <h3 className="text-sm font-bold text-amber-200">Needs Review ({problemMatches.length})</h3>
+                                        </div>
+                                        {problemMatches.length > 0 && (
+                                            <span className="text-[9px] uppercase tracking-widest text-amber-400/60 bg-amber-500/10 px-2 py-0.5 rounded-full">Low Confidence</span>
+                                        )}
+                                    </div>
+                                    <div className="p-4 max-h-[500px] overflow-y-auto space-y-2">
+                                        {problemMatches.length > 0 ? problemMatches.map((m, i) => renderMatch(m, i, true)) : (
+                                            <div className="text-xs text-emerald-500 text-center py-4">✓ All matches are high confidence</div>
+                                        )}
+                                    </div>
+                                </div>
                             </div>
-                        </div>
-                    )}
+                        );
+                    })()}
                 </div>
             )}
         </div>
