@@ -1,0 +1,18 @@
+# LOCAL PROJECT RULES: WRITING TOOLS APP
+# Overrides global rules for this specific workspace.
+
+## 1. Python & Backend Environment
+* Always assume we are operating within the local virtual environment (`venv`). Do not suggest or attempt global pip installs.
+* When writing data-fetching or web scraping scripts, implement robust error handling, respect rate limits, and default to modular architectures.
+* Prioritize clear, structured logging over standard `print()` statements for easier debugging.
+
+## 2. Text Processing, Verification & Citations
+* When building tools to verify text or parse files (e.g., extracting sentences from PDFs), strictly prioritize verbatim accuracy. 
+* Do not hallucinate, summarize, or alter source text under any circumstances.
+* When handling formatting guides (like APA), strictly adhere to the programmatic rules defined in the system.
+* Treat string encoding issues (like UTF-8 character read errors) as critical bugs and resolve them using safe string decoding methods immediately.
+
+## 3. Frontend (React)
+* Default to functional components and React Hooks. 
+* Avoid class components entirely.
+* Keep UI component logic clean; offload heavy data transformations or or verification checks to separate utility files before passing data to the views.

@@ -3,6 +3,8 @@ import io
 import json
 import re
 import asyncio
+import time
+import random
 from fastapi import FastAPI, UploadFile, File, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
@@ -38,6 +40,42 @@ def get_client():
     if not API_KEY:
         raise HTTPException(status_code=500, detail="Google API Key not configured at GOOGLE_API_KEY in .env")
     return genai.Client(api_key=API_KEY)
+
+MAX_RETRIES = 5
+RETRY_BASE_DELAY = 2  # seconds
+
+async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-preview', progress_callback=None):
+    """
+    Make a Gemini API request with exponential backoff retry for transient errors.
+    Retries on 503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED, and connection errors.
+    """
+    last_error = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            response = await asyncio.to_thread(
+                client.models.generate_content,
+                model=model,
+                contents=prompt,
+            )
+            return response
+        except Exception as e:
+            error_str = str(e)
+            is_retryable = any(code in error_str for code in [
+                '503', 'UNAVAILABLE',
+                '429', 'RESOURCE_EXHAUSTED',
+                'SSL', 'ConnectionError', 'ConnectionReset',
+                'Timeout', 'timeout',
+                'ServiceUnavailable',
+            ])
+            if is_retryable and attempt < MAX_RETRIES:
+                delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                if progress_callback:
+                    await progress_callback(f'API temporarily unavailable (attempt {attempt}/{MAX_RETRIES}). Retrying in {delay:.0f}s...')
+                await asyncio.sleep(delay)
+                last_error = e
+            else:
+                raise
+    raise last_error
 
 def extract_pdf_text(file_bytes: bytes) -> str:
     text = ""
@@ -205,52 +243,156 @@ def apply_italic_formatting(ref_text: str) -> str:
     per academic conventions (Harvard, APA). Uses regex pattern matching.
     
     Rules:
-    - Journal/periodical names → italic
-    - Book/report/media titles → italic
-    - Article/chapter titles → NOT italic
+    - Journal/periodical names -> italic
+    - Book/report/media/proceedings titles -> italic
+    - Article/chapter titles -> NOT italic
+    
+    Detection priority (most specific first):
+    1.  Journal with volume(issue) or bare page range
+    1b. Non-standard "In Journal (Vol. X)" format (Google Scholar)
+    1c. Conference proceedings: "In Proceedings of..." 
+    1d. Newspaper/magazine with section page: "Newspaper, D4."
+    1e. Online periodical (no vol/pages, but URL after short source name)
+    1f. Advance online publication
+    2.  Edited chapter: "In Editor (Ed.), Book Title"
+    2b. Media with bracket type: "Title [Film]." or "Title [Video]."
+    2c. Dissertation/thesis: "Title [Doctoral dissertation, Univ]"
+    3.  Book / report / other (default: italicize title after year)
     """
     import html as html_mod
     ref = html_mod.escape(ref_text)
     
+    # Helper: find the period right after the year pattern ")."
+    def get_year_dot_pos():
+        m = re.search(r'\)\.\s', ref)
+        return m.start() + 1 if m else -1
+    
     # === 1. JOURNAL / PERIODICAL: detected by volume(issue) OR bare page range ===
     vol_issue = re.search(r',\s*\d{1,4}\s*\(\d{1,4}\)', ref)
-    page_range = re.search(r',\s*\d+\s*[-–]\s*\d+', ref)
+    page_range = re.search(r',\s*\d+\s*[-\u2013]\s*\d+', ref)
     periodical_marker = vol_issue or page_range
     if periodical_marker:
         before = ref[:periodical_marker.start()]
         last_dot = before.rfind('. ')
         if last_dot >= 0:
             journal_name = before[last_dot + 2:].rstrip(', ')
-            # Safety check: the ". " before the journal name must NOT be the one
-            # right after the year — otherwise this text is the title (book), not
-            # a journal name. This prevents false positives like book titles
-            # containing date ranges (e.g. "History of science, 1900-2000").
-            year_dot = re.search(r'\)\.\s', before)
-            year_dot_pos = year_dot.start() + 1 if year_dot else -1
+            year_dot_pos = get_year_dot_pos()
             if last_dot > year_dot_pos and len(journal_name) > 2 and not journal_name.startswith('http'):
                 pos = last_dot + 2
                 return ref[:pos] + '<i>' + journal_name + '</i>' + ref[pos + len(journal_name):]
-        return ref
+        pass  # Fall through to other checks (e.g. book with date range in title)
+    
+    # === 1b. NON-STANDARD JOURNAL FORMAT: "In JournalName (Vol. X, No. Y, p. Z)" ===
+    in_vol_match = re.search(r'\.\s+In\s+(.+?)\s*\(Vol\.\s*\d+', ref)
+    if in_vol_match:
+        journal_name = in_vol_match.group(1).rstrip(', ')
+        if len(journal_name) > 2:
+            start = in_vol_match.start(1)
+            end = start + len(in_vol_match.group(1))
+            return ref[:start] + '<i>' + journal_name + '</i>' + ref[end:]
+    
+    # === 1c. CONFERENCE PROCEEDINGS: "In Proceedings of..." ===
+    proc_match = re.search(r'\.\s+In\s+(Proceedings\s+of\s+.+?)(?:\s*\(pp?\.|\.|\s*,\s*\d)', ref)
+    if proc_match:
+        proc_title = proc_match.group(1).rstrip('. ,')
+        start = proc_match.start(1)
+        end = start + len(proc_match.group(1))
+        return ref[:start] + '<i>' + proc_title + '</i>' + ref[end:]
+    
+    # === 1d. NEWSPAPER/MAGAZINE with section-page: ". Source Name, D4." ===
+    section_page = re.search(r',\s*([A-Z]\d{1,3})\s*\.', ref)
+    if section_page:
+        before = ref[:section_page.start()]
+        last_dot = before.rfind('. ')
+        if last_dot >= 0:
+            source_name = before[last_dot + 2:].rstrip(', ')
+            year_dot_pos = get_year_dot_pos()
+            if last_dot > year_dot_pos and len(source_name) > 2 and not source_name.startswith('http'):
+                pos = last_dot + 2
+                return ref[:pos] + '<i>' + source_name + '</i>' + ref[pos + len(source_name):]
     
     # === 2. EDITED CHAPTER: contains "In ... (Ed.), " or "In ... (Eds.), " ===
     ed_match = re.search(r'\bIn\s+.*?\(Eds?\.\)[,.]?\s*', ref)
     if ed_match:
         title_start = ed_match.end()
         rest = ref[title_start:]
-        # Book title ends at next period, or "(pp." or bracket
-        title_end = re.search(r'(?:\.|\s\(pp?\.)', rest)
+        title_end = re.search(r'(?:\.|(?:\s\(pp?\.)|(?:\s\(\d))', rest)
         if title_end:
             title = rest[:title_end.start()]
             if len(title) > 2:
                 return ref[:title_start] + '<i>' + title + '</i>' + ref[title_start + len(title):]
         return ref
     
-    # === 3. BOOK / REPORT / MEDIA: italicize the title after the year ===
-    # Find year pattern: (2020) or (2020, May) or (2020, May 8) or (n.d.)
-    year = re.search(r'\((?:\d{4}[a-z]?(?:,\s+\w+(?:\s+\d{1,2})?(?:[–\-]\d{1,2})?)?|n\.d\.)\)\.?\s*', ref)
+    # === 2b. MEDIA with bracket type: "Title [Film]." or "Title [Video]." etc ===
+    # Find the title text immediately before a bracket type descriptor
+    media_bracket = re.search(
+        r'\[(Film|Video|Motion picture|TV series|TV series episode|'
+        r'Webinar|Audio podcast episode|Podcast episode|Song|Album|'
+        r'Radio broadcast|Infographic|PowerPoint slides?|Data set|Map|'
+        r'Unpublished manuscript|Software|App)\]',
+        ref, re.IGNORECASE
+    )
+    if media_bracket:
+        # Title is text between the last "). " (or second-last) and the bracket
+        bracket_pos = media_bracket.start()
+        before_bracket = ref[:bracket_pos].rstrip()
+        # Find where the title starts (after last "). " sequence)
+        title_start_match = re.search(r'\)\.\s+', before_bracket)
+        if title_start_match:
+            # Handle "(Director). (Year). Title" — find the LAST "). "
+            last_paren_dot = None
+            for m in re.finditer(r'\)\.\s+', before_bracket):
+                last_paren_dot = m
+            if last_paren_dot:
+                title = before_bracket[last_paren_dot.end():].strip()
+                if len(title) > 2:
+                    start = last_paren_dot.end()
+                    return ref[:start] + '<i>' + title + '</i>' + ref[start + len(title):]
+    
+    # === 2c. DISSERTATION / THESIS ===
+    diss_match = re.search(
+        r'\)\.\s+(.+?)(?:\s*\(Publication No\.|\s*\[(Doctoral|Master|PhD)\s+(dissertation|thesis))',
+        ref, re.IGNORECASE
+    )
+    if diss_match:
+        title = diss_match.group(1).rstrip('. ,')
+        if len(title) > 2:
+            start = diss_match.start(1)
+            end = start + len(diss_match.group(1))
+            return ref[:start] + '<i>' + title + '</i>' + ref[end:]
+    
+    # === 1f. ADVANCE ONLINE PUBLICATION (must be before 1e to take priority) ===
+    # Search specifically within after-year text for "Journal Name. Advance online publication"
+    year = re.search(r'\((?:\d{4}[a-z]?(?:,\s+\w+(?:\s+\d{1,2})?(?:[\u2013\-]\d{1,2})?)?|n\.d\.)\)\.?\s*', ref)
     if year:
         after_year = ref[year.end():]
-        # Split into sentence-like segments
+        aop_in_after = re.search(r'^.+?\.\s+(.+?)\.\s+Advance\s+online\s+publication', after_year)
+        if aop_in_after:
+            journal_name = aop_in_after.group(1).strip()
+            if len(journal_name) > 2:
+                start = year.end() + aop_in_after.start(1)
+                end = start + len(aop_in_after.group(1))
+                return ref[:start] + '<i>' + journal_name + '</i>' + ref[end:]
+    
+    # === 1e. ONLINE PERIODICAL (no vol/issue/pages, but URL after short source name) ===
+    year = re.search(r'\((?:\d{4}[a-z]?(?:,\s+\w+(?:\s+\d{1,2})?(?:[\u2013\-]\d{1,2})?)?|n\.d\.)\)\.?\s*', ref)
+    if year:
+        after_year = ref[year.end():]
+        online_match = re.search(
+            r'^(.+?)\.\s+([A-Z][^.]{2,80}?)\.\s+(https?://|Retrieved\s)',
+            after_year
+        )
+        if online_match:
+            source_name = online_match.group(2).strip()
+            source_words = source_name.split()
+            if 1 <= len(source_words) <= 6:
+                start = year.end() + online_match.start(2)
+                end = start + len(online_match.group(2))
+                return ref[:start] + '<i>' + source_name + '</i>' + ref[end:]
+    
+    # === 3. BOOK / REPORT / OTHER (default): italicize the title after the year ===
+    if year:
+        after_year = ref[year.end():]
         segments = re.split(r'(?<=\.)\s+(?=[A-Z])', after_year, maxsplit=3)
         
         if len(segments) >= 2:
@@ -457,6 +599,15 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
 
 # ─── PYTHON-GUIDED CITATION EXTRACTION ───
 
+# Reusable pattern components
+# Surname: handles Smith, Stokes-Parish, Dall'Ora, O'Brien, Khazaee-Pool, etc.
+_SNAME = r"[A-Z\u00C0-\u00D6][a-z\u00E0-\u00F6]+(?:['\u2019\-\u2013\u2014][A-Z\u00C0-\u00D6]?[a-z\u00E0-\u00F6]+)*"
+# Year or n.d. or "no date"
+_YEAR = r"(?:\d{4}[a-z]?|n\.d\.|no date)"
+# Multi-word corporate author: "NHS England", "Survey Coordination Centre", "Nursing and Midwifery Council"
+# Requires 2+ words, each starting with a letter, allowing "and"/"of"/"for" etc. between
+_CORP = r"(?:[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*\s+)+(?:(?:and|of|for|the)\s+)*[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*(?:\s+(?:(?:and|of|for|the)\s+)*[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*)*"
+
 # Phase 1: Detect multi-citation blocks (parens with semicolons + years)
 MULTI_CITATION_PATTERN = re.compile(
     r'\([^()]*\b\d{4}[a-z]?\b[^()]*;[^()]*\b\d{4}[a-z]?\b[^()]*\)'
@@ -465,57 +616,65 @@ MULTI_CITATION_PATTERN = re.compile(
 # Phase 2: Individual citation patterns (most specific first)
 CITATION_PATTERNS = [
     # ── Author-Date Parenthetical ──
-    # Org abbreviation: (WHO, 2020) or (CDC, 2020)
-    (re.compile(r'\(\s*[A-Z]{2,}[,\s]+\d{4}[a-z]?\s*\)'), 'ORG_ABBREV'),
+    # Org abbreviation: (WHO, 2020) or (CDC, 2020) or (WHO, n.d.)
+    (re.compile(rf'\(\s*[A-Z]{{2,}}[,\s]+{_YEAR}\s*\)'), 'ORG_ABBREV'),
 
     # With initials: (J. Smith, 2020)
-    (re.compile(r'\(\s*[A-Z]\.\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?\s*\)'), 'INITIALS'),
+    (re.compile(rf'\(\s*[A-Z]\.\s+{_SNAME}[,\s]+{_YEAR}\s*\)'), 'INITIALS'),
 
-    # Et al.: (Smith et al., 2020) or (Smith et al., 2020, p. 45)
-    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*[,\s]*\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\s*\)'), 'PAR_ETAL'),
+    # Et al.: (Stokes-Parish et al., 2020) or (Dall'Ora et al., 2019, p. 45)
+    (re.compile(rf'\(\s*{_SNAME}\s+et\s+al\.?\s*[,\s]*{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_ETAL'),
 
     # Two authors (and/&): (Smith and Jones, 2020) or (Smith & Jones, 2020)
-    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\s*\)'), 'PAR_TWO'),
+    (re.compile(rf'\(\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,\s]+{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_TWO'),
 
-    # No date: (Smith, n.d.)
-    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+n\.d\.\s*\)'), 'PAR_NO_DATE'),
+    # Secondary referencing: (Ecott, 2002, cited in Wilson, 2009) or (West et al., 2007, quoted in Birch, 2017, p. 17)
+    (re.compile(rf'\(\s*{_SNAME}(?:\s+et\s+al\.?)?\s*[,\s]*{_YEAR}[,\s]+(?:cited|quoted)\s+in\s+{_SNAME}(?:\s+et\s+al\.?)?\s*[,\s]*{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_SECONDARY'),
 
-    # Single author with optional page/colon-page: (Smith, 2020) or (Smith, 2020, p. 45) or (Smith, 2020:45)
-    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?(?:[,:]\s*(?:pp?\.\s*)?[\d\-–]+)?\s*\)'), 'PAR_SINGLE'),
+    # Multi-word corporate parenthetical: (NHS England, 2025) or (Survey Coordination Centre, 2025)
+    (re.compile(rf'\(\s*{_CORP}[,\s]+{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_CORP'),
+
+    # Single author with optional page: (Smith, 2020) or (Smith, 2020, p. 45) or (Smith, n.d.)
+    (re.compile(rf'\(\s*{_SNAME}[,\s]+{_YEAR}(?:[,:\s]+(?:pp?\.\s*)?[\d\-\u2013]+)?\s*\)'), 'PAR_SINGLE'),
 
     # ── Author-Date Narrative ──
-    # Et al. narrative: Smith et al. (2020)
-    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_ETAL'),
+    # Et al. narrative: Stokes-Parish et al. (2020)
+    (re.compile(rf'{_SNAME}\s+et\s+al\.?\s*\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_ETAL'),
 
     # Two authors narrative: Smith and Jones (2020)
-    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_TWO'),
+    (re.compile(rf'{_SNAME}\s+(?:and|&)\s+{_SNAME}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_TWO'),
 
-    # Single author narrative: Smith (2020) or Smith (2020, p. 45)
-    (re.compile(r'[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\(\d{4}[a-z]?(?:[,\s]+pp?\.\s*[\d\-–]+)?\)'), 'NAR_SINGLE'),
+    # Multi-word corporate narrative: NHS England (2025) or Nuffield Trust (2025)
+    (re.compile(rf'{_CORP}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_CORP'),
+
+    # Single author narrative: Smith (2020) or Smith (2020, p. 45) or Dall'Ora (n.d.)
+    (re.compile(rf'{_SNAME}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_SINGLE'),
 
     # ── Numbered Styles (Vancouver/IEEE) ──
     # Mixed/multiple numbers: [1, 3-5, 7]
-    (re.compile(r'\[\d+(?:\s*[,\-–]\s*\d+)+\]'), 'NUM_MIXED'),
+    (re.compile(r'\[\d+(?:\s*[,\-\u2013]\s*\d+)+\]'), 'NUM_MIXED'),
 
     # Single number: [1]
     (re.compile(r'\[\d+\]'), 'NUM_SINGLE'),
 
     # ── MLA Style (Author Page) ──
     # (Smith 45) or (Smith 45-67)
-    (re.compile(r'\(\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+\d+(?:\s*[\-–]\s*\d+)?\s*\)'), 'MLA_PAGE'),
+    (re.compile(rf'\(\s*{_SNAME}\s+\d+(?:\s*[\-\u2013]\s*\d+)?\s*\)'), 'MLA_PAGE'),
 ]
 
 # Patterns to match individual citations inside multi-citation blocks (after semicolon split)
 # These don't need parentheses — they match the inner text
 INNER_CITATION_PATTERNS = [
     # Org abbreviation: WHO, 2020
-    (re.compile(r'^\s*[A-Z]{2,}[,\s]+\d{4}[a-z]?\s*$'), 'ORG_ABBREV'),
-    # Et al.: Smith et al., 2020
-    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+et\s+al\.?\s*[,\s]*\d{4}[a-z]?'), 'PAR_ETAL'),
+    (re.compile(rf'^\s*[A-Z]{{2,}}[,\s]+{_YEAR}\s*$'), 'ORG_ABBREV'),
+    # Et al.: Stokes-Parish et al., 2020
+    (re.compile(rf'^\s*{_SNAME}\s+et\s+al\.?\s*[,\s]*{_YEAR}'), 'PAR_ETAL'),
     # Two authors: Smith and Jones, 2020 or Smith & Jones, 2020
-    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+\s+(?:and|&)\s+[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?'), 'PAR_TWO'),
+    (re.compile(rf'^\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,\s]+{_YEAR}'), 'PAR_TWO'),
+    # Multi-word corporate: NHS England, 2025
+    (re.compile(rf'^\s*{_CORP}[,\s]+{_YEAR}'), 'PAR_CORP'),
     # Single author: Smith, 2020
-    (re.compile(r'^\s*[A-ZÀ-Ö][a-zà-ö\'\-]+[,\s]+\d{4}[a-z]?'), 'PAR_SINGLE'),
+    (re.compile(rf'^\s*{_SNAME}[,\s]+{_YEAR}'), 'PAR_SINGLE'),
     # Just a year (same author continuation): 2020
     (re.compile(r'^\s*\d{4}[a-z]?\s*$'), 'YEAR_ONLY'),
 ]
@@ -549,6 +708,17 @@ def extract_citations_regex(body_text: str) -> list:
     Returns list of dicts: [{"text": "(Smith, 2020)", "type": "PAR_SINGLE"}, ...]
     """
     found_citations = []
+
+    # Normalize common Unicode variants from PDF/DOCX extraction
+    body_text = body_text.replace('\u00a0', ' ')     # non-breaking space -> space
+    body_text = body_text.replace('\u2018', "'")      # left single quote -> apostrophe
+    body_text = body_text.replace('\u2019', "'")      # right single quote -> apostrophe
+    body_text = body_text.replace('\u201c', '"')      # left double quote -> quote
+    body_text = body_text.replace('\u201d', '"')      # right double quote -> quote
+    body_text = body_text.replace('\u2013', '-')      # en-dash -> hyphen
+    body_text = body_text.replace('\u2014', '-')      # em-dash -> hyphen
+    body_text = body_text.replace('\ufb01', 'fi')     # fi ligature
+    body_text = body_text.replace('\ufb02', 'fl')     # fl ligature
     seen_texts = set()  # Deduplication
     
     # Track positions already matched to avoid double-matching
@@ -777,11 +947,33 @@ Output in strict JSON format only:
 
             yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
             
-            response = await asyncio.to_thread(
-                client.models.generate_content,
-                model='gemini-3-flash-preview',
-                contents=prompt,
-            )
+            async def retry_progress(msg):
+                yield_msg = f"data: {json.dumps({'stage': 'analyzing', 'message': msg})}\n\n"
+                # Can't yield from callback, so we just log
+            
+            last_retry_error = None
+            for attempt in range(1, MAX_RETRIES + 1):
+                try:
+                    response = await asyncio.to_thread(
+                        client.models.generate_content,
+                        model='gemini-3-flash-preview',
+                        contents=prompt,
+                    )
+                    break
+                except Exception as e:
+                    error_str = str(e)
+                    is_retryable = any(code in error_str for code in [
+                        '503', 'UNAVAILABLE', '429', 'RESOURCE_EXHAUSTED',
+                        'SSL', 'ConnectionError', 'ConnectionReset', 'Timeout', 'timeout',
+                        'ServiceUnavailable',
+                    ])
+                    if is_retryable and attempt < MAX_RETRIES:
+                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
+                        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'API temporarily unavailable (attempt {attempt}/{MAX_RETRIES}). Retrying in {delay:.0f}s...'})}\n\n"
+                        await asyncio.sleep(delay)
+                        last_retry_error = e
+                    else:
+                        raise
         except Exception as e:
             yield f"data: {json.dumps({'stage': 'error', 'message': f'Gemini API error: {str(e)}'})}\n\n"
             return
@@ -901,11 +1093,7 @@ async def format_references(req: FormatRequest):
         }}
         """
 
-        response = await asyncio.to_thread(
-            client.models.generate_content,
-            model='gemini-3-flash-preview',
-            contents=prompt,
-        )
+        response = await gemini_request_with_retry(client, prompt)
         
         try:
             output_text = response.text.strip()

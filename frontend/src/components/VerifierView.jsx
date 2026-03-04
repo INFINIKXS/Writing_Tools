@@ -450,9 +450,29 @@ export default function VerifierView() {
                                             <AlertCircle size={16} className="text-amber-400" />
                                             <h3 className="text-sm font-bold text-amber-200">Needs Review ({problemMatches.length})</h3>
                                         </div>
-                                        {problemMatches.length > 0 && (
-                                            <span className="text-[9px] uppercase tracking-widest text-amber-400/60 bg-amber-500/10 px-2 py-0.5 rounded-full">Low Confidence</span>
-                                        )}
+                                        <div className="flex items-center gap-2">
+                                            {problemMatches.length > 0 && (
+                                                <button
+                                                    onClick={() => {
+                                                        const allPlain = problemMatches
+                                                            .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref)
+                                                            .join('\n\n');
+                                                        const allHtml = problemMatches
+                                                            .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim_html)
+                                                            .filter(Boolean)
+                                                            .map(h => sanitizeHtml(h));
+                                                        copyRichText(allPlain, allHtml.length > 0 ? allHtml.join('<br><br>') : null, 'all-review');
+                                                    }}
+                                                    className="flex items-center gap-1.5 text-xs font-semibold text-amber-400/70 hover:text-amber-200 bg-amber-500/5 hover:bg-amber-500/15 border border-amber-500/15 px-3 py-1.5 rounded-lg transition-colors"
+                                                >
+                                                    {copiedIdx === 'all-review' ? <ClipboardCheck size={14} className="text-amber-300" /> : <Copy size={14} />}
+                                                    {copiedIdx === 'all-review' ? 'Copied!' : 'Copy All'}
+                                                </button>
+                                            )}
+                                            {problemMatches.length > 0 && (
+                                                <span className="text-[9px] uppercase tracking-widest text-amber-400/60 bg-amber-500/10 px-2 py-0.5 rounded-full">Low Confidence</span>
+                                            )}
+                                        </div>
                                     </div>
                                     <div className="p-4 max-h-[500px] overflow-y-auto space-y-2">
                                         {problemMatches.length > 0 ? problemMatches.map((m, i) => renderMatch(m, i, true)) : (
