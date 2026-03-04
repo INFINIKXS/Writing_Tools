@@ -7,3 +7,4 @@ python-docx
 fuzzywuzzy
 python-Levenshtein
 python-dotenv
+requests

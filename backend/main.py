@@ -15,6 +15,7 @@ from PyPDF2 import PdfReader
 from docx import Document
 import struct
 import olefile
+import requests
 from dotenv import load_dotenv
 
 from harvard_guide import HARVARD_GUIDE
@@ -1051,6 +1052,616 @@ Output in strict JSON format only:
 
     from starlette.responses import StreamingResponse
     return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+# ─── PDF REFERENCE GENERATOR ───
+
+def extract_pdf_metadata(file_bytes: bytes) -> dict:
+    """
+    Extract metadata from a PDF file using PDF properties + first-3-page text parsing.
+    Enrichment priority: CrossRef DOI > Python regex > Gemini AI fallback.
+    Returns a dict with: authors, title, year, source, doi, url, volume, issue, pages, publisher, type, field_sources.
+    """
+    metadata = {
+        "authors": None,
+        "title": None,
+        "year": None,
+        "source": None,
+        "doi": None,
+        "url": None,
+        "volume": None,
+        "issue": None,
+        "pages": None,
+        "publisher": None,
+        "type": "Other",
+    }
+    field_sources = {}  # Track where each field came from
+    
+    with io.BytesIO(file_bytes) as f:
+        reader = PdfReader(f)
+        
+        # ─── Step 1: PDF built-in metadata ───
+        pdf_meta = reader.metadata
+        if pdf_meta:
+            if pdf_meta.get('/Author') or pdf_meta.get('author'):
+                raw_author = pdf_meta.get('/Author') or pdf_meta.get('author') or ''
+                if raw_author and not any(skip in raw_author.lower() for skip in ['microsoft', 'adobe', 'scanner', 'latex', 'tex']):
+                    metadata["authors"] = raw_author
+                    field_sources["authors"] = "pdf_metadata"
+            
+            if pdf_meta.get('/Title') or pdf_meta.get('title'):
+                raw_title = pdf_meta.get('/Title') or pdf_meta.get('title') or ''
+                if raw_title and len(raw_title) > 3:
+                    metadata["title"] = raw_title
+                    field_sources["title"] = "pdf_metadata"
+            
+            if pdf_meta.get('/CreationDate') or pdf_meta.get('creation_date'):
+                raw_date = str(pdf_meta.get('/CreationDate') or pdf_meta.get('creation_date') or '')
+                year_match = re.search(r'(19|20)\d{2}', raw_date)
+                if year_match:
+                    metadata["year"] = year_match.group(0)
+                    field_sources["year"] = "pdf_metadata"
+        
+        # ─── Step 2: First 3 pages text parsing (handles cover pages) ───
+        pages_to_scan = min(3, len(reader.pages))
+        first_pages_text = ''
+        for i in range(pages_to_scan):
+            page_text = reader.pages[i].extract_text() or ''
+            first_pages_text += page_text + '\n'
+        
+        if first_pages_text.strip():
+            # DOI extraction — scan all 3 pages
+            doi_match = re.search(
+                r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,}/[a-zA-Z0-9.\-_/:()\[\]]+)',
+                first_pages_text, re.IGNORECASE
+            )
+            if doi_match:
+                doi = doi_match.group(1).rstrip('.,;)')
+                doi = re.sub(r'[A-Z]{2,}$', '', doi).rstrip('-')
+                metadata["doi"] = doi
+                field_sources["doi"] = "text_parsing"
+            
+            # Title: find best candidate across all 3 pages
+            if not metadata["title"]:
+                lines = [l.strip() for l in first_pages_text.split('\n') if l.strip()]
+                skip_patterns = re.compile(
+                    r'^('
+                    r'vol|volume|issue|page|doi|http|www|©|ISSN|ISBN|'
+                    r'RESEARCH|ARTICLE|REVIEW|Open Access|Creative Commons|'
+                    r'Correspondence|Author|Received|Accepted|Published|'
+                    r'Abstract|Background|Introduction|Methods|Results|'
+                    r'Keywords|Licensed|Check for|updates|Citation|'
+                    r'This article|The Author|Springer|Elsevier|Wiley|BMC|'
+                    r'\d+\s*$|et al\.'
+                    r')', re.IGNORECASE
+                )
+                best_title = None
+                best_score = 0
+                for line in lines:
+                    if len(line) < 15 or len(line) > 300:
+                        continue
+                    if skip_patterns.match(line):
+                        continue
+                    if re.match(r'^\d+\s*$', line):
+                        continue
+                    score = min(len(line), 150)
+                    if line[0].isupper() and ':' in line:
+                        score += 20
+                    if score > best_score:
+                        best_score = score
+                        best_title = line
+                if best_title:
+                    metadata["title"] = best_title
+                    field_sources["title"] = "text_parsing"
+            
+            # Year from text
+            if not metadata["year"]:
+                year_match = re.search(r'\b(19|20)\d{2}\b', first_pages_text)
+                if year_match:
+                    metadata["year"] = year_match.group(0)
+                    field_sources["year"] = "text_parsing"
+
+            # Volume/Issue/Pages
+            vol_match = re.search(r'(?:vol(?:ume)?\.?\s*|(?<=,\s))(\d+)\s*\((\d+)\)', first_pages_text, re.IGNORECASE)
+            if vol_match:
+                metadata["volume"] = vol_match.group(1)
+                metadata["issue"] = vol_match.group(2)
+                field_sources["volume"] = "text_parsing"
+                field_sources["issue"] = "text_parsing"
+            
+            pages_match = re.search(r'(?:pp?\.?\s*)(\d+)\s*[-–]\s*(\d+)', first_pages_text, re.IGNORECASE)
+            if pages_match:
+                metadata["pages"] = f"{pages_match.group(1)}-{pages_match.group(2)}"
+                field_sources["pages"] = "text_parsing"
+
+            # URL extraction (if no DOI)
+            if not metadata["doi"]:
+                url_match = re.search(r'(https?://\S+)', first_pages_text)
+                if url_match:
+                    metadata["url"] = url_match.group(1).rstrip('.,;)')
+                    field_sources["url"] = "text_parsing"
+
+    # ─── Step 3: CrossRef DOI lookup ───
+    if metadata["doi"]:
+        try:
+            crossref_url = f"https://api.crossref.org/works/{metadata['doi']}"
+            resp = requests.get(crossref_url, timeout=10, headers={
+                'User-Agent': 'WritingTools/1.0 (mailto:support@paradoxlabs.com)'
+            })
+            if resp.status_code == 200:
+                data = resp.json().get('message', {})
+                
+                authors = data.get('author', [])
+                if authors:
+                    author_parts = []
+                    for a in authors:
+                        family = a.get('family', '')
+                        given = a.get('given', '')
+                        if family and given:
+                            initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
+                            author_parts.append(f"{family}, {initials}")
+                        elif family:
+                            author_parts.append(family)
+                    if author_parts:
+                        metadata["authors"] = author_parts
+                        field_sources["authors"] = "crossref"
+                
+                titles = data.get('title', [])
+                if titles:
+                    metadata["title"] = titles[0]
+                    field_sources["title"] = "crossref"
+                
+                date_parts = data.get('published-print', data.get('published-online', data.get('created', {})))
+                if date_parts and 'date-parts' in date_parts:
+                    parts = date_parts['date-parts'][0]
+                    if parts:
+                        metadata["year"] = str(parts[0])
+                        field_sources["year"] = "crossref"
+                
+                container = data.get('container-title', [])
+                if container:
+                    metadata["source"] = container[0]
+                    field_sources["source"] = "crossref"
+                
+                if data.get('volume'):
+                    metadata["volume"] = data['volume']
+                    field_sources["volume"] = "crossref"
+                if data.get('issue'):
+                    metadata["issue"] = data['issue']
+                    field_sources["issue"] = "crossref"
+                if data.get('page'):
+                    metadata["pages"] = data['page']
+                    field_sources["pages"] = "crossref"
+                if data.get('publisher'):
+                    metadata["publisher"] = data['publisher']
+                    field_sources["publisher"] = "crossref"
+                
+                cr_type = data.get('type', '')
+                type_map = {
+                    'journal-article': 'Journal Article',
+                    'book': 'Book',
+                    'book-chapter': 'Book Chapter',
+                    'proceedings-article': 'Conference Paper',
+                    'report': 'Report',
+                    'dissertation': 'Dissertation',
+                }
+                metadata["type"] = type_map.get(cr_type, 'Other')
+                if cr_type in type_map:
+                    field_sources["type"] = "crossref"
+        except Exception:
+            pass  # CrossRef lookup failed, continue with what we have
+    
+    # ─── Step 4: Gemini AI — verify Python regex fills + fill missing fields ───
+    # Run AI when: (a) any critical field is missing, OR (b) any field came from regex (needs verification)
+    has_regex_fields = any(v == "text_parsing" for v in field_sources.values())
+    has_missing = not metadata["authors"] or not metadata["title"] or not metadata["year"]
+    
+    if (has_regex_fields or has_missing) and first_pages_text.strip():
+        # Build context of what Python already found (for verification)
+        python_found = {}
+        for key in ["authors", "title", "year", "source"]:
+            if metadata.get(key) and field_sources.get(key) == "text_parsing":
+                python_found[key] = metadata[key]
+        
+        verification_context = ""
+        if python_found:
+            verification_context = f"""
+Python regex has already extracted these fields (VERIFY them — confirm or correct):
+{json.dumps(python_found, indent=2, ensure_ascii=False)}
+"""
+        
+        try:
+            client = get_client()
+            prompt = f"""You are a metadata extraction tool. Extract ONLY what you can see in the document text below.
+DO NOT invent, guess, or hallucinate any information. If a field is not clearly visible, return null.
+{verification_context}
+Extract these fields from the document:
+- authors: List of author names in "Surname, Initials." format (e.g. ["Smith, J.", "Jones, A. B."])
+- title: The main title of the paper/document (not section headings, not journal name)
+- year: The publication year (not copyright year if different)
+- source: Journal name or publisher name if visible
+
+DOCUMENT TEXT (first 3 pages):
+{first_pages_text[:8000]}
+
+Respond in strict JSON only:
+{{
+    "authors": ["author1", "author2"] or null,
+    "title": "title text" or null,
+    "year": "2025" or null,
+    "source": "journal or publisher name" or null
+}}"""
+            
+            response = client.models.generate_content(
+                model='gemini-3-flash-preview',
+                contents=prompt,
+            )
+            
+            ai_text = response.text.strip()
+            if ai_text.startswith('```json'):
+                ai_text = ai_text[7:].strip()
+            if ai_text.endswith('```'):
+                ai_text = ai_text[:-3].strip()
+            ai_data = json.loads(ai_text)
+            
+            # For each field: fill if missing, or override if Python regex was the source (AI verification)
+            for key in ["authors", "title", "year", "source"]:
+                ai_value = ai_data.get(key)
+                if not ai_value:
+                    continue
+                
+                current_source = field_sources.get(key)
+                
+                if not metadata.get(key):
+                    # Field was missing — AI fills it
+                    metadata[key] = str(ai_value) if key == "year" else ai_value
+                    field_sources[key] = "ai"
+                elif current_source == "text_parsing":
+                    # Field was from Python regex — AI verifies/corrects it
+                    if key == "year":
+                        ai_value = str(ai_value)
+                    metadata[key] = ai_value
+                    field_sources[key] = "ai_verified"
+                # If source is "crossref" — never override, CrossRef is authoritative
+                
+        except Exception:
+            pass  # AI step failed, continue with what we have
+    
+    # ─── Step 5: Classify type if not set by CrossRef ───
+    if metadata["type"] == "Other":
+        metadata["type"] = classify_source_type(metadata)
+    
+    # Ensure authors is a list
+    if isinstance(metadata["authors"], str):
+        raw = metadata["authors"]
+        if '; ' in raw:
+            metadata["authors"] = [a.strip() for a in raw.split(';') if a.strip()]
+        elif ' and ' in raw or ' & ' in raw:
+            raw = raw.replace(' & ', ' and ')
+            metadata["authors"] = [a.strip() for a in raw.split(' and ') if a.strip()]
+        else:
+            metadata["authors"] = [raw.strip()]
+    
+    metadata["field_sources"] = field_sources
+    return metadata
+
+
+def classify_source_type(metadata: dict) -> str:
+    """Classify the source type based on available metadata fields."""
+    if metadata.get("volume") or metadata.get("issue"):
+        return "Journal Article"
+    if metadata.get("doi"):
+        return "Journal Article"  # Most DOI content is journal articles
+    if metadata.get("publisher"):
+        return "Book"
+    if metadata.get("url"):
+        return "Web Page"
+    return "Other"
+
+
+def format_reference(metadata: dict, style: str = "harvard") -> dict:
+    """
+    Format metadata into a reference string in the specified style.
+    Returns { "formatted": "plain text", "formatted_html": "with <i> tags", "metadata": {...} }
+    """
+    authors = metadata.get("authors") or ["Unknown Author"]
+    title = metadata.get("title") or "Untitled"
+    year = metadata.get("year") or "n.d."
+    source = metadata.get("source")
+    volume = metadata.get("volume")
+    issue = metadata.get("issue")
+    pages = metadata.get("pages")
+    doi = metadata.get("doi")
+    url = metadata.get("url")
+    publisher = metadata.get("publisher")
+    ref_type = metadata.get("type", "Other")
+    
+    # Format author string
+    if len(authors) == 1:
+        author_str = authors[0]
+    elif len(authors) == 2:
+        if style == "apa":
+            author_str = f"{authors[0]} & {authors[1]}"
+        else:
+            author_str = f"{authors[0]} and {authors[1]}"
+    elif len(authors) <= 20:
+        if style == "apa":
+            author_str = ', '.join(authors[:-1]) + f', & {authors[-1]}'
+        else:
+            author_str = ', '.join(authors[:-1]) + f' and {authors[-1]}'
+    else:
+        # APA 7th: list first 19, then ... then last
+        author_str = ', '.join(authors[:19]) + f', ... {authors[-1]}'
+    
+    # Build location string (vol, issue, pages, DOI/URL)
+    location_parts = []
+    if volume and issue:
+        location_parts.append(f"{volume}({issue})")
+    elif volume:
+        location_parts.append(volume)
+    if pages:
+        if location_parts:
+            location_parts.append(f", {pages}")
+        else:
+            location_parts.append(f"pp. {pages}")
+    location = ''.join(location_parts)
+    
+    doi_str = f"https://doi.org/{doi}" if doi else (url or "")
+    
+    # ─── Harvard Style ───
+    if style == "harvard":
+        if ref_type == "Journal Article" and source:
+            # Author (Year) 'Title', Source, vol(issue), pages. DOI
+            ref_plain = f"{author_str} ({year}) '{title}', {source}"
+            ref_html = f"{author_str} ({year}) '{title}', <i>{source}</i>"
+            if location:
+                ref_plain += f", {location}"
+                ref_html += f", {location}"
+            ref_plain += "."
+            ref_html += "."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        elif ref_type in ("Book", "Book Chapter"):
+            # Author (Year) Title. Publisher.
+            ref_plain = f"{author_str} ({year}) {title}."
+            ref_html = f"{author_str} ({year}) <i>{title}</i>."
+            if publisher:
+                ref_plain += f" {publisher}."
+                ref_html += f" {publisher}."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        elif ref_type == "Web Page":
+            # Author (Year) Title. Available at: URL (Accessed: date).
+            ref_plain = f"{author_str} ({year}) {title}."
+            ref_html = f"{author_str} ({year}) <i>{title}</i>."
+            if doi_str:
+                ref_plain += f" Available at: {doi_str}"
+                ref_html += f" Available at: {doi_str}"
+        else:
+            ref_plain = f"{author_str} ({year}) {title}."
+            ref_html = f"{author_str} ({year}) <i>{title}</i>."
+            if source:
+                ref_plain += f" {source}."
+                ref_html += f" <i>{source}</i>."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+    
+    # ─── APA 7th Style ───
+    else:
+        if ref_type == "Journal Article" and source:
+            # Author, A. A. (Year). Title of article. Title of Periodical, vol(issue), pages. DOI
+            ref_plain = f"{author_str} ({year}). {title}. {source}"
+            ref_html = f"{author_str} ({year}). {title}. <i>{source}</i>"
+            if location:
+                if volume:
+                    # Italicize volume number with source
+                    ref_plain += f", {location}"
+                    # In APA, the volume is also italicized (as part of journal name style)
+                    if volume and issue:
+                        ref_html += f", <i>{volume}</i>({issue})"
+                        if pages:
+                            ref_html += f", {pages}"
+                            ref_plain_end = ""
+                    elif volume:
+                        ref_html += f", <i>{volume}</i>"
+                        if pages:
+                            ref_html += f", {pages}"
+                    else:
+                        ref_html += f", {location}"
+                else:
+                    ref_plain += f", {location}"
+                    ref_html += f", {location}"
+            ref_plain += "."
+            ref_html += "."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        elif ref_type in ("Book", "Book Chapter"):
+            # Author, A. A. (Year). Title of work. Publisher. DOI
+            ref_plain = f"{author_str} ({year}). {title}."
+            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            if publisher:
+                ref_plain += f" {publisher}."
+                ref_html += f" {publisher}."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        elif ref_type == "Web Page":
+            # Author, A. A. (Year). Title of work. Site Name. URL
+            ref_plain = f"{author_str} ({year}). {title}."
+            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            if source:
+                ref_plain += f" {source}."
+                ref_html += f" {source}."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        else:
+            ref_plain = f"{author_str} ({year}). {title}."
+            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            if source:
+                ref_plain += f" {source}."
+                ref_html += f" <i>{source}</i>."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+    
+    return {
+        "formatted": ref_plain,
+        "formatted_html": ref_html,
+        "type": ref_type,
+        "metadata": metadata,
+    }
+
+
+@app.post("/api/extract-reference")
+async def extract_reference(file: UploadFile = File(...), style: str = "harvard"):
+    """Upload a PDF/DOCX and get a formatted reference for citing it."""
+    if not file.filename.lower().endswith(('.pdf', '.docx', '.doc')):
+        raise HTTPException(status_code=400, detail="Unsupported file type. Please upload PDF, DOCX, or DOC.")
+    
+    file_bytes = await file.read()
+    magic = file_bytes[:8]
+    
+    try:
+        if magic[:4] == b'%PDF':
+            metadata = extract_pdf_metadata(file_bytes)
+        elif magic[:2] == b'PK':
+            # DOCX: extract metadata from document properties
+            metadata = extract_docx_metadata(file_bytes)
+        elif magic[:4] == b'\xd0\xcf\x11\xe0':
+            # DOC: limited metadata, extract text
+            text = extract_doc_text(file_bytes)
+            metadata = {
+                "authors": None, "title": file.filename.rsplit('.', 1)[0],
+                "year": None, "source": None, "doi": None, "url": None,
+                "volume": None, "issue": None, "pages": None,
+                "publisher": None, "type": "Other",
+            }
+            # Try to find DOI in text
+            if text:
+                doi_match = re.search(r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(\S+?)(?:\s|$)', text, re.IGNORECASE)
+                if doi_match:
+                    metadata["doi"] = doi_match.group(1).rstrip('.,;)')
+                year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
+                if year_match:
+                    metadata["year"] = year_match.group(0)
+        else:
+            raise HTTPException(status_code=400, detail="Unrecognized file format.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
+    
+    result = format_reference(metadata, style)
+    return result
+
+
+def extract_docx_metadata(file_bytes: bytes) -> dict:
+    """Extract metadata from a DOCX file using document core properties."""
+    metadata = {
+        "authors": None, "title": None, "year": None,
+        "source": None, "doi": None, "url": None,
+        "volume": None, "issue": None, "pages": None,
+        "publisher": None, "type": "Other",
+    }
+    
+    with io.BytesIO(file_bytes) as f:
+        doc = Document(f)
+        
+        # Core properties
+        props = doc.core_properties
+        if props.author:
+            metadata["authors"] = props.author
+        if props.title and len(props.title) > 3:
+            metadata["title"] = props.title
+        if props.created:
+            metadata["year"] = str(props.created.year)
+        
+        # Parse text for DOI / URL
+        full_text = '\n'.join(p.text for p in doc.paragraphs[:5])
+        doi_match = re.search(r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(\S+?)(?:\s|$)', full_text, re.IGNORECASE)
+        if doi_match:
+            metadata["doi"] = doi_match.group(1).rstrip('.,;)')
+        
+        if not metadata["title"]:
+            lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]
+            if lines:
+                metadata["title"] = lines[0]
+    
+    # CrossRef DOI lookup
+    if metadata["doi"]:
+        try:
+            crossref_url = f"https://api.crossref.org/works/{metadata['doi']}"
+            resp = requests.get(crossref_url, timeout=10, headers={
+                'User-Agent': 'WritingTools/1.0 (mailto:support@paradoxlabs.com)'
+            })
+            if resp.status_code == 200:
+                data = resp.json().get('message', {})
+                
+                authors = data.get('author', [])
+                if authors:
+                    author_parts = []
+                    for a in authors:
+                        family = a.get('family', '')
+                        given = a.get('given', '')
+                        if family and given:
+                            initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
+                            author_parts.append(f"{family}, {initials}")
+                        elif family:
+                            author_parts.append(family)
+                    if author_parts:
+                        metadata["authors"] = author_parts
+                
+                titles = data.get('title', [])
+                if titles:
+                    metadata["title"] = titles[0]
+                
+                date_parts = data.get('published-print', data.get('published-online', data.get('created', {})))
+                if date_parts and 'date-parts' in date_parts:
+                    parts = date_parts['date-parts'][0]
+                    if parts:
+                        metadata["year"] = str(parts[0])
+                
+                container = data.get('container-title', [])
+                if container:
+                    metadata["source"] = container[0]
+                
+                if data.get('volume'): metadata["volume"] = data['volume']
+                if data.get('issue'): metadata["issue"] = data['issue']
+                if data.get('page'): metadata["pages"] = data['page']
+                if data.get('publisher'): metadata["publisher"] = data['publisher']
+                
+                cr_type = data.get('type', '')
+                type_map = {
+                    'journal-article': 'Journal Article',
+                    'book': 'Book',
+                    'book-chapter': 'Book Chapter',
+                    'proceedings-article': 'Conference Paper',
+                    'report': 'Report',
+                }
+                metadata["type"] = type_map.get(cr_type, 'Other')
+        except Exception:
+            pass
+    
+    if metadata["type"] == "Other":
+        metadata["type"] = classify_source_type(metadata)
+    
+    if isinstance(metadata["authors"], str):
+        raw = metadata["authors"]
+        if '; ' in raw:
+            metadata["authors"] = [a.strip() for a in raw.split(';') if a.strip()]
+        elif ' and ' in raw or ' & ' in raw:
+            raw = raw.replace(' & ', ' and ')
+            metadata["authors"] = [a.strip() for a in raw.split(' and ') if a.strip()]
+        else:
+            metadata["authors"] = [raw.strip()]
+    
+    return metadata
+
 
 class FormatRequest(BaseModel):
     references: List[str]
