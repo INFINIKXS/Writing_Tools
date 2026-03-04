@@ -5,6 +5,7 @@ import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
 import FormatterView from './components/FormatterView';
 import LibraryView from './components/LibraryView';
+import SettingsView from './components/SettingsView';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -24,6 +25,7 @@ function App() {
       case 'verifier': return <VerifierView />;
       case 'formatter': return <FormatterView />;
       case 'library': return <LibraryView />;
+      case 'settings': return <SettingsView />;
       default: return (
         <div className="flex items-center justify-center h-full">
           <div className="glass-card-static p-12 text-center">

@@ -18,6 +18,14 @@ import olefile
 import requests
 from dotenv import load_dotenv
 
+# API Key Manager (multi-key rotation)
+try:
+    from api_key_manager import get_api_key_manager
+    KEY_MANAGER_AVAILABLE = True
+except ImportError:
+    KEY_MANAGER_AVAILABLE = False
+    print("   [i] api_key_manager not found, using single API key mode")
+
 from harvard_guide import HARVARD_GUIDE
 from apa_guide import APA_GUIDE
 
@@ -37,10 +45,17 @@ app.add_middleware(
 
 API_KEY = os.environ.get("GOOGLE_API_KEY")
 
-def get_client():
-    if not API_KEY:
-        raise HTTPException(status_code=500, detail="Google API Key not configured at GOOGLE_API_KEY in .env")
-    return genai.Client(api_key=API_KEY)
+def get_client(model: str = None):
+    """Get a genai Client using the key manager (with rotation) or fallback to single env var."""
+    api_key = None
+    if KEY_MANAGER_AVAILABLE:
+        manager = get_api_key_manager()
+        api_key = manager.get_current_key(model=model)
+    if not api_key:
+        api_key = API_KEY
+    if not api_key:
+        raise HTTPException(status_code=500, detail="No API key available. Set GOOGLE_API_KEYS or GOOGLE_API_KEY in .env")
+    return genai.Client(api_key=api_key)
 
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2  # seconds
@@ -49,7 +64,13 @@ async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-previe
     """
     Make a Gemini API request with exponential backoff retry for transient errors.
     Retries on 503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED, and connection errors.
+    On 429 errors, rotates to next API key via the key manager.
     """
+    # Track usage before the call
+    key_manager = get_api_key_manager() if KEY_MANAGER_AVAILABLE else None
+    if key_manager:
+        key_manager.increment_usage(model=model)
+
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
@@ -61,13 +82,24 @@ async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-previe
             return response
         except Exception as e:
             error_str = str(e)
-            is_retryable = any(code in error_str for code in [
+            is_rate_limited = any(code in error_str for code in ['429', 'RESOURCE_EXHAUSTED'])
+            is_retryable = is_rate_limited or any(code in error_str for code in [
                 '503', 'UNAVAILABLE',
-                '429', 'RESOURCE_EXHAUSTED',
                 'SSL', 'ConnectionError', 'ConnectionReset',
                 'Timeout', 'timeout',
                 'ServiceUnavailable',
             ])
+
+            # On rate limit, rotate to next key
+            if is_rate_limited and key_manager:
+                has_backup = key_manager.mark_exhausted(model=model)
+                if has_backup:
+                    new_key = key_manager.get_current_key(model=model)
+                    if new_key:
+                        client = genai.Client(api_key=new_key)
+                        if progress_callback:
+                            await progress_callback(f'Rate limited — rotated to next API key (attempt {attempt}/{MAX_RETRIES})')
+
             if is_retryable and attempt < MAX_RETRIES:
                 delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
                 if progress_callback:
@@ -1767,6 +1799,21 @@ async def format_references(req: FormatRequest):
             formatted_refs.append({"original": ref, "error": str(e), "raw_response": response.text})
 
     return {"formatted_references": formatted_refs}
+
+@app.get("/api-key-usage")
+async def api_key_usage():
+    """Return current API key usage statistics for frontend dashboard."""
+    if KEY_MANAGER_AVAILABLE:
+        manager = get_api_key_manager()
+        return manager.get_status()
+    return {
+        "service": "Google",
+        "total_keys": 1 if API_KEY else 0,
+        "available_keys": 1 if API_KEY else 0,
+        "exhausted_keys": 0,
+        "keys": [],
+        "message": "Key manager not available, using single key mode"
+    }
 
 @app.get("/api/health")
 async def health_check():
