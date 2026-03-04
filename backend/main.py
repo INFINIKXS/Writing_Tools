@@ -5,7 +5,7 @@ import re
 import asyncio
 import time
 import random
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
@@ -1085,7 +1085,7 @@ def extract_pdf_metadata(file_bytes: bytes) -> dict:
         if pdf_meta:
             if pdf_meta.get('/Author') or pdf_meta.get('author'):
                 raw_author = pdf_meta.get('/Author') or pdf_meta.get('author') or ''
-                if raw_author and not any(skip in raw_author.lower() for skip in ['microsoft', 'adobe', 'scanner', 'latex', 'tex']):
+                if raw_author and not any(skip in raw_author.lower() for skip in ['microsoft', 'adobe', 'scanner', 'latex', 'tex', 'kman', 'acrobat', 'pdf']):
                     metadata["authors"] = raw_author
                     field_sources["authors"] = "pdf_metadata"
             
@@ -1101,6 +1101,15 @@ def extract_pdf_metadata(file_bytes: bytes) -> dict:
                 if year_match:
                     metadata["year"] = year_match.group(0)
                     field_sources["year"] = "pdf_metadata"
+        
+        # Sanity check: if author == title (case insensitive), both are likely bogus
+        if (metadata.get("authors") and metadata.get("title") and 
+            str(metadata["authors"]).strip().lower() == str(metadata["title"]).strip().lower() and
+            field_sources.get("authors") == "pdf_metadata"):
+            metadata["authors"] = None
+            metadata["title"] = None
+            field_sources.pop("authors", None)
+            field_sources.pop("title", None)
         
         # ─── Step 2: First 3 pages text parsing (handles cover pages) ───
         pages_to_scan = min(3, len(reader.pages))
@@ -1122,37 +1131,58 @@ def extract_pdf_metadata(file_bytes: bytes) -> dict:
                 field_sources["doi"] = "text_parsing"
             
             # Title: find best candidate across all 3 pages
-            if not metadata["title"]:
-                lines = [l.strip() for l in first_pages_text.split('\n') if l.strip()]
-                skip_patterns = re.compile(
-                    r'^('
-                    r'vol|volume|issue|page|doi|http|www|©|ISSN|ISBN|'
-                    r'RESEARCH|ARTICLE|REVIEW|Open Access|Creative Commons|'
-                    r'Correspondence|Author|Received|Accepted|Published|'
-                    r'Abstract|Background|Introduction|Methods|Results|'
-                    r'Keywords|Licensed|Check for|updates|Citation|'
-                    r'This article|The Author|Springer|Elsevier|Wiley|BMC|'
-                    r'\d+\s*$|et al\.'
-                    r')', re.IGNORECASE
-                )
-                best_title = None
-                best_score = 0
-                for line in lines:
-                    if len(line) < 15 or len(line) > 300:
-                        continue
-                    if skip_patterns.match(line):
-                        continue
-                    if re.match(r'^\d+\s*$', line):
-                        continue
-                    score = min(len(line), 150)
-                    if line[0].isupper() and ':' in line:
-                        score += 20
-                    if score > best_score:
-                        best_score = score
-                        best_title = line
-                if best_title:
+            # Always try, even if PDF metadata set one (it may be inaccurate like software names)
+            lines = [l.strip() for l in first_pages_text.split('\n') if l.strip()]
+            skip_patterns = re.compile(
+                r'^('
+                r'vol|volume|issue|page|doi|http|www|©|ISSN|ISBN|'
+                r'RESEARCH|ARTICLE|REVIEW|Open Access|Creative Commons|'
+                r'Correspondence|Author|Received|Accepted|Published|'
+                r'Abstract|Background|Introduction|Methods|Results|'
+                r'Keywords|Licensed|Check for|updates|Citation|'
+                r'This article|The Author|Springer|Elsevier|Wiley|BMC|'
+                r'\d+\s*$|et al\.'
+                r')', re.IGNORECASE
+            )
+            best_title = None
+            best_score = 0
+            for line in lines:
+                if len(line) < 15 or len(line) > 300:
+                    continue
+                if skip_patterns.match(line):
+                    continue
+                if re.match(r'^\d+\s*$', line):
+                    continue
+                # Skip header/footer lines containing citation patterns
+                # e.g. "Olsen & Bastholm Foresight and Public Health 2:1 (2025) 1-10"
+                if re.search(r'\d+:\d+\s*\(\d{4}\)', line):   # volume:issue (year)
+                    continue
+                if re.search(r'\(\d{4}\)\s*\d+[-–]\d+', line):  # (year) page-range
+                    continue
+                if re.search(r'\b\d+[-–]\d+\s*$', line):  # ends with page range
+                    continue
+                score = min(len(line), 150)
+                if line[0].isupper() and ':' in line:
+                    score += 20
+                if score > best_score:
+                    best_score = score
+                    best_title = line
+            if best_title:
+                if not metadata["title"]:
+                    # No title at all — use what we found
                     metadata["title"] = best_title
                     field_sources["title"] = "text_parsing"
+                elif field_sources.get("title") == "pdf_metadata":
+                    # Only override PDF metadata if it looks suspicious
+                    current = str(metadata["title"]).strip()
+                    is_suspicious = (
+                        len(current) < 10 or              # Too short to be a real title
+                        ' ' not in current or              # Single word (likely software name)
+                        current.isupper() and len(current) < 20  # All-caps short string
+                    )
+                    if is_suspicious:
+                        metadata["title"] = best_title
+                        field_sources["title"] = "text_parsing"
             
             # Year from text
             if not metadata["year"]:
@@ -1251,16 +1281,16 @@ def extract_pdf_metadata(file_bytes: bytes) -> dict:
         except Exception:
             pass  # CrossRef lookup failed, continue with what we have
     
-    # ─── Step 4: Gemini AI — verify Python regex fills + fill missing fields ───
-    # Run AI when: (a) any critical field is missing, OR (b) any field came from regex (needs verification)
-    has_regex_fields = any(v == "text_parsing" for v in field_sources.values())
+    # ─── Step 4: Gemini AI — verify non-CrossRef fills + fill missing fields ───
+    # Run AI when: (a) any critical field is missing, OR (b) any field came from regex/pdf_metadata (needs verification)
+    has_unverified_fields = any(v in ("text_parsing", "pdf_metadata") for v in field_sources.values())
     has_missing = not metadata["authors"] or not metadata["title"] or not metadata["year"]
     
-    if (has_regex_fields or has_missing) and first_pages_text.strip():
+    if (has_unverified_fields or has_missing) and first_pages_text.strip():
         # Build context of what Python already found (for verification)
         python_found = {}
         for key in ["authors", "title", "year", "source"]:
-            if metadata.get(key) and field_sources.get(key) == "text_parsing":
+            if metadata.get(key) and field_sources.get(key) in ("text_parsing", "pdf_metadata"):
                 python_found[key] = metadata[key]
         
         verification_context = ""
@@ -1303,8 +1333,9 @@ Respond in strict JSON only:
             if ai_text.endswith('```'):
                 ai_text = ai_text[:-3].strip()
             ai_data = json.loads(ai_text)
+            print(f"[AI Verification] AI returned: {ai_data}")
             
-            # For each field: fill if missing, or override if Python regex was the source (AI verification)
+            # For each field: fill if missing, or override if from unreliable source (AI verification)
             for key in ["authors", "title", "year", "source"]:
                 ai_value = ai_data.get(key)
                 if not ai_value:
@@ -1316,16 +1347,17 @@ Respond in strict JSON only:
                     # Field was missing — AI fills it
                     metadata[key] = str(ai_value) if key == "year" else ai_value
                     field_sources[key] = "ai"
-                elif current_source == "text_parsing":
-                    # Field was from Python regex — AI verifies/corrects it
+                elif current_source in ("text_parsing", "pdf_metadata"):
+                    # Field was from unreliable source — AI verifies/corrects it
                     if key == "year":
                         ai_value = str(ai_value)
                     metadata[key] = ai_value
                     field_sources[key] = "ai_verified"
                 # If source is "crossref" — never override, CrossRef is authoritative
                 
-        except Exception:
-            pass  # AI step failed, continue with what we have
+        except Exception as e:
+            print(f"[AI Verification] FAILED: {type(e).__name__}: {e}")
+            metadata["ai_warning"] = f"AI verification failed: {type(e).__name__}. Metadata may be inaccurate."
     
     # ─── Step 5: Classify type if not set by CrossRef ───
     if metadata["type"] == "Other":
@@ -1408,12 +1440,18 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     
     doi_str = f"https://doi.org/{doi}" if doi else (url or "")
     
+    # For APA: prevent double period (e.g. "Smith, J.. (2025)" → "Smith, J. (2025)")
+    if style != "harvard" and author_str.endswith('.'):
+        apa_author_str = author_str  # Already has period, don't add another
+    elif style != "harvard":
+        apa_author_str = author_str + '.'
+    
     # ─── Harvard Style ───
     if style == "harvard":
         if ref_type == "Journal Article" and source:
-            # Author (Year) 'Title', Source, vol(issue), pages. DOI
-            ref_plain = f"{author_str} ({year}) '{title}', {source}"
-            ref_html = f"{author_str} ({year}) '{title}', <i>{source}</i>"
+            # Author (Year) 'Title'. Source, vol(issue), pages. DOI
+            ref_plain = f"{author_str} ({year}) '{title}'. {source}"
+            ref_html = f"{author_str} ({year}) '{title}'. <i>{source}</i>"
             if location:
                 ref_plain += f", {location}"
                 ref_html += f", {location}"
@@ -1453,8 +1491,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     else:
         if ref_type == "Journal Article" and source:
             # Author, A. A. (Year). Title of article. Title of Periodical, vol(issue), pages. DOI
-            ref_plain = f"{author_str} ({year}). {title}. {source}"
-            ref_html = f"{author_str} ({year}). {title}. <i>{source}</i>"
+            ref_plain = f"{apa_author_str} ({year}). {title}. {source}"
+            ref_html = f"{apa_author_str} ({year}). {title}. <i>{source}</i>"
             if location:
                 if volume:
                     # Italicize volume number with source
@@ -1481,8 +1519,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_html += f" {doi_str}"
         elif ref_type in ("Book", "Book Chapter"):
             # Author, A. A. (Year). Title of work. Publisher. DOI
-            ref_plain = f"{author_str} ({year}). {title}."
-            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            ref_plain = f"{apa_author_str} ({year}). {title}."
+            ref_html = f"{apa_author_str} ({year}). <i>{title}</i>."
             if publisher:
                 ref_plain += f" {publisher}."
                 ref_html += f" {publisher}."
@@ -1491,8 +1529,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_html += f" {doi_str}"
         elif ref_type == "Web Page":
             # Author, A. A. (Year). Title of work. Site Name. URL
-            ref_plain = f"{author_str} ({year}). {title}."
-            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            ref_plain = f"{apa_author_str} ({year}). {title}."
+            ref_html = f"{apa_author_str} ({year}). <i>{title}</i>."
             if source:
                 ref_plain += f" {source}."
                 ref_html += f" {source}."
@@ -1500,8 +1538,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {doi_str}"
                 ref_html += f" {doi_str}"
         else:
-            ref_plain = f"{author_str} ({year}). {title}."
-            ref_html = f"{author_str} ({year}). <i>{title}</i>."
+            ref_plain = f"{apa_author_str} ({year}). {title}."
+            ref_html = f"{apa_author_str} ({year}). <i>{title}</i>."
             if source:
                 ref_plain += f" {source}."
                 ref_html += f" <i>{source}</i>."
@@ -1556,6 +1594,17 @@ async def extract_reference(file: UploadFile = File(...), style: str = "harvard"
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
     
+    result = format_reference(metadata, style)
+    return result
+
+
+@app.post("/api/reformat-reference")
+async def reformat_reference(request: Request, style: str = "harvard"):
+    """Reformat an already-extracted reference with a different style. No re-extraction needed."""
+    body = await request.json()
+    metadata = body.get("metadata")
+    if not metadata:
+        raise HTTPException(status_code=400, detail="Missing metadata in request body.")
     result = format_reference(metadata, style)
     return result
 
