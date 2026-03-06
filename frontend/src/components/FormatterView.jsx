@@ -4,6 +4,7 @@ import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2, ChevronDown } fr
 const STYLES = [
     { id: 'harvard', label: 'Harvard', desc: 'Cite Them Right (10th ed.)' },
     { id: 'apa', label: 'APA 7th', desc: 'Publication Manual (7th ed.)' },
+    { id: 'vancouver', label: 'Vancouver', desc: 'ICMJE / Citing Medicine' },
 ];
 
 export default function FormatterView() {
@@ -54,7 +55,7 @@ export default function FormatterView() {
     };
 
     return (
-        <div className="animate-fade-in-up h-full flex flex-col">
+        <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col overflow-hidden">
             <header className="mb-6">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Reference Formatter</h1>
                 <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect {currentStyle.label} style using AI.</p>

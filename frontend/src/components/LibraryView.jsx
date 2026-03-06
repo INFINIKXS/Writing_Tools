@@ -4,6 +4,7 @@ import { Upload, Copy, Check, BookOpen, ChevronDown, FileText, Loader2, AlertCir
 const STYLES = [
     { id: 'harvard', label: 'Harvard', desc: 'Cite Them Right (10th ed.)' },
     { id: 'apa', label: 'APA 7th', desc: 'Publication Manual (7th ed.)' },
+    { id: 'vancouver', label: 'Vancouver', desc: 'ICMJE / Citing Medicine' },
 ];
 
 function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, toggleMeta }) {
@@ -204,7 +205,7 @@ export default function LibraryView() {
     const cardProps = { copiedId, copyRich, removeResult, expandedMeta, toggleMeta };
 
     return (
-        <div className="animate-fade-in-up h-full flex flex-col w-full overflow-hidden">
+        <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
             <header className="mb-6">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Reference Generator</h1>
                 <p className="text-sm text-neutral-500">Upload PDFs and get properly formatted references for your bibliography.</p>
@@ -299,9 +300,9 @@ export default function LibraryView() {
                 </div>
 
                 {/* Results Panel — expands to fill remaining width */}
-                <div className="flex-1 flex flex-col min-h-0 min-w-0 overflow-hidden">
+                <div className="flex-1 flex flex-col min-w-0 self-start max-h-[calc(100vh-12rem)]">
                     {/* Header */}
-                    <div className="glass-card px-5 py-3 flex items-center justify-between mb-3">
+                    <div className="glass-card px-5 py-3 flex items-center justify-between mb-3 shrink-0">
                         <div className="flex items-center gap-2">
                             <BookOpen size={16} className="text-neutral-400" />
                             <h3 className="text-sm font-bold text-white">Generated References</h3>

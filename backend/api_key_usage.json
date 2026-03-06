@@ -1,0 +1,193 @@
+{
+  "service": "Google",
+  "last_reset_date": "2026-03-05",
+  "current_index": 1,
+  "total_requests_today": 13,
+  "quota_limit_per_key": 20,
+  "keys": [
+    {
+      "index": 0,
+      "key_suffix": "...T1q8",
+      "model_usage": {},
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-03-05T02:14:38.392209",
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 1,
+      "key_suffix": "...fabg",
+      "model_usage": {
+        "gemini-3-flash-preview": 13
+      },
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 13,
+      "exhausted": false
+    },
+    {
+      "index": 2,
+      "key_suffix": "...bufo",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 3,
+      "key_suffix": "...KkwY",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 4,
+      "key_suffix": "...T1q8",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 5,
+      "key_suffix": "...E7QQ",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 6,
+      "key_suffix": "...4D7k",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 7,
+      "key_suffix": "...iHwU",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 8,
+      "key_suffix": "...sWzQ",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 9,
+      "key_suffix": "...B0R8",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 10,
+      "key_suffix": "...OTtw",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 11,
+      "key_suffix": "...ylDM",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 12,
+      "key_suffix": "...fUL8",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 13,
+      "key_suffix": "...sgm0",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 14,
+      "key_suffix": "...4qBU",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 15,
+      "key_suffix": "...uJQw",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 16,
+      "key_suffix": "...Y-T8",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 17,
+      "key_suffix": "...t0Vo",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 18,
+      "key_suffix": "...cGms",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    },
+    {
+      "index": 19,
+      "key_suffix": "...O6hc",
+      "model_usage": {},
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 0,
+      "exhausted": false
+    }
+  ]
+}

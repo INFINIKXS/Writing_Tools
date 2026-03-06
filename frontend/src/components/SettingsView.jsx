@@ -51,7 +51,7 @@ export default function SettingsView() {
     const quotaLimit = usage?.quota_limit_per_key || 20;
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-6 overflow-y-auto flex-1 min-h-0">
             {/* Header */}
             <div className="flex items-center justify-between">
                 <div>
@@ -191,10 +191,10 @@ export default function SettingsView() {
                                                         <div className="w-full h-1.5 rounded-full bg-white/5 overflow-hidden">
                                                             <div
                                                                 className={`h-full rounded-full transition-all duration-500 ${isModelExhausted
-                                                                        ? 'bg-red-500'
-                                                                        : percent >= 80
-                                                                            ? 'bg-gradient-to-r from-amber-500 to-red-500'
-                                                                            : 'bg-gradient-to-r from-emerald-500 to-emerald-400'
+                                                                    ? 'bg-red-500'
+                                                                    : percent >= 80
+                                                                        ? 'bg-gradient-to-r from-amber-500 to-red-500'
+                                                                        : 'bg-gradient-to-r from-emerald-500 to-emerald-400'
                                                                     }`}
                                                                 style={{ width: `${percent}%` }}
                                                             />

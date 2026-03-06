@@ -107,7 +107,7 @@ export default function VerifierView() {
     };
 
     return (
-        <div className="space-y-4 animate-fade-in-up">
+        <div className="space-y-4 animate-fade-in-up overflow-y-auto flex-1 min-h-0">
             <header className="mb-6">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Citation Verifier</h1>
                 <p className="text-sm text-neutral-500">Cross-check inline citations against your reference list using Gemini AI.</p>

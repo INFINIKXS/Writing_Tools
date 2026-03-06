@@ -28,6 +28,7 @@ except ImportError:
 
 from harvard_guide import HARVARD_GUIDE
 from apa_guide import APA_GUIDE
+from vancouver_guide import VANCOUVER_GUIDE
 
 # Load env variables
 load_dotenv()
@@ -66,10 +67,7 @@ async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-previe
     Retries on 503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED, and connection errors.
     On 429 errors, rotates to next API key via the key manager.
     """
-    # Track usage before the call
     key_manager = get_api_key_manager() if KEY_MANAGER_AVAILABLE else None
-    if key_manager:
-        key_manager.increment_usage(model=model)
 
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
@@ -79,6 +77,11 @@ async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-previe
                 model=model,
                 contents=prompt,
             )
+            # Track usage AFTER successful call (not before)
+            if key_manager:
+                new_key = key_manager.increment_usage(model=model)
+                if new_key:
+                    client = genai.Client(api_key=new_key)
             return response
         except Exception as e:
             error_str = str(e)
@@ -942,7 +945,9 @@ async def verify_citations(file: UploadFile = File(...)):
         await asyncio.sleep(0.1)
 
         try:
-            client = get_client()
+            model_name = 'gemini-3-flash-preview'
+            client = get_client(model=model_name)
+            key_manager = get_api_key_manager() if KEY_MANAGER_AVAILABLE else None
 
             citations_list = json.dumps([c["text"] for c in python_citations], indent=2)
 
@@ -980,26 +985,36 @@ Output in strict JSON format only:
 
             yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
             
-            async def retry_progress(msg):
-                yield_msg = f"data: {json.dumps({'stage': 'analyzing', 'message': msg})}\n\n"
-                # Can't yield from callback, so we just log
-            
             last_retry_error = None
             for attempt in range(1, MAX_RETRIES + 1):
                 try:
                     response = await asyncio.to_thread(
                         client.models.generate_content,
-                        model='gemini-3-flash-preview',
+                        model=model_name,
                         contents=prompt,
                     )
+                    # Track usage after successful call
+                    if key_manager:
+                        key_manager.increment_usage(model=model_name)
                     break
                 except Exception as e:
                     error_str = str(e)
-                    is_retryable = any(code in error_str for code in [
-                        '503', 'UNAVAILABLE', '429', 'RESOURCE_EXHAUSTED',
+                    is_rate_limited = any(code in error_str for code in ['429', 'RESOURCE_EXHAUSTED'])
+                    is_retryable = is_rate_limited or any(code in error_str for code in [
+                        '503', 'UNAVAILABLE',
                         'SSL', 'ConnectionError', 'ConnectionReset', 'Timeout', 'timeout',
                         'ServiceUnavailable',
                     ])
+
+                    # On rate limit, rotate to next key
+                    if is_rate_limited and key_manager:
+                        has_backup = key_manager.mark_exhausted(model=model_name)
+                        if has_backup:
+                            new_key = key_manager.get_current_key(model=model_name)
+                            if new_key:
+                                client = genai.Client(api_key=new_key)
+                                yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'Rate limited — rotated to next API key (attempt {attempt}/{MAX_RETRIES})'})}\n\n"
+
                     if is_retryable and attempt < MAX_RETRIES:
                         delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
                         yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'API temporarily unavailable (attempt {attempt}/{MAX_RETRIES}). Retrying in {delay:.0f}s...'})}\n\n"
@@ -1088,7 +1103,7 @@ Output in strict JSON format only:
 
 # ─── PDF REFERENCE GENERATOR ───
 
-def extract_pdf_metadata(file_bytes: bytes) -> dict:
+async def extract_pdf_metadata(file_bytes: bytes) -> dict:
     """
     Extract metadata from a PDF file using PDF properties + first-3-page text parsing.
     Enrichment priority: CrossRef DOI > Python regex > Gemini AI fallback.
@@ -1333,7 +1348,8 @@ Python regex has already extracted these fields (VERIFY them — confirm or corr
 """
         
         try:
-            client = get_client()
+            model_name = 'gemini-3-flash-preview'
+            client = get_client(model=model_name)
             prompt = f"""You are a metadata extraction tool. Extract ONLY what you can see in the document text below.
 DO NOT invent, guess, or hallucinate any information. If a field is not clearly visible, return null.
 {verification_context}
@@ -1354,10 +1370,7 @@ Respond in strict JSON only:
     "source": "journal or publisher name" or null
 }}"""
             
-            response = client.models.generate_content(
-                model='gemini-3-flash-preview',
-                contents=prompt,
-            )
+            response = await gemini_request_with_retry(client, prompt, model=model_name)
             
             ai_text = response.text.strip()
             if ai_text.startswith('```json'):
@@ -1456,6 +1469,24 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     else:
         # APA 7th: list first 19, then ... then last
         author_str = ', '.join(authors[:19]) + f', ... {authors[-1]}'
+
+    # ─── Vancouver author formatting ───
+    if style == "vancouver":
+        # Vancouver: Surname Initials (no periods), comma-separated, max 6 then et al.
+        van_authors = []
+        for a in authors:
+            # If already in "Surname AB" format, keep as-is
+            parts = a.strip().split(',')
+            if len(parts) >= 2:
+                surname = parts[0].strip()
+                initials = parts[1].strip().replace('.', '').replace(' ', '')
+                van_authors.append(f"{surname} {initials}")
+            else:
+                van_authors.append(a.strip())
+        if len(van_authors) > 6:
+            author_str = ', '.join(van_authors[:6]) + ', et al.'
+        else:
+            author_str = ', '.join(van_authors) + '.'
     
     # Build location string (vol, issue, pages, DOI/URL)
     location_parts = []
@@ -1520,7 +1551,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_html += f" {doi_str}"
     
     # ─── APA 7th Style ───
-    else:
+    elif style == "apa":
         if ref_type == "Journal Article" and source:
             # Author, A. A. (Year). Title of article. Title of Periodical, vol(issue), pages. DOI
             ref_plain = f"{apa_author_str} ({year}). {title}. {source}"
@@ -1579,6 +1610,94 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {doi_str}"
                 ref_html += f" {doi_str}"
     
+    # ─── Vancouver Style ───
+    elif style == "vancouver":
+        if ref_type == "Journal Article" and source:
+            # Author(s). Title. Abbreviated Journal. Year;Vol(Issue):Pages. doi: number
+            ref_plain = f"{author_str} {title}. {source}."
+            ref_html = f"{author_str} {title}. <i>{source}</i>."
+            date_str = year
+            if location:
+                ref_plain += f" {date_str};{location}."
+                ref_html += f" {date_str};{location}."
+            else:
+                ref_plain += f" {date_str}."
+                ref_html += f" {date_str}."
+            if doi:
+                ref_plain += f" doi: {doi}"
+                ref_html += f" doi: {doi}"
+            elif url:
+                ref_plain += f" Available from: {url}"
+                ref_html += f" Available from: {url}"
+        elif ref_type == "Book Chapter":
+            # Chapter Author. Chapter title. In: Editor(s), editors. Book title. Place: Publisher; Year. p. Pages.
+            ref_plain = f"{author_str} {title}."
+            ref_html = f"{author_str} {title}."
+            if publisher:
+                ref_plain += f" {publisher};"
+                ref_html += f" {publisher};"
+            ref_plain += f" {year}."
+            ref_html += f" {year}."
+            if pages:
+                ref_plain += f" p. {pages}."
+                ref_html += f" p. {pages}."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+        elif ref_type == "Book":
+            # Author(s). Title. Edition. Place: Publisher; Year. Pages p.
+            ref_plain = f"{author_str} {title}."
+            ref_html = f"{author_str} {title}."
+            if publisher:
+                ref_plain += f" {publisher};"
+                ref_html += f" {publisher};"
+            ref_plain += f" {year}."
+            ref_html += f" {year}."
+            if doi_str:
+                ref_plain += f" Available from: {doi_str}"
+                ref_html += f" Available from: {doi_str}"
+        elif ref_type == "Web Page":
+            ref_plain = f"{author_str} {title} [Internet]."
+            ref_html = f"{author_str} {title} [Internet]."
+            if publisher:
+                ref_plain += f" {publisher};"
+                ref_html += f" {publisher};"
+            ref_plain += f" {year}."
+            ref_html += f" {year}."
+            if doi_str:
+                ref_plain += f" Available from: {doi_str}"
+                ref_html += f" Available from: {doi_str}"
+        elif ref_type in ("Dissertation", "Thesis"):
+            ref_plain = f"{author_str} {title} [dissertation]."
+            ref_html = f"{author_str} {title} [dissertation]."
+            if publisher:
+                ref_plain += f" {publisher};"
+                ref_html += f" {publisher};"
+            ref_plain += f" {year}."
+            ref_html += f" {year}."
+        else:
+            ref_plain = f"{author_str} {title}."
+            ref_html = f"{author_str} {title}."
+            if source:
+                ref_plain += f" {source}."
+                ref_html += f" <i>{source}</i>."
+            ref_plain += f" {year}."
+            ref_html += f" {year}."
+            if doi_str:
+                ref_plain += f" {doi_str}"
+                ref_html += f" {doi_str}"
+    
+    # ─── Fallback (unknown style, default to plain) ───
+    else:
+        ref_plain = f"{author_str} ({year}) {title}."
+        ref_html = f"{author_str} ({year}) <i>{title}</i>."
+        if source:
+            ref_plain += f" {source}."
+            ref_html += f" <i>{source}</i>."
+        if doi_str:
+            ref_plain += f" {doi_str}"
+            ref_html += f" {doi_str}"
+    
     return {
         "formatted": ref_plain,
         "formatted_html": ref_html,
@@ -1598,7 +1717,7 @@ async def extract_reference(file: UploadFile = File(...), style: str = "harvard"
     
     try:
         if magic[:4] == b'%PDF':
-            metadata = extract_pdf_metadata(file_bytes)
+            metadata = await extract_pdf_metadata(file_bytes)
         elif magic[:2] == b'PK':
             # DOCX: extract metadata from document properties
             metadata = extract_docx_metadata(file_bytes)
@@ -1750,12 +1869,15 @@ class FormatRequest(BaseModel):
 
 @app.post("/api/format")
 async def format_references(req: FormatRequest):
-    client = get_client()
+    client = get_client(model='gemini-3-flash-preview')
     
     # Select guide based on style
     if req.style == "apa":
         guide = APA_GUIDE
         style_name = "APA 7th Edition"
+    elif req.style == "vancouver":
+        guide = VANCOUVER_GUIDE
+        style_name = "Vancouver"
     else:
         guide = HARVARD_GUIDE
         style_name = "Harvard"

@@ -25,7 +25,7 @@ export default function DashboardView({ onNavigate }) {
     ];
 
     return (
-        <div className="space-y-3">
+        <div className="space-y-3 overflow-y-auto flex-1 min-h-0">
             {/* ─── Bento Grid ─── */}
             <div className="grid grid-cols-12 gap-3 auto-rows-auto">
 

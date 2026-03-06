@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useMemo } from 'react';
 import { LayoutDashboard, CheckCircle, FileText, BookOpen, Users, Settings, Search } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
@@ -19,27 +19,19 @@ const NAV_ITEMS = [
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
 
-  const renderView = () => {
-    switch (activeTab) {
-      case 'dashboard': return <DashboardView onNavigate={setActiveTab} />;
-      case 'verifier': return <VerifierView />;
-      case 'formatter': return <FormatterView />;
-      case 'library': return <LibraryView />;
-      case 'settings': return <SettingsView />;
-      default: return (
-        <div className="flex items-center justify-center h-full">
-          <div className="glass-card-static p-12 text-center">
-            <div className="text-6xl mb-4 opacity-30">🚧</div>
-            <h2 className="text-2xl font-bold text-white mb-2">Coming Soon</h2>
-            <p className="text-neutral-500">This feature is under development.</p>
-          </div>
-        </div>
-      );
-    }
-  };
+  // All views that should stay mounted (state persists, processes run in background)
+  const PERSISTENT_VIEWS = useMemo(() => [
+    { id: 'dashboard', component: <DashboardView onNavigate={setActiveTab} /> },
+    { id: 'verifier', component: <VerifierView /> },
+    { id: 'formatter', component: <FormatterView /> },
+    { id: 'library', component: <LibraryView /> },
+    { id: 'settings', component: <SettingsView /> },
+  ], []);
+
+  const isKnownView = PERSISTENT_VIEWS.some(v => v.id === activeTab);
 
   return (
-    <div className="flex min-h-screen">
+    <div className="flex h-screen">
 
       {/* ─── Icon Sidebar ─── */}
       <aside className="hidden md:flex flex-col items-center w-[88px] py-6 px-2 m-3 mr-0 glass-card-static shrink-0">
@@ -66,7 +58,7 @@ function App() {
       </aside>
 
       {/* ─── Main Area ─── */}
-      <div className="flex-1 flex flex-col min-h-screen overflow-hidden">
+      <div className="flex-1 flex flex-col h-screen overflow-hidden">
 
         {/* ─── Top Bar ─── */}
         <header className="flex items-center justify-between px-6 py-4 m-3 mb-0 ml-3 glass-card-static shrink-0">
@@ -114,10 +106,30 @@ function App() {
         </div>
 
         {/* ─── Content ─── */}
-        <main className="flex-1 overflow-y-auto p-3 pt-3">
-          <div className="animate-fade-in-up">
-            {renderView()}
-          </div>
+        <main className="flex-1 overflow-hidden p-3 pt-3 flex flex-col min-h-0">
+          {/* Persistent views — always mounted, hidden when inactive */}
+          {PERSISTENT_VIEWS.map(({ id, component }) => (
+            <div
+              key={id}
+              className={activeTab === id ? 'animate-fade-in-up flex-1 min-h-0 flex flex-col overflow-hidden' : ''}
+              style={activeTab !== id ? { display: 'none' } : undefined}
+            >
+              {component}
+            </div>
+          ))}
+
+          {/* Fallback for unknown tabs (e.g. "collab") */}
+          {!isKnownView && (
+            <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col overflow-hidden">
+              <div className="flex items-center justify-center h-full">
+                <div className="glass-card-static p-12 text-center">
+                  <div className="text-6xl mb-4 opacity-30">🚧</div>
+                  <h2 className="text-2xl font-bold text-white mb-2">Coming Soon</h2>
+                  <p className="text-neutral-500">This feature is under development.</p>
+                </div>
+              </div>
+            </div>
+          )}
         </main>
       </div>
     </div>
