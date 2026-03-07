@@ -17,6 +17,7 @@ import struct
 import olefile
 import requests
 from dotenv import load_dotenv
+import difflib
 
 # API Key Manager (multi-key rotation)
 try:
@@ -1103,6 +1104,91 @@ Output in strict JSON format only:
 
 # ─── PDF REFERENCE GENERATOR ───
 
+def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expected_title: str = None) -> bool:
+    """Attempt to fill metadata via CrossRef API. Returns True if successful.
+    If expected_title is provided, rejects the lookup if the CrossRef title doesn't match."""
+    try:
+        crossref_url = f"https://api.crossref.org/works/{doi}"
+        resp = requests.get(crossref_url, timeout=10, headers={
+            'User-Agent': 'WritingTools/1.0 (mailto:support@paradoxlabs.com)'
+        })
+        if resp.status_code == 200:
+            data = resp.json().get('message', {})
+            
+            if expected_title:
+                titles = data.get('title', [])
+                crossref_title = titles[0] if titles else ""
+                if crossref_title:
+                    t1 = "".join(c for c in expected_title.lower() if c.isalnum() or c.isspace()).strip()
+                    t2 = "".join(c for c in crossref_title.lower() if c.isalnum() or c.isspace()).strip()
+                    ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
+                    if ratio < 0.6:
+                        print(f"[CrossRef] Title mismatch for {doi}. Expected: '{expected_title}'. Got: '{crossref_title}' (Ratio: {ratio:.2f})")
+                        return False
+            
+            authors = data.get('author', [])
+            if authors:
+                author_parts = []
+                for a in authors:
+                    family = a.get('family', '')
+                    given = a.get('given', '')
+                    if family and given:
+                        initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
+                        author_parts.append(f"{family}, {initials}")
+                    elif family:
+                        author_parts.append(family)
+                if author_parts:
+                    metadata["authors"] = author_parts
+                    field_sources["authors"] = "crossref"
+            
+            titles = data.get('title', [])
+            if titles:
+                metadata["title"] = titles[0]
+                field_sources["title"] = "crossref"
+            
+            date_parts = data.get('published-print', data.get('published-online', data.get('created', {})))
+            if date_parts and 'date-parts' in date_parts:
+                parts = date_parts['date-parts'][0]
+                if parts:
+                    metadata["year"] = str(parts[0])
+                    field_sources["year"] = "crossref"
+            
+            container = data.get('container-title', [])
+            if container:
+                metadata["source"] = container[0]
+                field_sources["source"] = "crossref"
+            
+            if data.get('volume'):
+                metadata["volume"] = str(data['volume'])
+                field_sources["volume"] = "crossref"
+            if data.get('issue'):
+                metadata["issue"] = str(data['issue'])
+                field_sources["issue"] = "crossref"
+            if data.get('page'):
+                metadata["pages"] = str(data['page'])
+                field_sources["pages"] = "crossref"
+            if data.get('publisher'):
+                metadata["publisher"] = data['publisher']
+                field_sources["publisher"] = "crossref"
+            
+            cr_type = data.get('type', '')
+            type_map = {
+                'journal-article': 'Journal Article',
+                'book': 'Book',
+                'book-chapter': 'Book Chapter',
+                'proceedings-article': 'Conference Paper',
+                'report': 'Report',
+                'dissertation': 'Dissertation',
+            }
+            metadata["type"] = type_map.get(cr_type, 'Other')
+            if cr_type in type_map:
+                field_sources["type"] = "crossref"
+                
+            return True
+    except Exception as e:
+        print(f"[CrossRef] Lookup failed for {doi}: {e}")
+    return False
+
 async def extract_pdf_metadata(file_bytes: bytes) -> dict:
     """
     Extract metadata from a PDF file using PDF properties + first-3-page text parsing.
@@ -1172,8 +1258,11 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
                 first_pages_text, re.IGNORECASE
             )
             if doi_match:
-                doi = doi_match.group(1).rstrip('.,;)')
-                doi = re.sub(r'[A-Z]{2,}$', '', doi).rstrip('-')
+                doi = doi_match.group(1)
+                # Strip trailing punctuation
+                doi = re.sub(r'[\].;,()]+$', '', doi)
+                # Strip trailing common words accidentally appended
+                doi = re.sub(r'(?i)(Research|Article|Review|Copyright|Downloaded)\b.*$', '', doi)
                 metadata["doi"] = doi
                 field_sources["doi"] = "text_parsing"
             
@@ -1259,84 +1348,22 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
                     field_sources["url"] = "text_parsing"
 
     # ─── Step 3: CrossRef DOI lookup ───
+    crossref_success = False
     if metadata["doi"]:
-        try:
-            crossref_url = f"https://api.crossref.org/works/{metadata['doi']}"
-            resp = requests.get(crossref_url, timeout=10, headers={
-                'User-Agent': 'WritingTools/1.0 (mailto:support@paradoxlabs.com)'
-            })
-            if resp.status_code == 200:
-                data = resp.json().get('message', {})
-                
-                authors = data.get('author', [])
-                if authors:
-                    author_parts = []
-                    for a in authors:
-                        family = a.get('family', '')
-                        given = a.get('given', '')
-                        if family and given:
-                            initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
-                            author_parts.append(f"{family}, {initials}")
-                        elif family:
-                            author_parts.append(family)
-                    if author_parts:
-                        metadata["authors"] = author_parts
-                        field_sources["authors"] = "crossref"
-                
-                titles = data.get('title', [])
-                if titles:
-                    metadata["title"] = titles[0]
-                    field_sources["title"] = "crossref"
-                
-                date_parts = data.get('published-print', data.get('published-online', data.get('created', {})))
-                if date_parts and 'date-parts' in date_parts:
-                    parts = date_parts['date-parts'][0]
-                    if parts:
-                        metadata["year"] = str(parts[0])
-                        field_sources["year"] = "crossref"
-                
-                container = data.get('container-title', [])
-                if container:
-                    metadata["source"] = container[0]
-                    field_sources["source"] = "crossref"
-                
-                if data.get('volume'):
-                    metadata["volume"] = data['volume']
-                    field_sources["volume"] = "crossref"
-                if data.get('issue'):
-                    metadata["issue"] = data['issue']
-                    field_sources["issue"] = "crossref"
-                if data.get('page'):
-                    metadata["pages"] = data['page']
-                    field_sources["pages"] = "crossref"
-                if data.get('publisher'):
-                    metadata["publisher"] = data['publisher']
-                    field_sources["publisher"] = "crossref"
-                
-                cr_type = data.get('type', '')
-                type_map = {
-                    'journal-article': 'Journal Article',
-                    'book': 'Book',
-                    'book-chapter': 'Book Chapter',
-                    'proceedings-article': 'Conference Paper',
-                    'report': 'Report',
-                    'dissertation': 'Dissertation',
-                }
-                metadata["type"] = type_map.get(cr_type, 'Other')
-                if cr_type in type_map:
-                    field_sources["type"] = "crossref"
-        except Exception:
-            pass  # CrossRef lookup failed, continue with what we have
+        crossref_success = perform_crossref_lookup(metadata["doi"], metadata, field_sources)
+    
+    # Track crossref state so the UI can warn the user if it failed
+    metadata["crossref_failed"] = not crossref_success
     
     # ─── Step 4: Gemini AI — verify non-CrossRef fills + fill missing fields ───
-    # Run AI when: (a) any critical field is missing, OR (b) any field came from regex/pdf_metadata (needs verification)
+    # Run AI when: (a) CrossRef failed or missing, OR (b) any field came from regex/pdf_metadata
     has_unverified_fields = any(v in ("text_parsing", "pdf_metadata") for v in field_sources.values())
     has_missing = not metadata["authors"] or not metadata["title"] or not metadata["year"]
     
-    if (has_unverified_fields or has_missing) and first_pages_text.strip():
+    if (not crossref_success or has_unverified_fields or has_missing) and first_pages_text.strip():
         # Build context of what Python already found (for verification)
         python_found = {}
-        for key in ["authors", "title", "year", "source"]:
+        for key in ["authors", "title", "year", "source", "doi"]:
             if metadata.get(key) and field_sources.get(key) in ("text_parsing", "pdf_metadata"):
                 python_found[key] = metadata[key]
         
@@ -1358,6 +1385,7 @@ Extract these fields from the document:
 - title: The main title of the paper/document (not section headings, not journal name)
 - year: The publication year (not copyright year if different)
 - source: Journal name or publisher name if visible
+- doi: The Digital Object Identifier (e.g. 10.1234/example)
 
 DOCUMENT TEXT (first 3 pages):
 {first_pages_text[:8000]}
@@ -1367,7 +1395,8 @@ Respond in strict JSON only:
     "authors": ["author1", "author2"] or null,
     "title": "title text" or null,
     "year": "2025" or null,
-    "source": "journal or publisher name" or null
+    "source": "journal or publisher name" or null,
+    "doi": "10.1234/example" or null
 }}"""
             
             response = await gemini_request_with_retry(client, prompt, model=model_name)
@@ -1380,25 +1409,44 @@ Respond in strict JSON only:
             ai_data = json.loads(ai_text)
             print(f"[AI Verification] AI returned: {ai_data}")
             
+            # If AI found a new DOI, and CrossRef previously failed, try CrossRef again!
+            ai_doi = ai_data.get("doi")
+            if ai_doi and ai_doi != metadata.get("doi") and not crossref_success:
+                print(f"[AI Verification] Retrying CrossRef with new AI-extracted DOI: {ai_doi}")
+                # Pass expected title for verification against hallucination
+                expected = ai_data.get("title") or metadata.get("title")
+                retry_success = perform_crossref_lookup(ai_doi, metadata, field_sources, expected_title=expected)
+                if retry_success:
+                    metadata["doi"] = ai_doi
+                    field_sources["doi"] = "ai_verified"
+                    crossref_success = True
+                    metadata["crossref_failed"] = False
+                else:
+                    print(f"[AI Verification] Rejected AI DOI {ai_doi} due to CrossRef lookup failure or title mismatch.")
+            
             # For each field: fill if missing, or override if from unreliable source (AI verification)
-            for key in ["authors", "title", "year", "source"]:
+            # Only do this if CrossRef didn't already fill it (CrossRef is authoritative)
+            for key in ["authors", "title", "year", "source", "doi"]:
                 ai_value = ai_data.get(key)
                 if not ai_value:
                     continue
                 
                 current_source = field_sources.get(key)
                 
+                # If source is "crossref" — never override, CrossRef is authoritative
+                if current_source == "crossref":
+                    continue
+                    
                 if not metadata.get(key):
                     # Field was missing — AI fills it
-                    metadata[key] = str(ai_value) if key == "year" else ai_value
+                    metadata[key] = str(ai_value) if key in ("year", "volume", "issue") else ai_value
                     field_sources[key] = "ai"
                 elif current_source in ("text_parsing", "pdf_metadata"):
                     # Field was from unreliable source — AI verifies/corrects it
-                    if key == "year":
+                    if key in ("year", "volume", "issue"):
                         ai_value = str(ai_value)
                     metadata[key] = ai_value
                     field_sources[key] = "ai_verified"
-                # If source is "crossref" — never override, CrossRef is authoritative
                 
         except Exception as e:
             print(f"[AI Verification] FAILED: {type(e).__name__}: {e}")

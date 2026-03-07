@@ -1,30 +1,28 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-03-05",
-  "current_index": 1,
-  "total_requests_today": 13,
+  "last_reset_date": "2026-03-07",
+  "current_index": 0,
+  "total_requests_today": 16,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
-      "model_usage": {},
-      "exhausted_models": [
-        "gemini-3-flash-preview"
-      ],
-      "last_exhausted": "2026-03-05T02:14:38.392209",
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3-flash-preview": 16
+      },
+      "exhausted_models": [],
+      "last_exhausted": null,
+      "quota_used": 16,
       "exhausted": false
     },
     {
       "index": 1,
       "key_suffix": "...fabg",
-      "model_usage": {
-        "gemini-3-flash-preview": 13
-      },
+      "model_usage": {},
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 13,
+      "quota_used": 0,
       "exhausted": false
     },
     {

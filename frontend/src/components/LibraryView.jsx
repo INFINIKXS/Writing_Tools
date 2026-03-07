@@ -48,6 +48,15 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                 </div>
             )}
 
+            {r.data.metadata?.crossref_failed && (
+                <div className="mt-2 flex items-start gap-2 bg-purple-500/5 border border-purple-500/15 rounded-lg px-3 py-1.5">
+                    <span className="text-purple-400 text-[10px] mt-0.5">⚠</span>
+                    <p className="text-[10px] text-purple-400/80 leading-relaxed">
+                        <strong>CrossRef lookup failed.</strong> Metadata was extracted using AI/Regex and may be inaccurate. Please review.
+                    </p>
+                </div>
+            )}
+
             <button
                 onClick={() => toggleMeta(r.id)}
                 className="mt-2 w-full flex items-center justify-between text-[10px] font-semibold text-neutral-600 hover:text-neutral-400 transition-colors"
@@ -93,6 +102,8 @@ export default function LibraryView() {
     const [isDragging, setIsDragging] = useState(false);
     const [copiedId, setCopiedId] = useState(null);
     const [copiedAll, setCopiedAll] = useState(false);
+    const [copiedWithDoi, setCopiedWithDoi] = useState(false);
+    const [copiedWithoutDoi, setCopiedWithoutDoi] = useState(false);
     const [expandedMeta, setExpandedMeta] = useState({});
     const fileInputRef = useRef(null);
     const idCounter = useRef(0);
@@ -178,15 +189,19 @@ export default function LibraryView() {
         });
     };
 
+    const copyGroup = (items, setCopiedState) => {
+        if (!items || items.length === 0) return;
+        const allHtml = items.map(r => sanitizeHtml(r.data.formatted_html || r.data.formatted)).join('<br/>\n');
+        const allPlain = items.map(r => stripHtml(r.data.formatted_html || r.data.formatted)).join('\n');
+        navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([allHtml], { type: 'text/html' }), 'text/plain': new Blob([allPlain], { type: 'text/plain' }) })]).then(() => {
+            setCopiedState(true);
+            setTimeout(() => setCopiedState(false), 2000);
+        });
+    };
+
     const copyAll = () => {
         const completed = results.filter(r => r.data);
-        if (completed.length === 0) return;
-        const allHtml = completed.map(r => sanitizeHtml(r.data.formatted_html || r.data.formatted)).join('<br/>\n');
-        const allPlain = completed.map(r => stripHtml(r.data.formatted_html || r.data.formatted)).join('\n');
-        navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([allHtml], { type: 'text/html' }), 'text/plain': new Blob([allPlain], { type: 'text/plain' }) })]).then(() => {
-            setCopiedAll(true);
-            setTimeout(() => setCopiedAll(false), 2000);
-        });
+        copyGroup(completed, setCopiedAll);
     };
 
     const removeResult = (id) => { setResults(prev => prev.filter(r => r.id !== id)); };
@@ -357,10 +372,16 @@ export default function LibraryView() {
                             <div className="flex gap-3 items-start">
                                 {/* With DOI — single panel */}
                                 <div className="flex-1 min-w-0 glass-card border-l-4 border-l-green-500/50 flex flex-col overflow-hidden" style={inputHeight ? { height: inputHeight } : { maxHeight: '60vh' }}>
-                                    <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0">
-                                        <ShieldCheck size={14} className="text-green-400" />
-                                        <h4 className="text-xs font-bold text-green-400 uppercase tracking-wider">Verified (DOI found)</h4>
-                                        <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withDoi.length}</span>
+                                    <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <ShieldCheck size={14} className="text-green-400" />
+                                            <h4 className="text-xs font-bold text-green-400 uppercase tracking-wider">Verified (DOI found)</h4>
+                                            <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withDoi.length}</span>
+                                        </div>
+                                        <button onClick={() => copyGroup(withDoi, setCopiedWithDoi)} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 hover:bg-white/5 rounded text-neutral-500 hover:text-white transition-all">
+                                            {copiedWithDoi ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                                            {copiedWithDoi ? 'Copied' : 'Copy'}
+                                        </button>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-3 space-y-3">
                                         {withDoi.map(r => <ReferenceCard key={r.id} r={r} {...cardProps} />)}
@@ -369,10 +390,16 @@ export default function LibraryView() {
 
                                 {/* Without DOI — single panel */}
                                 <div className="flex-1 min-w-0 glass-card border-l-4 border-l-amber-500/50 flex flex-col overflow-hidden" style={inputHeight ? { height: inputHeight } : { maxHeight: '60vh' }}>
-                                    <div className="flex items-center gap-2 px-4 py-3 border-b border-white/5 shrink-0">
-                                        <ShieldAlert size={14} className="text-amber-400" />
-                                        <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Needs Review (No DOI)</h4>
-                                        <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withoutDoi.length}</span>
+                                    <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
+                                        <div className="flex items-center gap-2">
+                                            <ShieldAlert size={14} className="text-amber-400" />
+                                            <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Needs Review (No DOI)</h4>
+                                            <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withoutDoi.length}</span>
+                                        </div>
+                                        <button onClick={() => copyGroup(withoutDoi, setCopiedWithoutDoi)} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 hover:bg-white/5 rounded text-neutral-500 hover:text-white transition-all">
+                                            {copiedWithoutDoi ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                                            {copiedWithoutDoi ? 'Copied' : 'Copy'}
+                                        </button>
                                     </div>
                                     <div className="flex-1 overflow-y-auto p-3 space-y-3">
                                         {withoutDoi.map(r => <ReferenceCard key={r.id} r={r} {...cardProps} />)}
