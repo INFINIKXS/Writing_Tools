@@ -1,11 +1,12 @@
 import React, { useState, useMemo } from 'react';
-import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings } from 'lucide-react';
+import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2 } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
 import FormatterView from './components/FormatterView';
 import LibraryView from './components/LibraryView';
 import SearchView from './components/SearchView';
+import HumanizerView from './components/HumanizerView';
 import SettingsView from './components/SettingsView';
 
 const NAV_ITEMS = [
@@ -14,6 +15,7 @@ const NAV_ITEMS = [
   { id: 'formatter', label: 'Formatter', icon: FileText },
   { id: 'library', label: 'Library', icon: BookOpen },
   { id: 'search', label: 'Search', icon: Search },
+  { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -27,6 +29,7 @@ function App() {
     { id: 'formatter', component: <FormatterView /> },
     { id: 'library', component: <LibraryView /> },
     { id: 'search', component: <SearchView /> },
+    { id: 'humanizer', component: <HumanizerView /> },
     { id: 'settings', component: <SettingsView /> },
   ], []);
 

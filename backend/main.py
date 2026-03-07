@@ -2219,6 +2219,91 @@ async def search_list_documents():
     return {"documents": docs}
 
 
+# ─── Humanizer (AI-to-Human Style Transfer) Endpoints ───
+
+import humanizer_store
+import humanizer
+
+
+class HumanizeRequest(BaseModel):
+    text: str
+
+
+@app.post("/api/humanizer/upload")
+async def humanizer_upload(files: list[UploadFile] = File(...)):
+    """Upload PDF(s) and index their sentences for the humanizer."""
+    indexed = []
+    errors = []
+    for file in files:
+        if not file.filename.lower().endswith('.pdf'):
+            errors.append({"filename": file.filename, "error": "Only PDF files are supported"})
+            continue
+        try:
+            file_bytes = await file.read()
+            if file_bytes[:4] != b'%PDF':
+                errors.append({"filename": file.filename, "error": "Not a valid PDF file"})
+                continue
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pages_text = []
+            for page in reader.pages:
+                text = page.extract_text() or ''
+                pages_text.append(text)
+            if not any(t.strip() for t in pages_text):
+                errors.append({"filename": file.filename, "error": "No text could be extracted from PDF"})
+                continue
+            result = humanizer_store.index_document(file.filename, pages_text)
+            indexed.append({
+                "doc_id": result["doc_id"],
+                "filename": file.filename,
+                "sentence_count": result["sentence_count"],
+            })
+        except Exception as e:
+            errors.append({"filename": file.filename, "error": str(e)})
+    return {"indexed": indexed, "errors": errors}
+
+
+@app.post("/api/humanizer/humanize")
+async def humanizer_humanize(req: HumanizeRequest):
+    """Run the AI-to-Human style transfer pipeline on the given text."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+    
+    # Check if there are any human sentences indexed
+    stats = humanizer_store.get_stats()
+    if stats["total_sentences"] == 0:
+        raise HTTPException(
+            status_code=400,
+            detail="No human sentences in database. Upload PDFs with human-written text first."
+        )
+    
+    result = await humanizer.humanize_text(req.text)
+    return result
+
+
+@app.get("/api/humanizer/documents")
+async def humanizer_list_documents():
+    """List all documents indexed in the humanizer store."""
+    docs = humanizer_store.list_documents()
+    return {"documents": docs}
+
+
+@app.delete("/api/humanizer/document/{doc_id}")
+async def humanizer_delete_document(doc_id: str):
+    """Remove a document from the humanizer store."""
+    success = humanizer_store.delete_document(doc_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": doc_id}
+
+
+@app.get("/api/humanizer/stats")
+async def humanizer_stats():
+    """Get stats about the humanizer sentence database."""
+    stats = humanizer_store.get_stats()
+    return stats
+
+
 @app.get("/api/health")
 async def health_check():
     return {"status": "ok"}
+

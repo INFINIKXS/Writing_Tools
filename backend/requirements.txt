@@ -8,3 +8,6 @@ fuzzywuzzy
 python-Levenshtein
 python-dotenv
 requests
+spacy
+sentence-transformers
+numpy
