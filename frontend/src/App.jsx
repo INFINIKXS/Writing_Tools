@@ -1,10 +1,11 @@
 import React, { useState, useMemo } from 'react';
-import { LayoutDashboard, CheckCircle, FileText, BookOpen, Users, Settings, Search } from 'lucide-react';
+import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
 import FormatterView from './components/FormatterView';
 import LibraryView from './components/LibraryView';
+import SearchView from './components/SearchView';
 import SettingsView from './components/SettingsView';
 
 const NAV_ITEMS = [
@@ -12,7 +13,7 @@ const NAV_ITEMS = [
   { id: 'verifier', label: 'Verifier', icon: CheckCircle },
   { id: 'formatter', label: 'Formatter', icon: FileText },
   { id: 'library', label: 'Library', icon: BookOpen },
-  { id: 'collab', label: 'Collab', icon: Users },
+  { id: 'search', label: 'Search', icon: Search },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -25,6 +26,7 @@ function App() {
     { id: 'verifier', component: <VerifierView /> },
     { id: 'formatter', component: <FormatterView /> },
     { id: 'library', component: <LibraryView /> },
+    { id: 'search', component: <SearchView /> },
     { id: 'settings', component: <SettingsView /> },
   ], []);
 
