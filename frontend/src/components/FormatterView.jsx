@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useCallback } from 'react';
 import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2, ChevronDown } from 'lucide-react';
 
 const STYLES = [
@@ -29,6 +29,32 @@ export default function FormatterView() {
         } catch (err) { alert(err.message); } finally { setLoading(false); }
     };
 
+    const handleStyleChange = useCallback(async (newStyle) => {
+        setStyle(newStyle);
+        // Reformat existing results instantly via lightweight endpoint (no AI)
+        const toReformat = results.filter(r => r.metadata);
+        if (toReformat.length === 0) return;
+        setResults(prev => prev.map(r => r.metadata ? { ...r, _reformatting: true } : r));
+        const updated = await Promise.all(toReformat.map(async (r) => {
+            try {
+                const res = await fetch(`/api/reformat-reference?style=${newStyle}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ metadata: r.metadata }),
+                });
+                if (!res.ok) throw new Error('Reformat failed');
+                const data = await res.json();
+                return { ...r, ...data, original: r.original, _reformatting: false };
+            } catch {
+                return { ...r, _reformatting: false };
+            }
+        }));
+        setResults(prev => {
+            const map = new Map(updated.map((u, i) => [toReformat[i].original, u]));
+            return prev.map(r => map.get(r.original) || r);
+        });
+    }, [results]);
+
     const sanitizeHtml = (html) => html.replace(/<(?!\/?(?:i|em)\b)[^>]*>/gi, '');
     const stripHtml = (html) => html.replace(/<\/?[^>]*>/g, '');
 
@@ -44,8 +70,8 @@ export default function FormatterView() {
     };
 
     const copyAll = () => {
-        const allHtml = results.map(r => sanitizeHtml(r.formatted || r.original)).join('<br><br>');
-        const allPlain = results.map(r => stripHtml(r.formatted || r.original)).join('\n\n');
+        const allHtml = results.map(r => sanitizeHtml(r.formatted_html || r.formatted || r.original)).join('<br><br>');
+        const allPlain = results.map(r => stripHtml(r.formatted_html || r.formatted || r.original)).join('\n\n');
         const htmlBlob = new Blob([allHtml], { type: 'text/html' });
         const textBlob = new Blob([allPlain], { type: 'text/plain' });
         navigator.clipboard.write([new ClipboardItem({ 'text/html': htmlBlob, 'text/plain': textBlob })]).then(() => {
@@ -58,7 +84,7 @@ export default function FormatterView() {
         <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col overflow-hidden">
             <header className="mb-6">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Reference Formatter</h1>
-                <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect {currentStyle.label} style using AI.</p>
+                <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect {currentStyle.label} style.</p>
             </header>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-[500px]">
@@ -73,7 +99,7 @@ export default function FormatterView() {
                             <div className="relative">
                                 <select
                                     value={style}
-                                    onChange={(e) => setStyle(e.target.value)}
+                                    onChange={(e) => handleStyleChange(e.target.value)}
                                     className="appearance-none bg-white/5 border border-white/10 text-xs font-semibold text-neutral-300 px-3 py-1.5 pr-7 rounded-lg cursor-pointer hover:bg-white/10 transition-colors outline-none focus:border-white/20"
                                 >
                                     {STYLES.map(s => (
@@ -149,7 +175,7 @@ export default function FormatterView() {
                                 <div key={i} className="glass-card p-4 border-l-4 border-l-white/15 group relative overflow-hidden">
                                     <div className="flex justify-between items-start mb-3">
                                         <span className="badge badge-green">{r.type || 'Processed'}</span>
-                                        <button onClick={() => copyRich(r.formatted || r.original, i)} className="p-1.5 bg-white/3 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-all active:scale-90">
+                                        <button onClick={() => copyRich(r.formatted_html || r.formatted || r.original, i)} className="p-1.5 bg-white/3 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-white transition-all active:scale-90">
                                             {copiedIndex === i ? <Check size={14} className="text-white" /> : <Copy size={14} />}
                                         </button>
                                     </div>
@@ -163,7 +189,7 @@ export default function FormatterView() {
                                             </div>
                                             <div>
                                                 <div className="text-[9px] font-bold uppercase tracking-widest text-neutral-500 mb-1">{currentStyle.label} Style</div>
-                                                <div className="text-sm text-white bg-white/[0.04] p-3 rounded-lg border border-white/8 leading-relaxed font-medium" dangerouslySetInnerHTML={{ __html: sanitizeHtml(r.formatted) }} />
+                                                <div className="text-sm text-white bg-white/[0.04] p-3 rounded-lg border border-white/8 leading-relaxed font-medium" dangerouslySetInnerHTML={{ __html: sanitizeHtml(r.formatted_html || r.formatted) }} />
                                             </div>
                                         </>
                                     )}

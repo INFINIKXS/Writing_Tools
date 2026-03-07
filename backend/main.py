@@ -1663,7 +1663,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
         if ref_type == "Journal Article" and source:
             # Author(s). Title. Abbreviated Journal. Year;Vol(Issue):Pages. doi: number
             ref_plain = f"{author_str} {title}. {source}."
-            ref_html = f"{author_str} {title}. <i>{source}</i>."
+            ref_html = f"{author_str} {title}. {source}."
             date_str = year
             if location:
                 ref_plain += f" {date_str};{location}."
@@ -1728,7 +1728,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
             ref_html = f"{author_str} {title}."
             if source:
                 ref_plain += f" {source}."
-                ref_html += f" <i>{source}</i>."
+                ref_html += f" {source}."
             ref_plain += f" {year}."
             ref_html += f" {year}."
             if doi_str:
@@ -1915,58 +1915,218 @@ class FormatRequest(BaseModel):
     references: List[str]
     style: str = "harvard"
 
+
+def _value_in_input(value: str, ref_text: str, threshold: float = 0.6) -> bool:
+    """
+    Anti-hallucination check: verify that a value extracted by AI actually
+    appears in the original input text. Uses substring match first (fast),
+    then falls back to fuzzy similarity for minor reformatting differences
+    (e.g. "Smith, J." vs "Smith J").
+    """
+    if not value or not ref_text:
+        return False
+    val_lower = value.lower().strip()
+    ref_lower = ref_text.lower()
+    # Fast path: exact substring
+    if val_lower in ref_lower:
+        return True
+    # Strip punctuation and check again (handles "Smith, J." vs "Smith J")
+    val_clean = re.sub(r'[.,;:\'"()\[\]{}]', '', val_lower).strip()
+    ref_clean = re.sub(r'[.,;:\'"()\[\]{}]', '', ref_lower)
+    if val_clean in ref_clean:
+        return True
+    # Fuzzy match: the value's words should mostly appear in the input
+    ratio = difflib.SequenceMatcher(None, val_clean, ref_clean).ratio()
+    # For short values (like years), require near-exact match
+    if len(val_clean) <= 6:
+        return val_clean in ref_clean
+    return ratio >= threshold
+
+
+async def parse_raw_reference(ref_text: str) -> dict:
+    """
+    Parse a raw reference string into structured metadata.
+    Pipeline: Regex first → AI extraction with Input Containment Check.
+    
+    Anti-hallucination strategy: The user says the pasted reference is already
+    correct. Therefore every field AI extracts MUST be traceable back to the
+    original input text. If AI returns a value not found in the input, it is
+    rejected as hallucinated — no external API needed.
+    """
+    metadata = {
+        "authors": None, "title": None, "year": None,
+        "source": None, "doi": None, "url": None,
+        "volume": None, "issue": None, "pages": None,
+        "publisher": None, "type": "Other",
+    }
+    field_sources = {}
+
+    # ─── Step 1: Regex extraction from raw text (zero hallucination risk) ───
+    # DOI
+    doi_match = re.search(
+        r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,}/[a-zA-Z0-9.\-_/:()]+)',
+        ref_text, re.IGNORECASE
+    )
+    if doi_match:
+        doi = doi_match.group(1).rstrip('.,;)')
+        metadata["doi"] = doi
+        field_sources["doi"] = "text_parsing"
+
+    # Year
+    year_match = re.search(r'\b((?:19|20)\d{2})\b', ref_text)
+    if year_match:
+        metadata["year"] = year_match.group(1)
+        field_sources["year"] = "text_parsing"
+
+    # Volume/Issue
+    vol_match = re.search(r'(\d+)\s*\((\d+)\)', ref_text)
+    if vol_match:
+        metadata["volume"] = vol_match.group(1)
+        metadata["issue"] = vol_match.group(2)
+        field_sources["volume"] = "text_parsing"
+        field_sources["issue"] = "text_parsing"
+
+    # Pages
+    pages_match = re.search(r'(?:pp?\.?\s*)?(\d+)\s*[-–]\s*(\d+)', ref_text)
+    if pages_match:
+        metadata["pages"] = f"{pages_match.group(1)}-{pages_match.group(2)}"
+        field_sources["pages"] = "text_parsing"
+
+    # URL (if no DOI)
+    if not metadata["doi"]:
+        url_match = re.search(r'(https?://\S+)', ref_text)
+        if url_match:
+            metadata["url"] = url_match.group(1).rstrip('.,;)')
+            field_sources["url"] = "text_parsing"
+
+    # ─── Step 2: AI extraction with Input Containment Check ───
+    # AI identifies which parts of the text are authors, title, source, etc.
+    # Every value is then verified against the original input — if it's not
+    # found in the input, it's rejected as hallucinated.
+    try:
+        model_name = 'gemini-3-flash-preview'
+        client = get_client(model=model_name)
+
+        prompt = f"""You are a metadata extraction tool. Extract ONLY what you can see in the reference text below.
+DO NOT invent, guess, or hallucinate any information. If a field is not clearly visible, return null.
+Every value you return MUST come directly from the text — do not rephrase, infer, or add information.
+
+Extract these fields from the reference:
+- authors: List of author names exactly as they appear in the text (e.g. ["Clair, A.", "Hughes, A."])
+- title: The main title of the work, exactly as written in the text
+- year: The publication year as it appears in the text
+- source: Journal name or publisher, exactly as written in the text
+- doi: The DOI if present, exactly as written
+
+REFERENCE TEXT:
+{ref_text}
+
+Respond in strict JSON only:
+{{
+    "authors": ["author1", "author2"] or null,
+    "title": "title text" or null,
+    "year": "2025" or null,
+    "source": "journal or publisher name" or null,
+    "doi": "10.1234/example" or null
+}}"""
+
+        response = await gemini_request_with_retry(client, prompt, model=model_name)
+        ai_text = response.text.strip()
+        if ai_text.startswith('```json'):
+            ai_text = ai_text[7:].strip()
+        if ai_text.endswith('```'):
+            ai_text = ai_text[:-3].strip()
+        ai_data = json.loads(ai_text)
+        print(f"[Formatter AI] Raw extraction: {ai_data}")
+
+        # ─── Input Containment Check: reject anything not in the original text ───
+        # Title
+        ai_title = ai_data.get("title")
+        if ai_title and _value_in_input(ai_title, ref_text):
+            if not metadata.get("title"):
+                metadata["title"] = ai_title
+                field_sources["title"] = "ai_verified"
+        elif ai_title:
+            print(f"[Formatter Anti-Hallucination] REJECTED title: '{ai_title}' — not found in input")
+
+        # Authors
+        ai_authors = ai_data.get("authors")
+        if ai_authors and isinstance(ai_authors, list):
+            verified_authors = []
+            for author in ai_authors:
+                if _value_in_input(author, ref_text):
+                    verified_authors.append(author)
+                else:
+                    # Check if at least the surname is in the input
+                    surname = author.split(',')[0].strip() if ',' in author else author.split()[0].strip()
+                    if _value_in_input(surname, ref_text):
+                        verified_authors.append(author)
+                    else:
+                        print(f"[Formatter Anti-Hallucination] REJECTED author: '{author}' — not found in input")
+            if verified_authors:
+                metadata["authors"] = verified_authors
+                field_sources["authors"] = "ai_verified"
+
+        # Source (journal/publisher)
+        ai_source = ai_data.get("source")
+        if ai_source and _value_in_input(ai_source, ref_text):
+            if not metadata.get("source"):
+                metadata["source"] = ai_source
+                field_sources["source"] = "ai_verified"
+        elif ai_source:
+            print(f"[Formatter Anti-Hallucination] REJECTED source: '{ai_source}' — not found in input")
+
+        # Year — only accept if it matches what regex found or is in the text
+        ai_year = ai_data.get("year")
+        if ai_year and str(ai_year) in ref_text:
+            if not metadata.get("year"):
+                metadata["year"] = str(ai_year)
+                field_sources["year"] = "ai_verified"
+
+        # DOI — only accept if it's actually in the text
+        ai_doi = ai_data.get("doi")
+        if ai_doi and ai_doi in ref_text and not metadata.get("doi"):
+            metadata["doi"] = ai_doi
+            field_sources["doi"] = "ai_verified"
+
+    except Exception as e:
+        print(f"[Formatter AI] FAILED: {type(e).__name__}: {e}")
+
+    # ─── Step 3: Classify type ───
+    if metadata["type"] == "Other":
+        metadata["type"] = classify_source_type(metadata)
+
+    # Ensure authors is a list
+    if isinstance(metadata["authors"], str):
+        raw = metadata["authors"]
+        if '; ' in raw:
+            metadata["authors"] = [a.strip() for a in raw.split(';') if a.strip()]
+        elif ' and ' in raw or ' & ' in raw:
+            raw = raw.replace(' & ', ' and ')
+            metadata["authors"] = [a.strip() for a in raw.split(' and ') if a.strip()]
+        else:
+            metadata["authors"] = [raw.strip()]
+
+    metadata["field_sources"] = field_sources
+    return metadata
+
+
 @app.post("/api/format")
 async def format_references(req: FormatRequest):
-    client = get_client(model='gemini-3-flash-preview')
-    
-    # Select guide based on style
-    if req.style == "apa":
-        guide = APA_GUIDE
-        style_name = "APA 7th Edition"
-    elif req.style == "vancouver":
-        guide = VANCOUVER_GUIDE
-        style_name = "Vancouver"
-    else:
-        guide = HARVARD_GUIDE
-        style_name = "Harvard"
-    
+    """
+    Parse raw reference text into metadata, then format deterministically.
+    Returns metadata alongside formatted output so the frontend can do instant style switching.
+    """
     formatted_refs = []
     for ref in req.references:
-        prompt = f"""
-        Using the {style_name} referencing guide provided below, classify the following input reference and reformat it to match the exact {style_name} style for its type (e.g., Book, Journal Article, Web page, etc.).
-
-        If the input is already in {style_name} style, confirm and output it as is. If not, identify the type and apply the correct format.
-
-        IMPORTANT: In the "formatted" output, wrap parts that should be italicized with <i>...</i> HTML tags.
-        Per {style_name} conventions, italicize: journal/periodical names, book titles, report titles, film titles, etc.
-        Do NOT italicize: article titles, chapter titles, or webpage titles.
-
-        Guide:
-        {guide}
-
-        Input reference:
-        {ref}
-
-        Output in JSON:
-        {{
-            "original": "copy the exact input reference here",
-            "type": "classified_type (e.g., Book, Journal Article)",
-            "formatted": "reformatted {style_name} reference with <i>italic</i> tags where appropriate"
-        }}
-        """
-
-        response = await gemini_request_with_retry(client, prompt)
-        
         try:
-            output_text = response.text.strip()
-            if output_text.startswith('```json'):
-                output_text = output_text[7:].strip()
-            if output_text.endswith('```'):
-                output_text = output_text[:-3].strip()
-            result = json.loads(output_text)
+            metadata = await parse_raw_reference(ref)
+            result = format_reference(metadata, req.style)
+            # Include the original raw text
+            result["original"] = ref
             formatted_refs.append(result)
         except Exception as e:
-            formatted_refs.append({"original": ref, "error": str(e), "raw_response": response.text})
+            formatted_refs.append({"original": ref, "error": str(e)})
 
     return {"formatted_references": formatted_refs}
 

@@ -132,6 +132,15 @@ Examples:
 
   Encyclopædia britannica [Internet]. Chicago (IL): Encyclopædia Britannica Inc.; 2012. Open-heart surgery; [cited 2012 May 2]; [2 paragraphs]. Available from: http://www.britannica.com/EBchecked/topic/429656/open-heart-surgery
 
+--- WEBPAGE / WEBSITE ---
+
+Template:
+  Author(s) or Organization. Title of webpage [Internet]. Place of publication: Publisher; Year [cited YYYY Mon DD]. Available from: URL
+
+Example:
+  World Health Organization. Coronavirus disease (COVID-19) pandemic [Internet]. Geneva: World Health Organization; 2020 [cited 2021 Jan 12]. Available from: https://www.who.int/emergencies/diseases/novel-coronavirus-2019
+
+
 --- TECHNICAL / RESEARCH REPORT ---
 
 Template:
@@ -143,7 +152,7 @@ Example:
 === KEY FORMATTING RULES ===
 
 - Author names: Surname then initials with NO periods between initials (e.g. Van Hooijdonk R).
-- Journal titles: abbreviated and italicized.
+- Journal titles: abbreviated (NOT italicized in Vancouver style).
 - Book titles: sentence case, NOT italicized in Vancouver style.
 - Article titles: sentence case, NOT italicized.
 - Use semicolons after date of publication (before volume/issue).
