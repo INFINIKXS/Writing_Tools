@@ -4,10 +4,16 @@
 @tailwind components;
 @tailwind utilities;
 
+@property --angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
 @layer base {
   body {
     @apply text-slate-300 font-sans min-h-screen antialiased;
-    background-color: #000000;
+    background-color: #050505;
   }
 }
 
@@ -58,18 +64,75 @@
 
   /* ─── Navigation ─── */
   .nav-item {
-    @apply flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl cursor-pointer transition-all duration-200 text-neutral-600;
+    @apply flex flex-col items-center gap-1.5 py-3 px-2 rounded-xl cursor-pointer transition-all duration-300 text-neutral-600;
+    border: 1.5px solid transparent;
+    background: rgba(255, 255, 255, 0.02);
   }
 
   .nav-item:hover {
     @apply text-neutral-300;
-    background: rgba(255, 255, 255, 0.04);
+    background: rgba(255, 255, 255, 0.07);
+    border-color: rgba(255, 255, 255, 0.08);
+    transform: translateY(-1px);
   }
 
+  /* The Active Container */
   .nav-item.active {
     @apply text-white;
-    background: rgba(255, 255, 255, 0.08);
-    border: 1px solid rgba(255, 255, 255, 0.12);
+    position: relative;
+    background: #050505;
+    border-radius: 12px;
+    border: none;
+  }
+
+  /* The Spinning Segmented Ring */
+  .nav-item.active::before {
+    content: '';
+    position: absolute;
+    inset: -4px;
+    border-radius: 16px;
+    z-index: -1;
+
+    background: conic-gradient(from var(--angle),
+        transparent 0%,
+        transparent 2%,
+        #4a3a10 8%,
+        #7a5c1a 20%,
+        #d4af37 35%,
+        #e6aa22 42%,
+        #fff8b0 48%,
+        #ffffff 49%,
+        transparent 50%,
+
+        transparent 52%,
+        #4a3a10 58%,
+        #7a5c1a 70%,
+        #d4af37 85%,
+        #e6aa22 92%,
+        #fff8b0 98%,
+        #ffffff 99%,
+        transparent 100%);
+
+    filter: blur(0.6px) brightness(1.15);
+    animation: spin-angle 12s linear infinite;
+  }
+
+  /* The Inner Cover (Ensures the center stays black) */
+  .nav-item.active::after {
+    content: '';
+    position: absolute;
+    inset: 0px;
+    /* Sits flush with the button edge */
+    background: #050505;
+    /* Matches the inner black */
+    border-radius: 12px;
+    z-index: 0;
+  }
+
+  /* Ensure icon + label sit above everything */
+  .nav-item.active>* {
+    position: relative;
+    z-index: 10;
   }
 
   /* ─── Badges ─── */
@@ -151,6 +214,13 @@
 
   50% {
     box-shadow: 0 0 20px rgba(255, 255, 255, 0.1);
+  }
+}
+
+/* Rotates the custom property from 0 to 360 degrees */
+@keyframes spin-angle {
+  to {
+    --angle: 360deg;
   }
 }
 

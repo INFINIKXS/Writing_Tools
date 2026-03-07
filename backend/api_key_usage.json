@@ -2,7 +2,7 @@
   "service": "Google",
   "last_reset_date": "2026-03-07",
   "current_index": 1,
-  "total_requests_today": 28,
+  "total_requests_today": 31,
   "quota_limit_per_key": 20,
   "keys": [
     {
@@ -22,11 +22,11 @@
       "index": 1,
       "key_suffix": "...fabg",
       "model_usage": {
-        "gemini-3-flash-preview": 8
+        "gemini-3-flash-preview": 11
       },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 8,
+      "quota_used": 11,
       "exhausted": false
     },
     {
