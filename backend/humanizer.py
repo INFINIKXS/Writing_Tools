@@ -1,221 +1,267 @@
 """
-AI-to-Human Style Transfer Pipeline.
+AI-to-Human Retrieval-Augmented Style Transfer (RAST) Pipeline.
 
-4-step process:
-1. Deconstruct — extract entities and mask AI sentence
-2. Retrieve   — find closest human skeleton from the vector DB
-3. Reconstruct — slot AI variables into human skeleton
-4. Polish     — LLM grammar fix via Gemini
+3-step process:
+1. Extract   — LLM compresses the AI sentence into semantic facts + core_meaning summary
+2. Retrieve  — Pull 8 real human sentences from the DB as a style palette
+3. Rewrite   — LLM imitates the style of those examples while preserving all meaning
+               guarded by an Input Containment Check (difflib similarity against core_meaning)
 """
-import re
-import asyncio
+import json
+import difflib
 
 
-def _get_nlp():
-    """Get shared spaCy model from humanizer_store."""
-    from humanizer_store import _get_nlp as get_nlp
-    return get_nlp()
+# ── Step 1: Semantic Extraction ───────────────────────────────────────────────
 
-
-def deconstruct_sentence(sentence: str) -> dict:
+async def cognitive_deconstruction(sentence: str) -> dict:
     """
-    Step 1: Parse an AI sentence, extract key entities, and create a masked skeleton.
-    
-    Returns {
-        "original": str,
-        "masked": str,
-        "variables": {"SUBJECT": "photosynthesis", "ACTOR": "green plants", ...}
-    }
+    Extract:
+    - rhetorical intent
+    - key variable facts  
+    - core_meaning: a plain-English compression of what the sentence says
+      (this becomes the Containment Check oracle for Step 3)
     """
-    from humanizer_store import mask_sentence
-    masked, variables = mask_sentence(sentence)
-    return {
-        "original": sentence,
-        "masked": masked,
-        "variables": variables,
-    }
-
-
-def retrieve_human_skeleton(masked_ai_sentence: str, top_k: int = 5) -> list[dict]:
-    """
-    Step 2: Search the human sentence database for structurally similar skeletons.
-    
-    Returns list of candidates with similarity scores.
-    """
-    from humanizer_store import search_similar
-    candidates = search_similar(masked_ai_sentence, top_k=top_k)
-    return candidates
-
-
-def reconstruct_sentence(human_skeleton: str, variables: dict) -> str:
-    """
-    Step 3: Slot the AI's extracted variables into the human skeleton.
-    
-    Strategy:
-    - The human skeleton has its OWN placeholders (from when it was masked).
-    - We need to map AI variables to human placeholders by role.
-    - E.g., AI's [SUBJECT] -> Human's [SUBJECT], AI's [INPUT] -> Human's [INPUT]
-    
-    If the human skeleton has placeholders that don't exist in AI variables,
-    we try to map by position/role similarity. If a placeholder can't be filled,
-    we leave it as-is (the LLM polish step will handle it).
-    """
-    result = human_skeleton
-    
-    # First pass: direct key matching (SUBJECT -> SUBJECT, etc.)
-    for key, value in variables.items():
-        placeholder = f"[{key}]"
-        if placeholder in result:
-            result = result.replace(placeholder, value, 1)
-    
-    # Second pass: try to fill remaining placeholders by role mapping
-    # Extract unfilled placeholders from result
-    unfilled = re.findall(r'\[([A-Z_0-9]+)\]', result)
-    # Get unused variables (ones that weren't direct-matched)
-    used_keys = set()
-    for key in variables:
-        if f"[{key}]" not in human_skeleton:
-            continue
-        used_keys.add(key)
-    unused_vars = {k: v for k, v in variables.items() if k not in used_keys}
-    
-    # Role similarity mapping
-    role_groups = {
-        "subject": ["SUBJECT", "ENTITY", "ATTRIBUTE"],
-        "actor": ["ACTOR", "SUBJECT"],
-        "object": ["OBJECT", "ENTITY", "OUTPUT", "ATTRIBUTE"],
-        "input": ["INPUT", "OBJECT", "ENTITY"],
-        "output": ["OUTPUT", "OBJECT", "ENTITY"],
-        "entity": ["ENTITY", "SUBJECT", "OBJECT", "ATTRIBUTE"],
-        "attribute": ["ATTRIBUTE", "ENTITY", "OBJECT"],
-    }
-    
-    for placeholder_key in unfilled:
-        base_role = placeholder_key.rstrip("_0123456789").lower()
-        candidates = role_groups.get(base_role, [])
-        
-        matched = False
-        for candidate_role in candidates:
-            # Look for unused variable with this role
-            for var_key in list(unused_vars.keys()):
-                var_base = var_key.rstrip("_0123456789")
-                if var_base == candidate_role:
-                    result = result.replace(f"[{placeholder_key}]", unused_vars[var_key], 1)
-                    del unused_vars[var_key]
-                    matched = True
-                    break
-            if matched:
-                break
-        
-        # If still not matched, try any remaining unused variable
-        if not matched and unused_vars:
-            first_key = next(iter(unused_vars))
-            result = result.replace(f"[{placeholder_key}]", unused_vars[first_key], 1)
-            del unused_vars[first_key]
-    
-    return result
-
-
-async def polish_sentence(sentence: str) -> str:
-    """
-    Step 4: Use Gemini to fix grammatical friction without changing vocabulary or structure.
-    """
-    # Import from main to reuse the existing Gemini infrastructure
     from main import get_client, gemini_request_with_retry
-    
-    prompt = f"""Fix any grammatical friction in this sentence without changing the vocabulary or structure. 
-Only fix issues like subject-verb agreement, article usage (a/an), pronoun case, and punctuation.
-Do NOT rewrite, rephrase, or add any new words. Do NOT change the sentence structure.
-If the sentence is already grammatically correct, return it unchanged.
 
-Sentence: "{sentence}"
+    prompt = f"""You are a semantic analyst. Read this sentence and return a JSON with three things:
 
-Return ONLY the corrected sentence, nothing else. No quotes, no explanation."""
+1. **intent** — pick exactly ONE rhetorical category:
+   Speech_Summary | Cause_and_Effect | Concept_Definition | Comparison |
+   Evidence_Claim | Process_Description | Counter_Argument | General_Statement
+
+2. **core_meaning** — write ONE or TWO plain sentences that capture every fact
+   in the source using simple words. This is the meaning oracle.
+   Do NOT rephrase or expand — only state what the sentence actually says.
+
+3. **variables** — extract the key facts as a JSON dict using these names:
+   [ACTOR] [CONCEPT] [ARGUMENT] [CAUSE] [EFFECT] [CONTEXT] [EVIDENCE] [DEFINITION]
+   [COMPARISON_A] [COMPARISON_B]
+   Use only what is actually present. Do not force-fit.
+
+SENTENCE: "{sentence}"
+
+Respond with ONLY this JSON, nothing else:
+{{
+    "intent": "Concept_Definition",
+    "core_meaning": "plain English summary of what the sentence says",
+    "variables": {{
+        "[CONCEPT]": "value from sentence",
+        "[DEFINITION]": "value from sentence"
+    }}
+}}"""
 
     try:
-        model_name = 'gemini-2.0-flash'
+        model_name = 'gemini-3.1-flash-lite-preview'
         client = get_client(model=model_name)
         response = await gemini_request_with_retry(client, prompt, model=model_name)
-        result = response.text.strip()
-        # Remove quotes if the model wrapped it
-        if result.startswith('"') and result.endswith('"'):
-            result = result[1:-1]
-        if result.startswith("'") and result.endswith("'"):
-            result = result[1:-1]
-        return result
-    except Exception as e:
-        print(f"[Humanizer Polish] LLM polish failed: {e}, returning as-is")
-        return sentence
+        raw = response.text.strip()
 
+        if raw.startswith('```json'):
+            raw = raw[7:].strip()
+        if raw.startswith('```'):
+            raw = raw[3:].strip()
+        if raw.endswith('```'):
+            raw = raw[:-3].strip()
+
+        data = json.loads(raw)
+
+        from humanizer_store import INTENT_CATEGORIES
+        intent = data.get("intent", "General_Statement")
+        if intent not in INTENT_CATEGORIES:
+            intent = "General_Statement"
+
+        return {
+            "intent": intent,
+            "core_meaning": data.get("core_meaning", sentence),
+            "variables": data.get("variables", {}),
+        }
+    except Exception as e:
+        print(f"[Cognitive Deconstruction] LLM extraction failed: {e}")
+        return {
+            "intent": "General_Statement",
+            "core_meaning": sentence,
+            "variables": {},
+        }
+
+
+# ── Step 3a: Style-Guided Rewrite ─────────────────────────────────────────────
+
+async def style_guided_rewrite(
+    source_sentence: str,
+    core_meaning: str,
+    style_examples: list[str],
+) -> list[str]:
+    """
+    Single LLM call that produces 3 alternative rewrites of the source sentence.
+
+    The LLM is given real human sentences from the DB as a style palette.
+    It must borrow their rhythm, connectors, and vocabulary patterns
+    while preserving EVERY fact in core_meaning.
+    """
+    from main import get_client, gemini_request_with_retry
+
+    examples_block = "\n".join(f"  {i+1}. {ex}" for i, ex in enumerate(style_examples))
+
+    prompt = f"""You are a writing style transfer expert. Your task is to rewrite a sentence so it sounds like it was written by a human, not an AI.
+
+SOURCE SENTENCE (preserve all its meaning):
+"{source_sentence}"
+
+MEANING TO PRESERVE (this is what the output MUST communicate — no more, no less):
+"{core_meaning}"
+
+HUMAN WRITING STYLE PALETTE (study these real sentences — borrow their:
+ - sentence-opening patterns
+ - connectors and transition words
+ - clause structures and punctuation rhythms
+ - vocabulary register
+ Do NOT copy them verbatim. Use them as inspiration for structure only):
+{examples_block}
+
+YOUR TASK:
+Write EXACTLY 3 alternative rewrites of the source sentence.
+Rules:
+- Every rewrite must preserve ALL the meaning stated in the MEANING section above
+- DO NOT add any fact, claim, or idea not present in the source sentence
+- DO NOT use the same sentence structure as the source sentence
+- Vary the 3 rewrites from each other (different openings, different structures)
+- Write naturally, like a human — contractions, varied clause length, real connectors
+
+Return ONLY this JSON, nothing else:
+{{
+    "rewrites": [
+        "First rewrite here.",
+        "Second rewrite here.",
+        "Third rewrite here."
+    ]
+}}"""
+
+    try:
+        from google.genai import types as genai_types
+        model_name = 'gemini-3.1-flash-lite-preview'
+        client = get_client(model=model_name)
+        thinking_config = genai_types.GenerateContentConfig(
+            thinking_config=genai_types.ThinkingConfig(thinking_level="high")
+        )
+        response = await gemini_request_with_retry(
+            client, prompt, model=model_name, config=thinking_config
+        )
+        raw = response.text.strip()
+
+        if raw.startswith('```json'):
+            raw = raw[7:].strip()
+        if raw.startswith('```'):
+            raw = raw[3:].strip()
+        if raw.endswith('```'):
+            raw = raw[:-3].strip()
+
+        data = json.loads(raw)
+        rewrites = data.get("rewrites", [])
+
+        # Ensure we always have 3 (pad with source if LLM returned fewer)
+        while len(rewrites) < 3:
+            rewrites.append(source_sentence)
+
+        return rewrites[:3]
+
+    except Exception as e:
+        print(f"[Style-Guided Rewrite] LLM failed: {e}")
+        return [source_sentence, source_sentence, source_sentence]
+
+
+# ── Step 3b: Input Containment Check (anti-hallucination guard) ───────────────
+
+def containment_check(rewrite: str, core_meaning: str, threshold: float = 0.45) -> dict:
+    """
+    Verify the rewrite preserves the core meaning using difflib.SequenceMatcher.
+    
+    Inspired by Tip 2 from the anti-hallucination playbook:
+    The core_meaning is the source-of-truth oracle.
+    If the rewrite's similarity drops below the threshold, flag it.
+    
+    Returns: { "passed": bool, "score": float, "warning": str|None }
+    """
+    # Normalise both texts before comparison
+    def normalise(text: str) -> str:
+        import re
+        return re.sub(r'[^\w\s]', '', text.lower())
+
+    score = difflib.SequenceMatcher(
+        None,
+        normalise(core_meaning),
+        normalise(rewrite),
+    ).ratio()
+
+    passed = score >= threshold
+    return {
+        "passed": passed,
+        "score": round(score, 3),
+        "warning": None if passed else f"Low meaning similarity ({score:.0%}) — may have drifted from source.",
+    }
+
+
+# ── Main Pipeline ─────────────────────────────────────────────────────────────
 
 async def humanize_sentence(sentence: str) -> dict:
     """
-    Run the full 4-step pipeline on a single sentence.
-    
-    Returns {
-        "original": str,
-        "humanized": str,
-        "steps": {
-            "deconstruct": {"masked": str, "variables": dict},
-            "retrieve": {"human_skeleton": str, "similarity": float, "original_human": str},
-            "reconstruct": {"raw_output": str},
-            "polish": {"final_output": str}
-        }
-    }
+    RAST pipeline: Extract → Retrieve style examples → Style-guided rewrite → Containment check.
+    Returns 3 alternative rewrites, each with a containment check result.
     """
-    # Step 1: Deconstruct
-    decon = deconstruct_sentence(sentence)
-    
-    if not decon["variables"]:
-        # No entities found — can't do style transfer, return original
+    from humanizer_store import get_style_examples
+
+    # ── Step 1: Semantic Extraction ──
+    extraction = await cognitive_deconstruction(sentence)
+    intent = extraction["intent"]
+    core_meaning = extraction["core_meaning"]
+    variables = extraction["variables"]
+
+    # ── Step 2: Retrieve style examples from DB ──
+    style_examples = get_style_examples(intent, count=8)
+
+    if not style_examples:
         return {
             "original": sentence,
             "humanized": sentence,
             "skipped": True,
-            "reason": "No extractable entities found in sentence",
-            "steps": {},
+            "reason": "No human writing examples in the Skeleton Bank. Upload PDFs first.",
+            "steps": {
+                "extract": {"intent": intent, "core_meaning": core_meaning, "variables": variables},
+            },
         }
-    
-    # Step 2: Retrieve
-    candidates = retrieve_human_skeleton(decon["masked"], top_k=5)
-    
-    if not candidates:
-        return {
-            "original": sentence,
-            "humanized": sentence,
-            "skipped": True,
-            "reason": "No human sentences in database. Upload PDFs first.",
-            "steps": {"deconstruct": {"masked": decon["masked"], "variables": decon["variables"]}},
-        }
-    
-    # Pick the best candidate (highest similarity)
-    best = candidates[0]
-    
-    # Step 3: Reconstruct
-    reconstructed = reconstruct_sentence(best["masked_text"], decon["variables"])
-    
-    # Step 4: Polish
-    polished = await polish_sentence(reconstructed)
-    
+
+    # ── Step 3a: Style-guided rewrite ──
+    rewrites = await style_guided_rewrite(sentence, core_meaning, style_examples)
+
+    # ── Step 3b: Containment check on each rewrite ──
+    checked_rewrites = []
+    for rw in rewrites:
+        check = containment_check(rw, core_meaning)
+        checked_rewrites.append({
+            "text": rw,
+            "containment_passed": check["passed"],
+            "containment_score": check["score"],
+            "warning": check["warning"],
+        })
+
+    # Primary output = first rewrite (best per LLM ordering)
+    best = checked_rewrites[0]["text"]
+
     return {
         "original": sentence,
-        "humanized": polished,
+        "humanized": best,
         "skipped": False,
         "steps": {
-            "deconstruct": {
-                "masked": decon["masked"],
-                "variables": decon["variables"],
+            "extract": {
+                "intent": intent,
+                "core_meaning": core_meaning,
+                "variables": variables,
             },
             "retrieve": {
-                "human_skeleton": best["masked_text"],
-                "original_human": best["sentence_text"],
-                "similarity": round(best["similarity"], 4),
+                "example_count": len(style_examples),
+                "examples": style_examples,
             },
-            "reconstruct": {
-                "raw_output": reconstructed,
-            },
-            "polish": {
-                "final_output": polished,
+            "rewrite": {
+                "rewrites": checked_rewrites,
             },
         },
     }
@@ -223,64 +269,37 @@ async def humanize_sentence(sentence: str) -> dict:
 
 async def humanize_text(text: str) -> dict:
     """
-    Main entry point: humanize an entire block of AI-generated text.
-    Splits into sentences, runs each through the pipeline.
-    
-    Returns {
-        "original_text": str,
-        "humanized_text": str,
-        "sentences": [
-            {
-                "original": str,
-                "humanized": str,
-                "skipped": bool,
-                "steps": {...}
-            },
-            ...
-        ],
-        "stats": {
-            "total_sentences": int,
-            "humanized_count": int,
-            "skipped_count": int,
-        }
-    }
+    Split text into sentences and humanize each one.
+    Returns the combined humanized text and per-sentence details.
     """
-    nlp = _get_nlp()
+    import spacy
+
+    try:
+        nlp = spacy.load("en_core_web_sm", disable=["ner", "parser"])
+        nlp.add_pipe("sentencizer")
+    except Exception:
+        nlp = spacy.blank("en")
+        nlp.add_pipe("sentencizer")
+
     doc = nlp(text)
-    
-    sentences = []
-    for sent in doc.sents:
-        s = sent.text.strip()
-        if len(s.split()) >= 4:  # Skip very short fragments
-            sentences.append(s)
-    
-    if not sentences:
-        return {
-            "original_text": text,
-            "humanized_text": text,
-            "sentences": [],
-            "stats": {"total_sentences": 0, "humanized_count": 0, "skipped_count": 0},
-        }
-    
-    # Process each sentence through the pipeline
+    sentences = [s.text.strip() for s in doc.sents if s.text.strip()]
+
     results = []
     for sent in sentences:
         result = await humanize_sentence(sent)
         results.append(result)
-    
-    # Reconstruct the full humanized text
+
     humanized_parts = [r["humanized"] for r in results]
     humanized_text = " ".join(humanized_parts)
-    
-    humanized_count = sum(1 for r in results if not r.get("skipped", False))
-    skipped_count = sum(1 for r in results if r.get("skipped", False))
-    
+
+    humanized_count = sum(1 for r in results if not r.get("skipped"))
+    skipped_count = sum(1 for r in results if r.get("skipped"))
+
     return {
-        "original_text": text,
         "humanized_text": humanized_text,
         "sentences": results,
         "stats": {
-            "total_sentences": len(results),
+            "total": len(results),
             "humanized_count": humanized_count,
             "skipped_count": skipped_count,
         },

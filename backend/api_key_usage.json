@@ -1,20 +1,20 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-03-07",
-  "current_index": 1,
-  "total_requests_today": 31,
+  "last_reset_date": "2026-03-08",
+  "current_index": 9,
+  "total_requests_today": 109,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
       "model_usage": {
-        "gemini-3-flash-preview": 20
+        "gemini-3.1-flash-lite-preview": 20
       },
       "exhausted_models": [
-        "gemini-3-flash-preview"
+        "gemini-3.1-flash-lite-preview"
       ],
-      "last_exhausted": "2026-03-07T02:12:56.632603",
+      "last_exhausted": "2026-03-08T11:41:56.422233",
       "quota_used": 20,
       "exhausted": false
     },
@@ -22,19 +22,23 @@
       "index": 1,
       "key_suffix": "...fabg",
       "model_usage": {
-        "gemini-3-flash-preview": 11
+        "gemini-3.1-flash-lite-preview": 10
       },
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 11,
+      "exhausted_models": [
+        "gemini-2.0-flash-lite"
+      ],
+      "last_exhausted": "2026-03-08T12:23:26.652489",
+      "quota_used": 10,
       "exhausted": false
     },
     {
       "index": 2,
       "key_suffix": "...bufo",
       "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
+      "exhausted_models": [
+        "gemini-2.0-flash-lite"
+      ],
+      "last_exhausted": "2026-03-08T12:23:49.047331",
       "quota_used": 0,
       "exhausted": false
     },
@@ -42,8 +46,10 @@
       "index": 3,
       "key_suffix": "...KkwY",
       "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
+      "exhausted_models": [
+        "gemini-2.0-flash-lite"
+      ],
+      "last_exhausted": "2026-03-08T12:24:12.329818",
       "quota_used": 0,
       "exhausted": false
     },
@@ -51,8 +57,10 @@
       "index": 4,
       "key_suffix": "...T1q8",
       "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
+      "exhausted_models": [
+        "gemini-2.0-flash-lite"
+      ],
+      "last_exhausted": "2026-03-08T12:24:39.315745",
       "quota_used": 0,
       "exhausted": false
     },
@@ -60,45 +68,61 @@
       "index": 5,
       "key_suffix": "...E7QQ",
       "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
+      "exhausted_models": [
+        "gemini-2.0-flash-lite"
+      ],
+      "last_exhausted": "2026-03-08T12:25:08.851460",
       "quota_used": 0,
       "exhausted": false
     },
     {
       "index": 6,
       "key_suffix": "...4D7k",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3.1-flash-lite-preview": 20
+      },
+      "exhausted_models": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "last_exhausted": "2026-03-08T13:19:32.548686",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 7,
       "key_suffix": "...iHwU",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3.1-flash-lite-preview": 20
+      },
+      "exhausted_models": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "last_exhausted": "2026-03-08T17:40:18.670863",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 8,
       "key_suffix": "...sWzQ",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3.1-flash-lite-preview": 20
+      },
+      "exhausted_models": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "last_exhausted": "2026-03-08T18:50:15.550973",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 9,
       "key_suffix": "...B0R8",
-      "model_usage": {},
+      "model_usage": {
+        "gemini-3.1-flash-lite-preview": 19
+      },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 0,
+      "quota_used": 19,
       "exhausted": false
     },
     {

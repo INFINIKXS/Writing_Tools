@@ -19,6 +19,7 @@ import requests
 from dotenv import load_dotenv
 import difflib
 import search_store
+from phrasebank import process_phrasebank_rewrite
 
 # API Key Manager (multi-key rotation)
 try:
@@ -63,21 +64,24 @@ def get_client(model: str = None):
 MAX_RETRIES = 5
 RETRY_BASE_DELAY = 2  # seconds
 
-async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-preview', progress_callback=None):
+async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-preview', progress_callback=None, config=None):
     """
     Make a Gemini API request with exponential backoff retry for transient errors.
     Retries on 503 UNAVAILABLE, 429 RESOURCE_EXHAUSTED, and connection errors.
     On 429 errors, rotates to next API key via the key manager.
+    Pass `config` (a GenerateContentConfig) to enable features like ThinkingConfig.
     """
     key_manager = get_api_key_manager() if KEY_MANAGER_AVAILABLE else None
 
     last_error = None
     for attempt in range(1, MAX_RETRIES + 1):
         try:
+            kwargs = dict(model=model, contents=prompt)
+            if config is not None:
+                kwargs['config'] = config
             response = await asyncio.to_thread(
                 client.models.generate_content,
-                model=model,
-                contents=prompt,
+                **kwargs,
             )
             # Track usage AFTER successful call (not before)
             if key_manager:
@@ -2219,7 +2223,7 @@ async def search_list_documents():
     return {"documents": docs}
 
 
-# ─── Humanizer (AI-to-Human Style Transfer) Endpoints ───
+# ─── Humanizer (Cognitive Synthesizer) Endpoints ───
 
 import humanizer_store
 import humanizer
@@ -2231,7 +2235,7 @@ class HumanizeRequest(BaseModel):
 
 @app.post("/api/humanizer/upload")
 async def humanizer_upload(files: list[UploadFile] = File(...)):
-    """Upload PDF(s) and index their sentences for the humanizer."""
+    """Upload PDF(s) and mine their sentences into the skeleton bank using LLM."""
     indexed = []
     errors = []
     for file in files:
@@ -2251,11 +2255,13 @@ async def humanizer_upload(files: list[UploadFile] = File(...)):
             if not any(t.strip() for t in pages_text):
                 errors.append({"filename": file.filename, "error": "No text could be extracted from PDF"})
                 continue
-            result = humanizer_store.index_document(file.filename, pages_text)
+            result = await humanizer_store.index_document(file.filename, pages_text)
             indexed.append({
                 "doc_id": result["doc_id"],
                 "filename": file.filename,
-                "sentence_count": result["sentence_count"],
+                "skeleton_count": result["skeleton_count"],
+                # Keep backward compat
+                "sentence_count": result["skeleton_count"],
             })
         except Exception as e:
             errors.append({"filename": file.filename, "error": str(e)})
@@ -2264,16 +2270,16 @@ async def humanizer_upload(files: list[UploadFile] = File(...)):
 
 @app.post("/api/humanizer/humanize")
 async def humanizer_humanize(req: HumanizeRequest):
-    """Run the AI-to-Human style transfer pipeline on the given text."""
+    """Run the Cognitive Synthesizer pipeline on the given text."""
     if not req.text.strip():
         raise HTTPException(status_code=400, detail="Text is required")
     
-    # Check if there are any human sentences indexed
+    # Check if there are any skeletons in the bank
     stats = humanizer_store.get_stats()
-    if stats["total_sentences"] == 0:
+    if stats["total_skeletons"] == 0:
         raise HTTPException(
             status_code=400,
-            detail="No human sentences in database. Upload PDFs with human-written text first."
+            detail="No human skeletons in database. Upload PDFs with human-written text first."
         )
     
     result = await humanizer.humanize_text(req.text)
@@ -2282,14 +2288,14 @@ async def humanizer_humanize(req: HumanizeRequest):
 
 @app.get("/api/humanizer/documents")
 async def humanizer_list_documents():
-    """List all documents indexed in the humanizer store."""
+    """List all documents in the skeleton bank."""
     docs = humanizer_store.list_documents()
     return {"documents": docs}
 
 
 @app.delete("/api/humanizer/document/{doc_id}")
 async def humanizer_delete_document(doc_id: str):
-    """Remove a document from the humanizer store."""
+    """Remove a document and its skeletons from the bank."""
     success = humanizer_store.delete_document(doc_id)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -2298,7 +2304,7 @@ async def humanizer_delete_document(doc_id: str):
 
 @app.get("/api/humanizer/stats")
 async def humanizer_stats():
-    """Get stats about the humanizer sentence database."""
+    """Get stats about the skeleton bank."""
     stats = humanizer_store.get_stats()
     return stats
 
@@ -2307,3 +2313,82 @@ async def humanizer_stats():
 async def health_check():
     return {"status": "ok"}
 
+
+from pydantic import BaseModel
+class PhrasebankRequest(BaseModel):
+    text: str
+
+@app.post("/api/phrasebank/rewrite")
+async def api_phrasebank_rewrite(req: PhrasebankRequest):
+    """Rewrite a sentence using Academic Phrasebank principles."""
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    from phrasebank import process_phrasebank_rewrite
+    result = await process_phrasebank_rewrite(req.text)
+    if "error" in result:
+        raise HTTPException(status_code=500, detail=result["error"])
+         
+    return result
+
+import phrasebank_store
+
+@app.post("/api/phrasebank/upload")
+async def phrasebank_upload(files: list[UploadFile] = File(...)):
+    """Upload PDF(s) and mine them for academic phrase templates."""
+    indexed = []
+    errors = []
+    for file in files:
+        if not file.filename.lower().endswith('.pdf'):
+            errors.append({"filename": file.filename, "error": "Only PDF files are supported"})
+            continue
+        try:
+            file_bytes = await file.read()
+            if file_bytes[:4] != b'%PDF':
+                errors.append({"filename": file.filename, "error": "Not a valid PDF file"})
+                continue
+            
+            # Using the same PDF extractor from main.py
+            reader = PdfReader(io.BytesIO(file_bytes))
+            pages_text = []
+            for page in reader.pages:
+                text = page.extract_text() or ''
+                pages_text.append(text)
+                
+            if not any(t.strip() for t in pages_text):
+                errors.append({"filename": file.filename, "error": "No text could be extracted from PDF"})
+                continue
+                
+            result = await phrasebank_store.index_document(file.filename, pages_text)
+            indexed.append({
+                "doc_id": result["doc_id"],
+                "filename": file.filename,
+                "phrase_count": result["phrase_count"],
+            })
+        except Exception as e:
+            errors.append({"filename": file.filename, "error": str(e)})
+    return {"indexed": indexed, "errors": errors}
+
+@app.get("/api/phrasebank/documents")
+async def phrasebank_list_documents():
+    """List all mapped phrasebank documents."""
+    docs = phrasebank_store.list_documents()
+    return {"documents": docs}
+
+@app.delete("/api/phrasebank/document/{doc_id}")
+async def phrasebank_delete_document(doc_id: str):
+    """Remove a document and its phrases from the Phrasebank."""
+    success = phrasebank_store.delete_document(doc_id)
+    if not success:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"deleted": doc_id}
+
+@app.get("/api/phrasebank/stats")
+async def phrasebank_stats():
+    """Get stats about the phrasebank database."""
+    stats = phrasebank_store.get_stats()
+    return stats
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

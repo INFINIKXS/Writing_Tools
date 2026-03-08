@@ -7,6 +7,7 @@ import FormatterView from './components/FormatterView';
 import LibraryView from './components/LibraryView';
 import SearchView from './components/SearchView';
 import HumanizerView from './components/HumanizerView';
+import PhrasebankView from './components/PhrasebankView';
 import SettingsView from './components/SettingsView';
 
 const NAV_ITEMS = [
@@ -16,6 +17,7 @@ const NAV_ITEMS = [
   { id: 'library', label: 'Library', icon: BookOpen },
   { id: 'search', label: 'Search', icon: Search },
   { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
+  { id: 'phrasebank', label: 'Phrasebank', icon: BookOpen },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -30,6 +32,7 @@ function App() {
     { id: 'library', component: <LibraryView /> },
     { id: 'search', component: <SearchView /> },
     { id: 'humanizer', component: <HumanizerView /> },
+    { id: 'phrasebank', component: <PhrasebankView /> },
     { id: 'settings', component: <SettingsView /> },
   ], []);
 
