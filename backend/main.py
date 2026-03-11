@@ -1489,6 +1489,22 @@ def classify_source_type(metadata: dict) -> str:
     return "Other"
 
 
+def condense_pages(pages_str: str) -> str:
+    """Condense page ranges for Vancouver style (e.g., 117-119 → 117-9, 301-307 → 301-7).
+    Leaves non-numeric pages unchanged (e.g., 34A-37A stays as-is)."""
+    match = re.match(r'^(\d+)\s*[-–]\s*(\d+)$', pages_str.strip())
+    if not match:
+        return pages_str  # Not a simple numeric range, return as-is
+    start, end = match.group(1), match.group(2)
+    if len(start) != len(end) or len(start) <= 1:
+        return f"{start}-{end}"
+    # Find where digits start to differ and truncate
+    for i in range(len(start)):
+        if start[i] != end[i]:
+            return f"{start}-{end[i:]}"
+    return f"{start}-{end}"  # Identical numbers, keep as-is
+
+
 def format_reference(metadata: dict, style: str = "harvard") -> dict:
     """
     Format metadata into a reference string in the specified style.
@@ -1574,8 +1590,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
             ref_plain += "."
             ref_html += "."
             if doi_str:
-                ref_plain += f" {doi_str}"
-                ref_html += f" {doi_str}"
+                ref_plain += f" doi: {doi_str}"
+                ref_html += f" doi: {doi_str}"
         elif ref_type in ("Book", "Book Chapter"):
             # Author (Year) Title. Publisher.
             ref_plain = f"{author_str} ({year}) {title}."
@@ -1584,8 +1600,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {publisher}."
                 ref_html += f" {publisher}."
             if doi_str:
-                ref_plain += f" {doi_str}"
-                ref_html += f" {doi_str}"
+                ref_plain += f" doi: {doi_str}"
+                ref_html += f" doi: {doi_str}"
         elif ref_type == "Web Page":
             # Author (Year) Title. Available at: URL (Accessed: date).
             ref_plain = f"{author_str} ({year}) {title}."
@@ -1600,8 +1616,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {source}."
                 ref_html += f" <i>{source}</i>."
             if doi_str:
-                ref_plain += f" {doi_str}"
-                ref_html += f" {doi_str}"
+                ref_plain += f" doi: {doi_str}"
+                ref_html += f" doi: {doi_str}"
     
     # ─── APA 7th Style ───
     elif style == "apa":
@@ -1670,9 +1686,22 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
             ref_plain = f"{author_str} {title}. {source}."
             ref_html = f"{author_str} {title}. {source}."
             date_str = year
-            if location:
-                ref_plain += f" {date_str};{location}."
-                ref_html += f" {date_str};{location}."
+            # Build Vancouver-specific location: colon before pages, condensed page numbers
+            van_loc_parts = []
+            if volume and issue:
+                van_loc_parts.append(f"{volume}({issue})")
+            elif volume:
+                van_loc_parts.append(volume)
+            if pages:
+                condensed = condense_pages(pages)
+                if van_loc_parts:
+                    van_loc_parts.append(f":{condensed}")
+                else:
+                    van_loc_parts.append(condensed)
+            van_location = ''.join(van_loc_parts)
+            if van_location:
+                ref_plain += f" {date_str};{van_location}."
+                ref_html += f" {date_str};{van_location}."
             else:
                 ref_plain += f" {date_str}."
                 ref_html += f" {date_str}."
@@ -1692,11 +1721,15 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
             ref_plain += f" {year}."
             ref_html += f" {year}."
             if pages:
-                ref_plain += f" p. {pages}."
-                ref_html += f" p. {pages}."
-            if doi_str:
-                ref_plain += f" {doi_str}"
-                ref_html += f" {doi_str}"
+                condensed = condense_pages(pages)
+                ref_plain += f" p. {condensed}."
+                ref_html += f" p. {condensed}."
+            if doi:
+                ref_plain += f" doi: {doi}"
+                ref_html += f" doi: {doi}"
+            elif url:
+                ref_plain += f" Available from: {url}"
+                ref_html += f" Available from: {url}"
         elif ref_type == "Book":
             # Author(s). Title. Edition. Place: Publisher; Year. Pages p.
             ref_plain = f"{author_str} {title}."
