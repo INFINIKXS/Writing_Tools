@@ -57,7 +57,7 @@ No named author or corporation: Use the title of the resource in italics:
 Authors in references:
 - Include authors in the order they are given.
 - Two or three authors: Grayling, A. and Ball, B. (2024) or Chu, M., Leonard, P. and Stevenson, F. (2012)
-- Four or more authors: Young, H.D. et al. (2015) OR list all authors.
+- Four or more authors: use first author followed by et al. (in italics). Example: Young, H.D. et al. (2015)
 
 --- BOOKS ---
 
@@ -92,15 +92,18 @@ Note: In-text citation should give the author(s) of the chapter, not the editor.
 Template:
   Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference.
 
-If accessed online:
-  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference. Available at: DOI or URL (Accessed: date).
+If accessed online with DOI:
+  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference. doi: https://doi.org/...
+
+If accessed online without DOI:
+  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference. Available at: URL (Accessed: date).
 
 Note: Capitalise first letter of each word in the journal title, except linking words (and, of, the, for).
 
 Examples:
   Sridhar, S. (2025) 'Constructive peer review made practical: a guide to the EMPATHY framework', Journal of Marketing, 89(3), pp. 1-12.
   Erbil, D.G. (2020) 'A review of flipped classroom and cooperative learning method within the context of Vygotsky theory', Frontiers in Psychology, 11, article 1157. Available at: https://www.frontiersin.org/article/10.3389/fpsyg.2020.01157 (Accessed: 6 May 2024).
-  Barke, M. and Mowl, G. (2016) 'Malaga - a failed resort of the early twentieth century?', Journal of Tourism History, 2(3), pp. 187-212. Available at: https://doi.org/10.1080/1755182X.2010.523145.
+  Barke, M. and Mowl, G. (2016) 'Malaga - a failed resort of the early twentieth century?', Journal of Tourism History, 2(3), pp. 187-212. doi: https://doi.org/10.1080/1755182X.2010.523145
 
 --- NEWSPAPER ARTICLES ---
 
@@ -165,10 +168,11 @@ Example:
 - Book titles, journal titles, newspaper titles are in italics.
 - Article titles and chapter titles are in single quotation marks and NOT in italics.
 - Use 'and' between author names, not '&'.
+- Four or more authors: use first author followed by et al. (in italics).
 - Use 'ed.' for one editor, 'eds.' for multiple editors.
 - Edition is abbreviated to 'edn.' (e.g. 2nd edn., 3rd edn.) to distinguish from 'ed.' (editor).
-- Include 'Available at:' for online sources, followed by URL or DOI.
-- Include '(Accessed: date)' for online sources.
+- DOIs: prefix with the literal string doi: followed by the full URL (e.g. doi: https://doi.org/10.1234/example). Do NOT put a full stop after a DOI.
+- URLs: prefix with 'Available at:' and include '(Accessed: date)'. Do NOT put a full stop after a URL.
 - Use sentence case for article/chapter titles (only capitalise first word and proper nouns).
 - Use title case for journal/newspaper names (capitalise major words).
 - Reference list is alphabetical by author surname.

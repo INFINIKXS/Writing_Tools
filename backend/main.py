@@ -1478,10 +1478,22 @@ Respond in strict JSON only:
 
 def classify_source_type(metadata: dict) -> str:
     """Classify the source type based on available metadata fields."""
+    title = (metadata.get("title") or "").lower()
+    source = (metadata.get("source") or "").lower()
+    
     if metadata.get("volume") or metadata.get("issue"):
         return "Journal Article"
     if metadata.get("doi"):
         return "Journal Article"  # Most DOI content is journal articles
+    # Check for dissertation/thesis keywords in title
+    if any(kw in title for kw in ("dissertation", "thesis")):
+        return "Dissertation"
+    # Check for report
+    if metadata.get("report_number") or any(kw in title for kw in ("report", "working paper", "technical report")):
+        return "Report"
+    # Check for newspaper (has day_month and a source name)
+    if metadata.get("day_month") and source:
+        return "Newspaper Article"
     if metadata.get("publisher"):
         return "Book"
     if metadata.get("url"):
@@ -1557,6 +1569,16 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
         else:
             author_str = ', '.join(van_authors) + '.'
     
+    # ─── Harvard author formatting ───
+    author_str_html = author_str  # Default: same as plain text
+    if style == "harvard":
+        if len(authors) >= 4:
+            author_str = f"{authors[0]} et al."
+            author_str_html = f"{authors[0]} <i>et al.</i>"
+        # Harvard uses "no date" instead of "n.d."
+        if year == "n.d.":
+            year = "no date"
+    
     # Build location string (vol, issue, pages, DOI/URL)
     location_parts = []
     if volume and issue:
@@ -1564,7 +1586,9 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     elif volume:
         location_parts.append(volume)
     if pages:
-        if location_parts:
+        if location_parts and style == "harvard":
+            location_parts.append(f", pp. {pages}")  # Harvard always uses pp.
+        elif location_parts:
             location_parts.append(f", {pages}")
         else:
             location_parts.append(f"pp. {pages}")
@@ -1580,44 +1604,210 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     
     # ─── Harvard Style ───
     if style == "harvard":
+        # Read additional metadata (gracefully skip if missing)
+        editor = metadata.get("editor")
+        edition = metadata.get("edition")
+        place = metadata.get("place") or metadata.get("place_of_publication")
+        accessed_date = metadata.get("accessed_date") or metadata.get("accessed")
+        day_month = metadata.get("day_month")
+        report_number = metadata.get("report_number")
+        award = metadata.get("award")
+        awarding_body = metadata.get("awarding_body")
+
+        # Build publisher with optional place: "Place: Publisher"
+        pub_str = f"{place}: {publisher}" if place and publisher else (publisher or place or "")
+
+        # Build DOI/URL ending (no trailing full stop after DOI/URL)
+        ending = ""
+        if doi:
+            ending = f" doi: https://doi.org/{doi}"
+        elif url:
+            ending = f" Available at: {url}"
+            if accessed_date:
+                ending += f" (Accessed: {accessed_date})"
+
+        # ── Journal Article (Rules 4-6) ──
         if ref_type == "Journal Article" and source:
-            # Author (Year) 'Title'. Source, vol(issue), pages. DOI
-            ref_plain = f"{author_str} ({year}) '{title}'. {source}"
-            ref_html = f"{author_str} ({year}) '{title}'. <i>{source}</i>"
+            ref_plain = f"{author_str} ({year}) '{title}', {source}"
+            ref_html = f"{author_str_html} ({year}) '{title}', <i>{source}</i>"
             if location:
                 ref_plain += f", {location}"
                 ref_html += f", {location}"
             ref_plain += "."
             ref_html += "."
-            if doi_str:
-                ref_plain += f" doi: {doi_str}"
-                ref_html += f" doi: {doi_str}"
-        elif ref_type in ("Book", "Book Chapter"):
-            # Author (Year) Title. Publisher.
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Book Chapter (Rule 3) ──
+        elif ref_type == "Book Chapter":
+            ref_plain = f"{author_str} ({year}) '{title}'"
+            ref_html = f"{author_str_html} ({year}) '{title}'"
+            if editor:
+                ref_plain += f", in {editor}"
+                ref_html += f", in {editor}"
+            if source:  # Book title
+                ref_plain += f" {source}"
+                ref_html += f" <i>{source}</i>"
+            if edition:
+                ref_plain += f". {edition}"
+                ref_html += f". {edition}"
+            if pub_str:
+                ref_plain += f". {pub_str}"
+                ref_html += f". {pub_str}"
+            if pages:
+                ref_plain += f", pp. {pages}"
+                ref_html += f", pp. {pages}"
+            ref_plain += "."
+            ref_html += "."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Book (Rules 1-2) ──
+        elif ref_type == "Book":
             ref_plain = f"{author_str} ({year}) {title}."
-            ref_html = f"{author_str} ({year}) <i>{title}</i>."
-            if publisher:
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i>."
+            if edition:
+                ref_plain += f" {edition}."
+                ref_html += f" {edition}."
+            if pub_str:
+                ref_plain += f" {pub_str}."
+                ref_html += f" {pub_str}."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Report (Rules 8-9) ──
+        elif ref_type == "Report":
+            ref_plain = f"{author_str} ({year}) {title}."
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i>."
+            if report_number:
+                ref_plain += f" {report_number}."
+                ref_html += f" {report_number}."
+            if pub_str:
+                ref_plain += f" {pub_str}."
+                ref_html += f" {pub_str}."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Conference Paper (Rule 12) ──
+        elif ref_type == "Conference Paper":
+            ref_plain = f"{author_str} ({year}) '{title}'"
+            ref_html = f"{author_str_html} ({year}) '{title}'"
+            if source:  # Conference title
+                ref_plain += f", {source}"
+                ref_html += f", <i>{source}</i>"
+            ref_plain += "."
+            ref_html += "."
+            if pub_str:
+                ref_plain += f" {pub_str}"
+                ref_html += f" {pub_str}"
+            if pages:
+                ref_plain += f", pp. {pages}"
+                ref_html += f", pp. {pages}"
+            ref_plain += "."
+            ref_html += "."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Dissertation / Thesis (Rule 13) ──
+        elif ref_type in ("Dissertation", "Thesis"):
+            ref_plain = f"{author_str} ({year}) {title}."
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i>."
+            if award:
+                ref_plain += f" {award}."
+                ref_html += f" {award}."
+            if awarding_body:
+                ref_plain += f" {awarding_body}."
+                ref_html += f" {awarding_body}."
+            elif publisher:
                 ref_plain += f" {publisher}."
                 ref_html += f" {publisher}."
-            if doi_str:
-                ref_plain += f" doi: {doi_str}"
-                ref_html += f" doi: {doi_str}"
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Newspaper Article (Rule 14) ──
+        elif ref_type == "Newspaper Article":
+            ref_plain = f"{author_str} ({year}) '{title}'"
+            ref_html = f"{author_str_html} ({year}) '{title}'"
+            if source:  # Newspaper name
+                ref_plain += f", {source}"
+                ref_html += f", <i>{source}</i>"
+            if day_month:
+                ref_plain += f", {day_month}"
+                ref_html += f", {day_month}"
+            if pages:
+                ref_plain += f", p. {pages}"
+                ref_html += f", p. {pages}"
+            ref_plain += "."
+            ref_html += "."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Blog Post (Rule 10) ──
+        elif ref_type == "Blog Post":
+            ref_plain = f"{author_str} ({year}) '{title}'"
+            ref_html = f"{author_str_html} ({year}) '{title}'"
+            if source:  # Blog title
+                ref_plain += f", {source}"
+                ref_html += f", <i>{source}</i>"
+            if day_month:
+                ref_plain += f", {day_month}"
+                ref_html += f", {day_month}"
+            ref_plain += "."
+            ref_html += "."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Podcast (Rule 15) ──
+        elif ref_type == "Podcast":
+            ref_plain = f"{author_str} ({year}) {title} [Podcast]."
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i> [Podcast]."
+            if day_month:
+                ref_plain += f" {day_month}."
+                ref_html += f" {day_month}."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Dataset (Rule 18) ──
+        elif ref_type == "Dataset":
+            ref_plain = f"{author_str} ({year}) '{title}'."
+            ref_html = f"{author_str_html} ({year}) '{title}'."
+            if edition:
+                ref_plain += f" {edition}."
+                ref_html += f" {edition}."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Web Page (Rule 7) ──
         elif ref_type == "Web Page":
-            # Author (Year) Title. Available at: URL (Accessed: date).
             ref_plain = f"{author_str} ({year}) {title}."
-            ref_html = f"{author_str} ({year}) <i>{title}</i>."
-            if doi_str:
-                ref_plain += f" Available at: {doi_str}"
-                ref_html += f" Available at: {doi_str}"
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i>."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
+
+        # ── Fallback (unknown type) ──
         else:
             ref_plain = f"{author_str} ({year}) {title}."
-            ref_html = f"{author_str} ({year}) <i>{title}</i>."
+            ref_html = f"{author_str_html} ({year}) <i>{title}</i>."
             if source:
                 ref_plain += f" {source}."
                 ref_html += f" <i>{source}</i>."
-            if doi_str:
-                ref_plain += f" doi: {doi_str}"
-                ref_html += f" doi: {doi_str}"
+            if pub_str:
+                ref_plain += f" {pub_str}."
+                ref_html += f" {pub_str}."
+            if ending:
+                ref_plain += ending
+                ref_html += ending
     
     # ─── APA 7th Style ───
     elif style == "apa":
