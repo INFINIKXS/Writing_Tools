@@ -27,36 +27,36 @@ Direct quotation:
 === AUTHOR FORMATTING ===
 
 - Invert all author names: Surname Initials (no periods/dots between initials).
-- List up to 6 authors, separated by commas.
-- For 7+ authors: list first 6 then ", et al."
+- NLM lists ALL authors by default (do not use et al. unless specifically required by an exception).
+- Separate author names with a comma and a space.
 - No "and" between authors; use only commas.
-- End author list with a period.
+- End the entire author block with a period.
 
 Examples:
   One author:    Sobande A.
   Two authors:   Sobande A, Arhibong E.
-  Six authors:   Author A, Author B, Author C, Author D, Author E, Author F.
-  Seven+ authors: Author A, Author B, Author C, Author D, Author E, Author F, et al.
+  Seven authors: Author A, Author B, Author C, Author D, Author E, Author F, Author G.
 
 === FULL REFERENCE TEMPLATES ===
 
 --- JOURNAL ARTICLE ---
 
 Template:
-  Author(s). Title of article. Abbreviated Journal Title. Year Mon Day;Volume(Issue):Pages. doi: number
+  Author. Article Title. Journal Title. YYYY Mmm DD;Volume(Issue):Pages.
 
 Examples:
   Sobande A, Arhibong E, Akinola S. Pregnancy outcome in asthmatic patients from high altitudes. Int J Gynaecol Obstet. 2002 May 1;77(2):117-21.
-
-  Van Hooijdonk R, Winters T, Fischer JC, van Dongen-Lases EC, Krinsley JS, Preiser J, et al. Accuracy and limitation of continuous glucose monitoring using spectroscopy in critically ill patients. Ann Intensive Care. 2014 March 6;4(8): [about 8p.]. doi: 10.1186.2110-5820-4-8
+  Van Hooijdonk R, Winters T, Fischer JC, van Dongen-Lases EC, Krinsley JS, Preiser J. Accuracy and limitation of continuous glucose monitoring using spectroscopy in critically ill patients. Ann Intensive Care. 2014 March 6;4(8):[about 8p.]. doi:10.1186.2110-5820-4-8.
 
 Rules:
-  - Abbreviate journal titles (omit conjunctions/prepositions, capitalize remaining words).
-  - Date format: YYYY Mon DD (abbreviate month to 3 letters).
-  - Conclude date with semicolon.
-  - Volume(Issue): no abbreviations like "vol." or "iss.".
+  - Abbreviate journal titles (omit conjunctions/prepositions, capitalize remaining words, no periods).
+  - Punctuation Chain (Date, Volume, Issue, Pages) is strict:
+    * Date: Ends with a semicolon (;) unless there is no volume/issue, then a colon (:).
+    * Volume: Ends with no punctuation (unless no issue, then a colon).
+    * Issue: Enclosed in parentheses () and ends with a colon (:).
+    * Pages: Ends with a period (.).
   - Condense page numbers (117-119 → 117-9).
-  - Include DOI when available; otherwise include URL with "Available from:".
+  - DOIs/URLs go in the "Notes" section at the end (e.g., doi:[doi]. or Available from: [url]).
 
 --- BOOK (PRINT) ---
 

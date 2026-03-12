@@ -1553,7 +1553,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
 
     # ─── Vancouver author formatting ───
     if style == "vancouver":
-        # Vancouver: Surname Initials (no periods), comma-separated, max 6 then et al.
+        # Vancouver (NLM): Surname Initials (no periods), comma-separated.
+        # NLM lists ALL authors by default, ending with a period.
         van_authors = []
         for a in authors:
             # If already in "Surname AB" format, keep as-is
@@ -1564,10 +1565,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 van_authors.append(f"{surname} {initials}")
             else:
                 van_authors.append(a.strip())
-        if len(van_authors) > 6:
-            author_str = ', '.join(van_authors[:6]) + ', et al.'
-        else:
-            author_str = ', '.join(van_authors) + '.'
+        author_str = ', '.join(van_authors) + '.'
     
     # ─── Harvard author formatting ───
     author_str_html = author_str  # Default: same as plain text
@@ -1869,88 +1867,180 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {doi_str}"
                 ref_html += f" {doi_str}"
     
-    # ─── Vancouver Style ───
+    # ─── Vancouver (NLM) Style ───
     elif style == "vancouver":
+        language = metadata.get("language")
+        part_name = metadata.get("part_name")
+        part_title = metadata.get("part_title")
+        day_month = metadata.get("day_month")
+        
+        # Build Notes section (DOI / URL)
+        notes = ""
+        if doi:
+            notes = f" doi:{doi}."
+        elif url:
+            notes = f" Available from: {url}"
+            
         if ref_type == "Journal Article" and source:
-            # Author(s). Title. Abbreviated Journal. Year;Vol(Issue):Pages. doi: number
-            ref_plain = f"{author_str} {title}. {source}."
-            ref_html = f"{author_str} {title}. {source}."
-            date_str = year
-            # Build Vancouver-specific location: colon before pages, condensed page numbers
+            # Date builder: YYYY Mmm DD
+            date_str = f"{year} {day_month}" if day_month else year
+            
+            # Location builder: Vol(Issue) / condensed pages
             van_loc_parts = []
             if volume and issue:
                 van_loc_parts.append(f"{volume}({issue})")
             elif volume:
                 van_loc_parts.append(volume)
-            if pages:
-                condensed = condense_pages(pages)
-                if van_loc_parts:
-                    van_loc_parts.append(f":{condensed}")
+                
+            condensed_pages = condense_pages(pages) if pages else ""
+            
+            # Punctuation Chain Builder
+            chain = f" {date_str}"
+            if van_loc_parts:
+                chain += f";{''.join(van_loc_parts)}"
+                if condensed_pages:
+                    chain += f":{condensed_pages}."
                 else:
-                    van_loc_parts.append(condensed)
-            van_location = ''.join(van_loc_parts)
-            if van_location:
-                ref_plain += f" {date_str};{van_location}."
-                ref_html += f" {date_str};{van_location}."
+                    chain += "."
             else:
-                ref_plain += f" {date_str}."
-                ref_html += f" {date_str}."
-            if doi:
-                ref_plain += f" doi: {doi}"
-                ref_html += f" doi: {doi}"
-            elif url:
-                ref_plain += f" Available from: {url}"
-                ref_html += f" Available from: {url}"
+                # No volume/issue; separate date from pages with a colon
+                if condensed_pages:
+                    chain += f":{condensed_pages}."
+                else:
+                    chain += "."
+            
+            # ── Non-English Journal Article (Rule 3) ──
+            if language and language.lower() != "english":
+                ref_plain = f"{author_str} [{title}]. {source}."
+                ref_html = f"{author_str} [{title}]. {source}."
+                ref_plain += chain + f" {language}."
+                ref_html += chain + f" {language}."
+            
+            # ── Part of a Journal Article (Rule 5) ──
+            elif part_name and part_title and pages:
+                # Build standard first without pages, then add part details
+                base_chain = f" {date_str}"
+                if van_loc_parts:
+                    base_chain += f";{''.join(van_loc_parts)}"
+                else:
+                    base_chain += ":"
+                base_chain += "."
+                
+                ref_plain = f"{author_str} {title}. {source}.{base_chain} {part_name}, {part_title}; p. {pages}."
+                ref_html = f"{author_str} {title}. {source}.{base_chain} {part_name}, {part_title}; p. {pages}."
+                
+            # ── Standard Journal Article (Rules 1, 2, 4) ──
+            else:
+                ref_plain = f"{author_str} {title}. {source}.{chain}"
+                ref_html = f"{author_str} {title}. {source}.{chain}"
+
+            if notes:
+                ref_plain += notes
+                ref_html += notes
+
+        # ── Book Chapter ──
         elif ref_type == "Book Chapter":
             # Chapter Author. Chapter title. In: Editor(s), editors. Book title. Place: Publisher; Year. p. Pages.
+            editor = metadata.get("editor")
+            place = metadata.get("place") or metadata.get("place_of_publication")
+            
             ref_plain = f"{author_str} {title}."
             ref_html = f"{author_str} {title}."
-            if publisher:
+            
+            if editor:
+                ref_plain += f" In: {editor}, editors."
+                ref_html += f" In: {editor}, editors."
+                
+            if source: # Book Title
+                ref_plain += f" {source}."
+                ref_html += f" {source}."
+                
+            if place and publisher:
+                ref_plain += f" {place}: {publisher};"
+                ref_html += f" {place}: {publisher};"
+            elif publisher:
                 ref_plain += f" {publisher};"
                 ref_html += f" {publisher};"
+                
             ref_plain += f" {year}."
             ref_html += f" {year}."
+            
             if pages:
                 condensed = condense_pages(pages)
                 ref_plain += f" p. {condensed}."
                 ref_html += f" p. {condensed}."
-            if doi:
-                ref_plain += f" doi: {doi}"
-                ref_html += f" doi: {doi}"
-            elif url:
-                ref_plain += f" Available from: {url}"
-                ref_html += f" Available from: {url}"
+                
+            if notes:
+                ref_plain += notes
+                ref_html += notes
+
+        # ── Book ──
         elif ref_type == "Book":
             # Author(s). Title. Edition. Place: Publisher; Year. Pages p.
+            place = metadata.get("place") or metadata.get("place_of_publication")
+            
             ref_plain = f"{author_str} {title}."
             ref_html = f"{author_str} {title}."
-            if publisher:
+            
+            if place and publisher:
+                ref_plain += f" {place}: {publisher};"
+                ref_html += f" {place}: {publisher};"
+            elif publisher:
                 ref_plain += f" {publisher};"
                 ref_html += f" {publisher};"
+                
             ref_plain += f" {year}."
             ref_html += f" {year}."
-            if doi_str:
-                ref_plain += f" Available from: {doi_str}"
-                ref_html += f" Available from: {doi_str}"
+            
+            if notes:
+                ref_plain += notes
+                ref_html += notes
+
+        # ── Web Page ──
         elif ref_type == "Web Page":
+            # Author. Title [Internet]. Place: Publisher; Year. Available from: URL
+            place = metadata.get("place") or metadata.get("place_of_publication")
+            
             ref_plain = f"{author_str} {title} [Internet]."
             ref_html = f"{author_str} {title} [Internet]."
-            if publisher:
+            
+            if place and publisher:
+                ref_plain += f" {place}: {publisher};"
+                ref_html += f" {place}: {publisher};"
+            elif publisher:
                 ref_plain += f" {publisher};"
                 ref_html += f" {publisher};"
+                
             ref_plain += f" {year}."
             ref_html += f" {year}."
-            if doi_str:
-                ref_plain += f" Available from: {doi_str}"
-                ref_html += f" Available from: {doi_str}"
+            
+            if notes:
+                ref_plain += notes
+                ref_html += notes
+
+        # ── Dissertation / Thesis ──
         elif ref_type in ("Dissertation", "Thesis"):
+            # Author. Title [dissertation]. Place: Publisher; Year.
+            place = metadata.get("place") or metadata.get("place_of_publication")
+            
             ref_plain = f"{author_str} {title} [dissertation]."
             ref_html = f"{author_str} {title} [dissertation]."
-            if publisher:
+            
+            if place and publisher:
+                ref_plain += f" {place}: {publisher};"
+                ref_html += f" {place}: {publisher};"
+            elif publisher:
                 ref_plain += f" {publisher};"
                 ref_html += f" {publisher};"
+                
             ref_plain += f" {year}."
             ref_html += f" {year}."
+            
+            if notes:
+                ref_plain += notes
+                ref_html += notes
+
+        # ── Fallback ──
         else:
             ref_plain = f"{author_str} {title}."
             ref_html = f"{author_str} {title}."
@@ -1959,9 +2049,10 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_html += f" {source}."
             ref_plain += f" {year}."
             ref_html += f" {year}."
-            if doi_str:
-                ref_plain += f" {doi_str}"
-                ref_html += f" {doi_str}"
+            
+            if notes:
+                ref_plain += notes
+                ref_html += notes
     
     # ─── Fallback (unknown style, default to plain) ───
     else:
