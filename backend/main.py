@@ -977,7 +977,8 @@ DOCUMENT TEXT (for reference matching, irregularity detection, AND independent s
 {full_text[:1000000]}
 
 Your tasks:
-1. Extract and list all references from the reference section of the document (typically at the end, under headings like 'References', 'Bibliography', etc.).
+1. Extract and list all references from the reference section of the document (typically at the end, under headings like 'References', 'Bibliography', etc.). 
+   -> CRITICAL: Ensure EACH unique reference is a separate string in the array. If the source text merged multiple references onto the same line (e.g., missing a newline between them), you MUST split them into distinct, separate array items. A new reference typically begins with authors' surnames and a year.
 2. Match each pre-extracted citation to its corresponding reference.
 3. Identify mismatches:
    - Citations without a matching reference (missing references).

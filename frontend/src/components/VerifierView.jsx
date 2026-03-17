@@ -220,9 +220,10 @@ export default function VerifierView() {
                         </button>
                     </div>
 
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         {[
                             { label: 'Citations', value: results.num_unique_citations || 0 },
+                            { label: 'Unique Citations', value: new Set(results.string_verification?.confirmed_matches?.map(m => m.citation.toLowerCase())).size || 0 },
                             { label: 'References', value: results.num_references || 0 },
                             { label: 'Missing Refs', value: results.missing_references_for_citations?.length || 0 },
                             { label: 'Unused Refs', value: results.unused_references?.length || 0 },
