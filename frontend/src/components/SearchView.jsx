@@ -84,7 +84,7 @@ export default function SearchView() {
     };
 
     const handleKeyDown = (e) => {
-        if (e.key === 'Enter' && e.ctrlKey) {
+        if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             handleSearch();
         }
@@ -215,7 +215,7 @@ export default function SearchView() {
                                 value={query}
                                 onChange={(e) => setQuery(e.target.value)}
                                 onKeyDown={handleKeyDown}
-                                placeholder={"Paste sentences to find in your source documents...\n\nEach line is a separate search query.\nPress Ctrl+Enter to search."}
+                                placeholder={"Paste sentences to find in your source documents...\n\nEach line is a separate search query.\nPress Enter to search, Shift+Enter for a new line."}
                                 className="flex-1 bg-white/[0.02] border border-white/8 rounded-xl p-3 text-sm text-neutral-200 font-mono leading-relaxed resize-none outline-none focus:border-white/20 focus:ring-1 focus:ring-white/10 transition-colors placeholder-neutral-700 h-[100px]"
                                 spellCheck="false"
                             />

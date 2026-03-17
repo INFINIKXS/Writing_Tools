@@ -163,6 +163,45 @@ def search(query: str, max_results: int = 50) -> list[dict]:
                     if len(results) >= max_results:
                         break
 
+        # Strategy 3: Chunked fallback for long/messy queries
+        # If the user copy-pasted a whole paragraph, exact phrase and substring
+        # might fail due to extraction errors (e.g. missing space) or page boundaries.
+        if not results and len(query_clean) > 80:
+            words = query_clean.split()
+            chunk_len = 15 # Take a 15-word chunk
+            chunks = []
+            # Extract chunks every 7 words for overlap
+            for i in range(0, len(words), max(1, chunk_len // 2)):
+                chunk = " ".join(words[i:i+chunk_len])
+                if len(chunk) > 30:
+                    chunks.append(chunk)
+
+            if chunks:
+                # rows is already defined from Strategy 2
+                for row in rows:
+                    content_normalized = _normalize(row["content"]).lower()
+                    matched_positions = [] # Track match positions to avoid overlapping snippets
+                    for chunk in chunks:
+                        idx = content_normalized.find(chunk.lower())
+                        if idx != -1:
+                            # Check if we already have a snippet for this region (within 250 chars)
+                            if not any(abs(idx - pos) < 250 for pos in matched_positions):
+                                matched_positions.append(idx)
+                                snippet = _extract_context(row["content"], chunk)
+                                results.append({
+                                    "doc_id": row["doc_id"],
+                                    "filename": row["filename"],
+                                    "page_num": row["page_num"],
+                                    "snippet": snippet["text"],
+                                    "match_start": snippet["match_start"],
+                                    "match_end": snippet["match_end"],
+                                    "match_type": "chunk_fallback",
+                                })
+                                if len(results) >= max_results:
+                                    break
+                    if len(results) >= max_results:
+                        break
+
         return results
     finally:
         conn.close()

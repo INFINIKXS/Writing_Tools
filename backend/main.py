@@ -772,6 +772,17 @@ def extract_citations_regex(body_text: str) -> list:
                 return True
         return False
     
+    # ─── Filter out document cross-references ───
+    # Patterns like (Table 1), (Figure 2), (Appendix A)
+    # Also handles multiple (Table 1, Figure 2) or (Table 1 and 2) or (Table 1 Figure 2)
+    cross_ref_pattern = re.compile(
+        r'\(\s*(?:Table|Tab\.|Figure|Fig\.|Appendix|App\.)\s+[A-Za-z0-9]+'
+        r'(?:\s*(?:,|and|&)?\s*(?:Table|Tab\.|Figure|Fig\.|Appendix|App\.)?\s*[A-Za-z0-9]+)*\s*\)', 
+        re.IGNORECASE
+    )
+    for match in cross_ref_pattern.finditer(body_text):
+        matched_spans.append((match.start(), match.end()))
+        
     # Phase 1: Find and split multi-citation blocks
     for match in MULTI_CITATION_PATTERN.finditer(body_text):
         if is_overlapping(match.start(), match.end()):
