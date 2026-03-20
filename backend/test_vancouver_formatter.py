@@ -16,7 +16,7 @@ def run_tests():
         "pages": "112-116",
     }
     r1 = format_reference(m1, "vancouver")
-    assert r1["formatted"] == "Petitti DB, Crooks VC, Buckwalter JG, Chui V, Jones A, Smith B et al. Blood pressure levels: A mendelian randomisation study. Arch Neurol. 2005 Jan;62(1):112-6.", f"Fail 1: {r1['formatted']}"
+    assert r1["formatted"] == "Petitti DB, Crooks VC, Buckwalter JG, Chui V, Jones A, Smith B, et al. Blood pressure levels: a mendelian randomisation study. Arch Neurol. 2005 Jan;62(1):112-6.", f"Fail 1: {r1['formatted']}"
 
     # 2. Journal Article with Notes and Acronyms in Title
     m2 = {
@@ -33,7 +33,7 @@ def run_tests():
         "doi": "10.1542/peds.2004-1441",
     }
     r2 = format_reference(m2, "vancouver")
-    assert r2["formatted"] == "Walsh B. The importance of leptin to reproduction with mRNA and DNA. BMJ. 2005 Mar 26;330(7493):699. Epub 2005 Mar 9. doi:10.1542/peds.2004-1441.", f"Fail 2: {r2['formatted']}"
+    assert r2["formatted"] == "Walsh B. The importance of Leptin to reproduction with mRNA and DNA. BMJ. 2005 Mar 26;330(7493):699. Epub 2005 Mar 9. doi:10.1542/peds.2004-1441.", f"Fail 2: {r2['formatted']}"
 
     # 3. Non-English
     m3 = {

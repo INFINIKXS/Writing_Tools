@@ -14,10 +14,11 @@ Vancouver strictly depends on a specific punctuation chain without spaces. Follo
    - Separate author names with a comma and a space (e.g., Smith JA, Jones B, Doe C).
    - DO NOT use "and" or "&" before the last author.
    - End the entire author block with a period.
-   - List ALL authors unless a specific space-saving limit is explicitly required.
+   - If there are 6 or fewer authors, list all of them.
+   - If there are more than 6 authors, list ONLY the first 6, followed by ", et al." (you MUST include a comma before et al.).
 
-3. Article Titles
    - Use sentence case (capitalize only the first word, proper nouns, and acronyms).
+   - Do NOT capitalize the first word after a colon (unless it is a proper noun/acronym).
    - End the title with a period.
 
 4. Journal Titles

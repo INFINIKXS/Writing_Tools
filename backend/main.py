@@ -1227,6 +1227,9 @@ def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expecte
                     metadata["type"] = "Journal Article"
                     field_sources["type"] = "pubmed"
                     
+                    # Explicitly claim the DOI so the AI transparency panel knows it's verified by PubMed
+                    field_sources["doi"] = "pubmed"
+                    
                     return True
     except Exception as e:
         print(f"[PubMed] Lookup failed for {doi}: {e}")
@@ -1320,6 +1323,9 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
             if cr_type in type_map:
                 field_sources["type"] = "crossref"
                 
+            # Explicitly claim the DOI so the AI transparency panel knows it's verified by CrossRef
+            field_sources["doi"] = "crossref"
+
             return True
     except Exception as e:
         print(f"[CrossRef] Lookup failed for {doi}: {e}")
@@ -1387,19 +1393,22 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
             page_text = reader.pages[i].extract_text() or ''
             first_pages_text += page_text + '\n'
         
+        regex_dois = []
         if first_pages_text.strip():
-            # DOI extraction — scan all 3 pages
-            doi_match = re.search(
-                r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,}/[a-zA-Z0-9.\-_/:()\[\]]+)',
+            # DOI extraction — Find all potential DOIs in case the first one belongs to a cited paper
+            all_doi_matches = re.findall(
+                r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)?(10\.\d{4,}/[a-zA-Z0-9.\-_/:()\[\]]+)',
                 first_pages_text, re.IGNORECASE
             )
-            if doi_match:
-                doi = doi_match.group(1)
-                # Strip trailing punctuation
-                doi = re.sub(r'[\].;,()]+$', '', doi)
-                # Strip trailing common words accidentally appended
-                doi = re.sub(r'(?i)(Research|Article|Review|Copyright|Downloaded)\b.*$', '', doi)
-                metadata["doi"] = doi
+            if all_doi_matches:
+                for match in all_doi_matches:
+                    clean_doi = match.rstrip('].;,()')
+                    clean_doi = re.sub(r'(?i)(Research|Article|Review|Copyright|Downloaded)\b.*$', '', clean_doi)
+                    if clean_doi not in regex_dois:
+                        regex_dois.append(clean_doi)
+            
+            if regex_dois:
+                metadata["doi"] = regex_dois[0]
                 field_sources["doi"] = "text_parsing"
             
             # Title: find best candidate across all 3 pages
@@ -1526,7 +1535,7 @@ Extract these fields from the document:
 - year: The publication year (not copyright year if different)
 - source: Journal name or publisher name if visible
 - source_abbreviated: If the source is a journal, provide its strictly abbreviated NLM catalog form (e.g. 'J Am Med Assoc'). Omit periods. If not a journal, return null. THIS IS EXEMPT FROM THE "ONLY WHAT YOU CAN SEE" RULE.
-- doi: The Digital Object Identifier (e.g. 10.1234/example)
+- doi: The Digital Object Identifier of exactly THIS main document (Beware: do not extract DOIs of cited references in the bibliography or abstract!)
 
 DOCUMENT TEXT (first 3 pages):
 {first_pages_text[:8000]}
@@ -1551,25 +1560,46 @@ Respond in strict JSON only:
             ai_data = json.loads(ai_text)
             print(f"[AI Verification] AI returned: {ai_data}")
             
-            # If AI found a new DOI, retry PubMed/CrossRef with the CORRECT DOI!
-            # (Sometimes regex blindly grabs a cited paper's DOI from the first page)
+            # If the initial API check failed (due to title mismatch from a bad regex DOI),
+            # we iterate through the AI's DOI and all other regex DOIs on the page
+            # until we find the one that actually belongs to this exact paper!
             ai_doi = ai_data.get("doi")
-            if ai_doi and ai_doi != metadata.get("doi"):
-                print(f"[AI Verification] AI found a different DOI ({ai_doi}). Retrying API lookups to correct potential Regex error.")
-                # Pass expected title for verification against hallucination
-                expected = ai_data.get("title") or metadata.get("title")
+            expected = ai_data.get("title") or metadata.get("title")
+            
+            candidate_dois = []
+            if ai_doi:
+                candidate_dois.append(ai_doi)
+            candidate_dois.extend(regex_dois)
+            # Deduplicate preserving order
+            candidate_dois = list(dict.fromkeys(d for d in candidate_dois if d))
+            
+            # Run the recovery/verification loop if:
+            # 1. The initial API check failed (title mismatch or no match found)
+            # OR 2. The AI specifically extracted a different DOI than the one we are currently using
+            needs_recovery = (not api_success) or (ai_doi and ai_doi != metadata.get("doi"))
+            
+            if needs_recovery and candidate_dois:
+                print(f"[AI Verification] Attempting verification loop using {len(candidate_dois)} candidate DOIs...")
+                retry_success = False
+                for c_doi in candidate_dois:
+                    if c_doi == metadata.get("doi"):
+                        continue  # We already tried this one in Step 3 and it failed
+                        
+                    print(f"  -> Testing candidate DOI: {c_doi}")
+                    retry_success = perform_pubmed_lookup(c_doi, metadata, field_sources, expected_title=expected)
+                    if not retry_success:
+                        retry_success = perform_crossref_lookup(c_doi, metadata, field_sources, expected_title=expected)
+                        
+                    if retry_success:
+                        print(f"  ✓ Success! Recovered correct paper metadata using DOI: {c_doi}")
+                        metadata["doi"] = c_doi
+                        field_sources["doi"] = "ai_verified" if c_doi == ai_doi else "regex_fallback"
+                        api_success = True
+                        metadata["crossref_failed"] = False
+                        break
                 
-                retry_success = perform_pubmed_lookup(ai_doi, metadata, field_sources, expected_title=expected)
                 if not retry_success:
-                    retry_success = perform_crossref_lookup(ai_doi, metadata, field_sources, expected_title=expected)
-                    
-                if retry_success:
-                    metadata["doi"] = ai_doi
-                    field_sources["doi"] = "ai_verified"
-                    api_success = True
-                    metadata["crossref_failed"] = False
-                else:
-                    print(f"[AI Verification] Rejected AI DOI {ai_doi} due to CrossRef lookup failure or title mismatch.")
+                    print(f"[AI Verification] Exhausted all candidate DOIs. None matched the paper's title '{expected}'.")
             
             # For each field: fill if missing, or override if from unreliable source (AI verification)
             # Only do this if CrossRef didn't already fill it (CrossRef is authoritative)
@@ -1692,21 +1722,47 @@ def condense_pages(pages_str: str) -> str:
     return f"{start}-{end}"  # Identical numbers, keep as-is
 
 def make_sentence_case(text: str) -> str:
-    """Intelligently downcase titles while preserving internal acronyms."""
+    """Intelligently downcase titles while preserving internal acronyms and proper nouns."""
     if not text: return ""
     words = text.split()
+    
+    # Check if string is aggressively Title Cased or UPPERCASED
+    # If >50% of words start with a capital letter, assume it needs full conversion.
+    capitalized_count = sum(1 for w in words if w[0].isupper() or w.isupper())
+    is_title_case = (capitalized_count / len(words)) > 0.5 if words else False
+    
     res = []
     for i, w in enumerate(words):
-        # preserve acronyms like USA, mRNA, etc.
-        if w.isupper() and len(w) > 1:
-            res.append(w)
-        elif sum(1 for c in w if c.isupper()) > 1:
-            res.append(w)
-        else:
-            if i == 0 or (i > 0 and words[i-1].endswith(':')):
-                res.append(w.capitalize())
+        # Always capitalize the very first word
+        if i == 0:
+            res.append(w.capitalize())
+            continue
+            
+        # NLM Rule: ALWAYS lowercase the word immediately following a colon
+        # (unless it's an acronym like USA)
+        if i > 0 and words[i-1].endswith(':'):
+            if w.isupper() and len(w) > 1:
+                res.append(w) # Preserve acronym after colon
             else:
                 res.append(w.lower())
+            continue
+            
+        # Preserve acronyms anywhere
+        if w.isupper() and len(w) > 1:
+            res.append(w)
+            continue
+        elif sum(1 for c in w if c.isupper()) > 1:
+            res.append(w)
+            continue
+            
+        # If it was originally Title Cased, we downcase normal words
+        if is_title_case:
+            res.append(w.lower())
+        else:
+            # If it was already sentence cased (e.g., from PubMed or AI),
+            # we PRESERVE the original capitalization! This saves proper nouns like "Mendelian".
+            res.append(w)
+
     return " ".join(res)
 
 def format_reference(metadata: dict, style: str = "harvard") -> dict:
@@ -1759,7 +1815,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 van_authors.append(a.strip())
         
         if len(van_authors) > 6:
-            author_str = ', '.join(van_authors[:6]) + ' et al.'
+            author_str = ', '.join(van_authors[:6]) + ', et al.'
         else:
             author_str = ', '.join(van_authors) + '.'
             

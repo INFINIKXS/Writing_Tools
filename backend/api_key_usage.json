@@ -2,7 +2,7 @@
   "service": "Google",
   "last_reset_date": "2026-03-20",
   "current_index": 3,
-  "total_requests_today": 64,
+  "total_requests_today": 79,
   "quota_limit_per_key": 20,
   "keys": [
     {
@@ -48,11 +48,11 @@
       "index": 3,
       "key_suffix": "...KkwY",
       "model_usage": {
-        "gemini-3-flash-preview": 4
+        "gemini-3-flash-preview": 19
       },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 4,
+      "quota_used": 19,
       "exhausted": false
     },
     {
