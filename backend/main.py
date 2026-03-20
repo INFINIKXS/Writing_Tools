@@ -1583,9 +1583,6 @@ Respond in strict JSON only:
                 print(f"[AI Verification] Attempting verification loop using {len(candidate_dois)} candidate DOIs...")
                 retry_success = False
                 for c_doi in candidate_dois:
-                    if c_doi == metadata.get("doi"):
-                        continue  # We already tried this one in Step 3 and it failed
-                        
                     print(f"  -> Testing candidate DOI: {c_doi}")
                     retry_success = perform_pubmed_lookup(c_doi, metadata, field_sources, expected_title=expected)
                     if not retry_success:
