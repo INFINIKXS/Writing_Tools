@@ -1056,6 +1056,38 @@ Output in strict JSON format only:
                 output_text = output_text[:-3].strip()
             analysis = json.loads(output_text)
 
+            # Post-process: Split merged references just in case the AI failed to separate them
+            def split_merged_references(refs):
+                split_refs = []
+                # Pattern: A space, followed by an Author's Last Name, initials (e.g. "Smith, J.")
+                split_pattern = re.compile(r'\s+(?=[A-Z][a-z\-\u2010-\u2015\w]+,\s*[A-Z]\.)')
+
+                for ref in refs:
+                    parts = split_pattern.split(ref)
+                    if len(parts) == 1:
+                        split_refs.append(parts[0].strip())
+                        continue
+                        
+                    current_ref = parts[0]
+                    for pt in parts[1:]:
+                        # Check if current_ref ends like a reference (year, URL, DOI, or page number)
+                        ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
+                        # Check if pt starts like a reference we expect (Surname, Initial.)
+                        starts_like_ref = bool(re.match(r'^[A-Z][a-z\-\u2010-\u2015\w]+,\s*[A-Z]\.', pt))
+                        
+                        if ends_like_ref and starts_like_ref:
+                            split_refs.append(current_ref.strip())
+                            current_ref = pt
+                        else:
+                            current_ref += " " + pt
+                            
+                    if current_ref.strip():
+                        split_refs.append(current_ref.strip())
+                return split_refs
+
+            if "references" in analysis:
+                analysis["references"] = split_merged_references(analysis["references"])
+
             analysis = count_references_and_citations(analysis)
 
             # Stage 5: Cross-validate Python vs AI
@@ -1121,6 +1153,85 @@ Output in strict JSON format only:
 
 # ─── PDF REFERENCE GENERATOR ───
 
+def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expected_title: str = None) -> bool:
+    """Attempt to fill metadata via PubMed NCBI E-utilities API. Returns True if successful.
+    PubMed natively returns NLM-abbreviated sources, sentence-cased titles, and e-locators."""
+    try:
+        search_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi?db=pubmed&term={doi}[doi]&retmode=json"
+        rs = requests.get(search_url, timeout=10)
+        if rs.status_code == 200:
+            s_data = rs.json()
+            pmids = s_data.get("esearchresult", {}).get("idlist", [])
+            if pmids:
+                pmid = pmids[0]
+                summary_url = f"https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esummary.fcgi?db=pubmed&id={pmid}&retmode=json"
+                r2 = requests.get(summary_url, timeout=10)
+                if r2.status_code == 200:
+                    sum_data = r2.json()
+                    result = sum_data.get("result", {}).get(str(pmid), {})
+                    if not result:
+                        return False
+
+                    pubmed_title = result.get("title", "")
+                    if expected_title and pubmed_title:
+                        t1 = "".join(c for c in expected_title.lower() if c.isalnum() or c.isspace()).strip()
+                        t2 = "".join(c for c in pubmed_title.lower() if c.isalnum() or c.isspace()).strip()
+                        ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
+                        if ratio < 0.6:
+                            print(f"[PubMed] Title mismatch for {doi}. Expected: '{expected_title}'. Got: '{pubmed_title}' (Ratio: {ratio:.2f})")
+                            return False
+                            
+                    authors = [a.get("name") for a in result.get("authors", []) if a.get("name")]
+                    if authors:
+                        metadata["authors"] = authors
+                        field_sources["authors"] = "pubmed"
+                        
+                    if result.get("title"):
+                        metadata["title"] = result.get("title")
+                        field_sources["title"] = "pubmed"
+                        
+                    if result.get("pubdate"):
+                        year_match = re.search(r'\b(19|20)\d{2}\b', result.get("pubdate"))
+                        if year_match:
+                            metadata["year"] = year_match.group(0)
+                        field_sources["year"] = "pubmed"
+                        
+                    if result.get("fulljournalname"):
+                        metadata["source"] = result.get("fulljournalname")
+                        field_sources["source"] = "pubmed"
+                        
+                    if result.get("source"):
+                        metadata["source_abbreviated"] = result.get("source")
+                        field_sources["source_abbreviated"] = "pubmed"
+                        
+                    if result.get("volume"):
+                        metadata["volume"] = str(result.get("volume"))
+                        field_sources["volume"] = "pubmed"
+                        
+                    if result.get("issue"):
+                        metadata["issue"] = str(result.get("issue"))
+                        field_sources["issue"] = "pubmed"
+                        
+                    if result.get("pages"):
+                        metadata["pages"] = str(result.get("pages"))
+                        field_sources["pages"] = "pubmed"
+                    elif result.get("elocationid"):
+                        eloc = str(result.get("elocationid"))
+                        if "doi:" in eloc.lower():
+                            eloc = eloc.split(":")[-1].strip()
+                            if "/" in eloc:
+                                eloc = eloc.split("/")[-1]
+                        metadata["pages"] = eloc
+                        field_sources["pages"] = "pubmed"
+                        
+                    metadata["type"] = "Journal Article"
+                    field_sources["type"] = "pubmed"
+                    
+                    return True
+    except Exception as e:
+        print(f"[PubMed] Lookup failed for {doi}: {e}")
+    return False
+
 def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expected_title: str = None) -> bool:
     """Attempt to fill metadata via CrossRef API. Returns True if successful.
     If expected_title is provided, rejects the lookup if the CrossRef title doesn't match."""
@@ -1174,6 +1285,11 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
             if container:
                 metadata["source"] = container[0]
                 field_sources["source"] = "crossref"
+                
+            short_container = data.get('short-container-title', [])
+            if short_container:
+                metadata["source_abbreviated"] = short_container[0]
+                field_sources["source_abbreviated"] = "crossref"
             
             if data.get('volume'):
                 metadata["volume"] = str(data['volume'])
@@ -1183,6 +1299,9 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
                 field_sources["issue"] = "crossref"
             if data.get('page'):
                 metadata["pages"] = str(data['page'])
+                field_sources["pages"] = "crossref"
+            elif data.get('article-number'):
+                metadata["pages"] = str(data['article-number'])
                 field_sources["pages"] = "crossref"
             if data.get('publisher'):
                 metadata["publisher"] = data['publisher']
@@ -1364,20 +1483,24 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
                     metadata["url"] = url_match.group(1).rstrip('.,;)')
                     field_sources["url"] = "text_parsing"
 
-    # ─── Step 3: CrossRef DOI lookup ───
-    crossref_success = False
+    # ─── Step 3: API lookups (PubMed -> CrossRef) ───
+    api_success = False
     if metadata["doi"]:
-        crossref_success = perform_crossref_lookup(metadata["doi"], metadata, field_sources)
+        # Pass any title we found from regex/PDF as an expected_title guard (Tip 1 anti-hallucination)
+        expected_title_guard = metadata.get("title")
+        api_success = perform_pubmed_lookup(metadata["doi"], metadata, field_sources, expected_title=expected_title_guard)
+        if not api_success:
+            api_success = perform_crossref_lookup(metadata["doi"], metadata, field_sources)
     
     # Track crossref state so the UI can warn the user if it failed
-    metadata["crossref_failed"] = not crossref_success
+    metadata["crossref_failed"] = not api_success
     
     # ─── Step 4: Gemini AI — verify non-CrossRef fills + fill missing fields ───
     # Run AI when: (a) CrossRef failed or missing, OR (b) any field came from regex/pdf_metadata
     has_unverified_fields = any(v in ("text_parsing", "pdf_metadata") for v in field_sources.values())
     has_missing = not metadata["authors"] or not metadata["title"] or not metadata["year"]
     
-    if (not crossref_success or has_unverified_fields or has_missing) and first_pages_text.strip():
+    if (not api_success or has_unverified_fields or has_missing) and first_pages_text.strip():
         # Build context of what Python already found (for verification)
         python_found = {}
         for key in ["authors", "title", "year", "source", "doi"]:
@@ -1402,6 +1525,7 @@ Extract these fields from the document:
 - title: The main title of the paper/document (not section headings, not journal name)
 - year: The publication year (not copyright year if different)
 - source: Journal name or publisher name if visible
+- source_abbreviated: If the source is a journal, provide its strictly abbreviated NLM catalog form (e.g. 'J Am Med Assoc'). Omit periods. If not a journal, return null. THIS IS EXEMPT FROM THE "ONLY WHAT YOU CAN SEE" RULE.
 - doi: The Digital Object Identifier (e.g. 10.1234/example)
 
 DOCUMENT TEXT (first 3 pages):
@@ -1413,6 +1537,7 @@ Respond in strict JSON only:
     "title": "title text" or null,
     "year": "2025" or null,
     "source": "journal or publisher name" or null,
+    "source_abbreviated": "J Am Med Assoc" or null,
     "doi": "10.1234/example" or null
 }}"""
             
@@ -1426,32 +1551,37 @@ Respond in strict JSON only:
             ai_data = json.loads(ai_text)
             print(f"[AI Verification] AI returned: {ai_data}")
             
-            # If AI found a new DOI, and CrossRef previously failed, try CrossRef again!
+            # If AI found a new DOI, retry PubMed/CrossRef with the CORRECT DOI!
+            # (Sometimes regex blindly grabs a cited paper's DOI from the first page)
             ai_doi = ai_data.get("doi")
-            if ai_doi and ai_doi != metadata.get("doi") and not crossref_success:
-                print(f"[AI Verification] Retrying CrossRef with new AI-extracted DOI: {ai_doi}")
+            if ai_doi and ai_doi != metadata.get("doi"):
+                print(f"[AI Verification] AI found a different DOI ({ai_doi}). Retrying API lookups to correct potential Regex error.")
                 # Pass expected title for verification against hallucination
                 expected = ai_data.get("title") or metadata.get("title")
-                retry_success = perform_crossref_lookup(ai_doi, metadata, field_sources, expected_title=expected)
+                
+                retry_success = perform_pubmed_lookup(ai_doi, metadata, field_sources, expected_title=expected)
+                if not retry_success:
+                    retry_success = perform_crossref_lookup(ai_doi, metadata, field_sources, expected_title=expected)
+                    
                 if retry_success:
                     metadata["doi"] = ai_doi
                     field_sources["doi"] = "ai_verified"
-                    crossref_success = True
+                    api_success = True
                     metadata["crossref_failed"] = False
                 else:
                     print(f"[AI Verification] Rejected AI DOI {ai_doi} due to CrossRef lookup failure or title mismatch.")
             
             # For each field: fill if missing, or override if from unreliable source (AI verification)
             # Only do this if CrossRef didn't already fill it (CrossRef is authoritative)
-            for key in ["authors", "title", "year", "source", "doi"]:
+            for key in ["authors", "title", "year", "source", "source_abbreviated", "doi"]:
                 ai_value = ai_data.get(key)
                 if not ai_value:
                     continue
                 
                 current_source = field_sources.get(key)
                 
-                # If source is "crossref" — never override, CrossRef is authoritative
-                if current_source == "crossref":
+                # If source is "crossref" or "pubmed" — never override, since it is authoritative
+                if current_source in ("crossref", "pubmed"):
                     continue
                     
                 if not metadata.get(key):
@@ -1485,6 +1615,39 @@ Respond in strict JSON only:
             metadata["authors"] = [raw.strip()]
     
     metadata["field_sources"] = field_sources
+    
+    # ─── Step 6: Track which fields the AI filled (for transparency) ───
+    ai_filled = {}
+    for key in ["authors", "title", "year", "source", "source_abbreviated", "doi", "volume", "issue", "pages"]:
+        src = field_sources.get(key)
+        if src in ("ai", "ai_verified", "ai_inferred") and metadata.get(key):
+            val = metadata[key]
+            if isinstance(val, list):
+                val = "; ".join(str(v) for v in val)
+            ai_filled[key] = {"value": str(val), "source": src}
+    if ai_filled:
+        metadata["ai_filled_fields"] = ai_filled
+    
+    # ─── Step 7: Compute verification_status for the UI badge ───
+    # "verified"   = API (PubMed/CrossRef) confirmed all critical fields
+    # "partial"    = API found the paper but some critical fields came from AI/regex
+    # "unverified" = No API confirmation at all
+    # NOTE: AI verification crash (ai_warning) does NOT downgrade the badge
+    # if PubMed/CrossRef already confirmed the critical fields directly.
+    critical_fields = ["title", "authors", "year"]
+    all_from_api = all(
+        field_sources.get(f) in ("pubmed", "crossref", "ai_verified")
+        for f in critical_fields
+    )
+    has_doi = bool(metadata.get("doi"))
+    
+    if api_success and all_from_api and has_doi:
+        metadata["verification_status"] = "verified"
+    elif api_success and has_doi:
+        metadata["verification_status"] = "partial"
+    else:
+        metadata["verification_status"] = "unverified"
+    
     return metadata
 
 
@@ -1528,6 +1691,23 @@ def condense_pages(pages_str: str) -> str:
             return f"{start}-{end[i:]}"
     return f"{start}-{end}"  # Identical numbers, keep as-is
 
+def make_sentence_case(text: str) -> str:
+    """Intelligently downcase titles while preserving internal acronyms."""
+    if not text: return ""
+    words = text.split()
+    res = []
+    for i, w in enumerate(words):
+        # preserve acronyms like USA, mRNA, etc.
+        if w.isupper() and len(w) > 1:
+            res.append(w)
+        elif sum(1 for c in w if c.isupper()) > 1:
+            res.append(w)
+        else:
+            if i == 0 or (i > 0 and words[i-1].endswith(':')):
+                res.append(w.capitalize())
+            else:
+                res.append(w.lower())
+    return " ".join(res)
 
 def format_reference(metadata: dict, style: str = "harvard") -> dict:
     """
@@ -1566,7 +1746,7 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     # ─── Vancouver author formatting ───
     if style == "vancouver":
         # Vancouver (NLM): Surname Initials (no periods), comma-separated.
-        # NLM lists ALL authors by default, ending with a period.
+        # NLM typically requires listing up to 6 authors, then et al.
         van_authors = []
         for a in authors:
             # If already in "Surname AB" format, keep as-is
@@ -1577,7 +1757,14 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 van_authors.append(f"{surname} {initials}")
             else:
                 van_authors.append(a.strip())
-        author_str = ', '.join(van_authors) + '.'
+        
+        if len(van_authors) > 6:
+            author_str = ', '.join(van_authors[:6]) + ' et al.'
+        else:
+            author_str = ', '.join(van_authors) + '.'
+            
+        # Hook make_sentence_case dynamically to fix Publisher/PubMed Title Cases
+        title = make_sentence_case(metadata.get("title") or "Untitled")
     
     # ─── Harvard author formatting ───
     author_str_html = author_str  # Default: same as plain text
@@ -1885,14 +2072,27 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
         part_name = metadata.get("part_name")
         part_title = metadata.get("part_title")
         day_month = metadata.get("day_month")
+        pmid = metadata.get("pmid")
+        epub_date = metadata.get("epub_date")
         
-        # Build Notes section (DOI / URL)
+        # (Sentence case already applied by make_sentence_case in the author block above)
+        
+        # Build Notes section (DOI / URL / PMID / Epub)
         notes = ""
-        if doi:
-            notes = f" doi:{doi}."
-        elif url:
-            notes = f" Available from: {url}"
+        # Epubs go before DOIs
+        if epub_date:
+            notes += f" Epub {epub_date}."
             
+        if doi:
+            # Strip "https://doi.org/" or "doi:" if present to ensure exact "doi:10..." format
+            clean_doi = doi.replace("https://doi.org/", "").replace("http://doi.org/", "").replace("doi:", "").strip()
+            notes += f" doi:{clean_doi}."
+        elif url:
+            notes += f" Available from: {url}"
+            
+        if pmid:
+            notes += f" Cited in: PubMed; PMID {pmid}."
+
         if ref_type == "Journal Article" and source:
             # Date builder: YYYY Mmm DD
             date_str = f"{year} {day_month}" if day_month else year
@@ -1903,6 +2103,14 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 van_loc_parts.append(f"{volume}({issue})")
             elif volume:
                 van_loc_parts.append(volume)
+            elif issue:
+                # Based on NLM "Suppl", if there is no volume but an issue/suppl,
+                # it might be printed without parentheses, but typically it assumes the Vol spot.
+                # However we'll enclose standard issues in parens.
+                if issue.lower().startswith("suppl"):
+                    van_loc_parts.append(issue)
+                else:
+                    van_loc_parts.append(f"({issue})")
                 
             condensed_pages = condense_pages(pages) if pages else ""
             
@@ -1915,16 +2123,23 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 else:
                     chain += "."
             else:
-                # No volume/issue; separate date from pages with a colon
+                # No volume/issue and no pages — just end with a period
                 if condensed_pages:
                     chain += f":{condensed_pages}."
                 else:
                     chain += "."
             
             # ── Non-English Journal Article (Rule 3) ──
+            vanc_source = metadata.get("source_abbreviated") or source
+            
+            # Clean up trailing periods in titles to prevent "Title?." or "Title.."
+            title_clean = title.rstrip('.') if title else ""
+            title_fmt = f"{title_clean}." if title_clean and not title_clean.endswith('?') else title_clean
+
             if language and language.lower() != "english":
-                ref_plain = f"{author_str} [{title}]. {source}."
-                ref_html = f"{author_str} [{title}]. {source}."
+                # For non-English, period goes after the bracket
+                ref_plain = f"{author_str} [{title_clean}]. {vanc_source}."
+                ref_html = f"{author_str} [{title_clean}]. {vanc_source}."
                 ref_plain += chain + f" {language}."
                 ref_html += chain + f" {language}."
             
@@ -1938,13 +2153,13 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                     base_chain += ":"
                 base_chain += "."
                 
-                ref_plain = f"{author_str} {title}. {source}.{base_chain} {part_name}, {part_title}; p. {pages}."
-                ref_html = f"{author_str} {title}. {source}.{base_chain} {part_name}, {part_title}; p. {pages}."
+                ref_plain = f"{author_str} {title_fmt} {vanc_source}.{base_chain} {part_name}, {part_title}; p. {pages}."
+                ref_html = f"{author_str} {title_fmt} {vanc_source}.{base_chain} {part_name}, {part_title}; p. {pages}."
                 
             # ── Standard Journal Article (Rules 1, 2, 4) ──
             else:
-                ref_plain = f"{author_str} {title}. {source}.{chain}"
-                ref_html = f"{author_str} {title}. {source}.{chain}"
+                ref_plain = f"{author_str} {title_fmt} {vanc_source}.{chain}"
+                ref_html = f"{author_str} {title_fmt} {vanc_source}.{chain}"
 
             if notes:
                 ref_plain += notes
@@ -2347,6 +2562,7 @@ Extract these fields from the reference:
 - title: The main title of the work, exactly as written in the text
 - year: The publication year as it appears in the text
 - source: Journal name or publisher, exactly as written in the text
+- source_abbreviated: If the source is a journal, provide its strictly abbreviated NLM catalog form (e.g. 'J Am Med Assoc', 'Int J Obes Suppl'). Omit periods. If not a journal, return null. THIS IS EXEMPT FROM THE "EXACTLY AS WRITTEN" RULE.
 - doi: The DOI if present, exactly as written
 
 REFERENCE TEXT:
@@ -2358,6 +2574,7 @@ Respond in strict JSON only:
     "title": "title text" or null,
     "year": "2025" or null,
     "source": "journal or publisher name" or null,
+    "source_abbreviated": "J Am Med Assoc" or null,
     "doi": "10.1234/example" or null
 }}"""
 
@@ -2406,6 +2623,12 @@ Respond in strict JSON only:
                 field_sources["source"] = "ai_verified"
         elif ai_source:
             print(f"[Formatter Anti-Hallucination] REJECTED source: '{ai_source}' — not found in input")
+
+        # Source Abbreviated (Exempt from containment check)
+        ai_source_abbr = ai_data.get("source_abbreviated")
+        if ai_source_abbr and not metadata.get("source_abbreviated"):
+            metadata["source_abbreviated"] = ai_source_abbr
+            field_sources["source_abbreviated"] = "ai_inferred"
 
         # Year — only accept if it matches what regex found or is in the text
         ai_year = ai_data.get("year")

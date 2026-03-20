@@ -1,165 +1,99 @@
 VANCOUVER_GUIDE = """
-Vancouver Style Referencing Guide (ICMJE / Citing Medicine)
+Vancouver Style Referencing Guide (ICMJE / Citing Medicine 2nd edition / NLM)
 
-Vancouver style was developed by the International Committee of Medical Journal Editors (ICMJE).
-It is the standard citation style used in biomedical and scientific journals.
+Vancouver strictly depends on a specific punctuation chain without spaces. Follow these rules EXACTLY.
 
-Key Features:
-- In-text citations use consecutive superscript numbers in order of first appearance.
-- The reference list is numbered in order of citation (NOT alphabetical).
-- Author names are inverted (Surname First-initial Middle-initial), max 6 authors then et al.
-- Journal titles are abbreviated per NLM catalog conventions.
-- Titles use sentence case (capitalize only first word and proper nouns).
-- Page numbers are condensed (e.g., 117-9 not 117-119).
+=== GENERAL STRUCTURAL FORMATTING ===
 
-=== IN-TEXT CITATIONS ===
+1. Author Names
+   - Formatted as `Surname Initials` (e.g., Smith JA, not Smith, J.A.).
+   - No punctuation between the surname and initials.
+   - No spaces or periods between the initials themselves.
 
-Single reference:
-  Smith1 argued that...   OR   ...mortality rate.1
+2. Multiple Authors
+   - Separate author names with a comma and a space (e.g., Smith JA, Jones B, Doe C).
+   - DO NOT use "and" or "&" before the last author.
+   - End the entire author block with a period.
+   - List ALL authors unless a specific space-saving limit is explicitly required.
 
-Multiple references:
-  Several trials2-4,9 have shown...
-  (group consecutive with hyphen, separate non-consecutive with commas)
+3. Article Titles
+   - Use sentence case (capitalize only the first word, proper nouns, and acronyms).
+   - End the title with a period.
 
-Direct quotation:
-  "there is no correlation..."6 (p 23)
+4. Journal Titles
+   - Must be abbreviated according to NLM catalog rules (e.g., J Am Med Assoc).
+   - Do not put periods after abbreviated words in the journal title.
+   - End the journal title with a period.
 
-=== AUTHOR FORMATTING ===
+5. The Punctuation Chain: "Date;Volume(Issue):Pages"
+   - There are NO SPACES after the semicolon or colon.
+   - The format is exactly: `YYYY Mmm DD;Vol(Issue):Pages.`
+   - Date: Ends with a semicolon (;)
+   - Volume: Ends with no punctuation (unless there is no issue, then it ends with a colon :)
+   - Issue: Enclosed in parentheses () and ends with a colon (:)
+   - Pages: Location/Pagination ends with a period (.). Page ranges are abbreviated to the shortest logical form (e.g., 123-5 instead of 123-125, but 124A-126A).
 
-- Invert all author names: Surname Initials (no periods/dots between initials).
-- NLM lists ALL authors by default (do not use et al. unless specifically required by an exception).
-- Separate author names with a comma and a space.
-- No "and" between authors; use only commas.
-- End the entire author block with a period.
+6. Notes (DOIs, PMIDs, Epub)
+   - DOIs, PMIDs, and Epub dates go at the very end.
+   - DOIs format: `doi:10...`
+   - PMIDs format: `Cited in: PubMed; PMID 12345.`
+   - Epub format: `Epub YYYY Mmm DD.`
 
-Examples:
-  One author:    Sobande A.
-  Two authors:   Sobande A, Arhibong E.
-  Seven authors: Author A, Author B, Author C, Author D, Author E, Author F, Author G.
+=== CITATION RULES BY SOURCE TYPE ===
+Note: (R) applies to Required elements, (O) for Optional.
 
-=== FULL REFERENCE TEMPLATES ===
+1. Standard Journal Article
+Template: Author. Article Title. Journal Title. YYYY Mmm;Vol(Issue):Pages.
+Example: Petitti DB, Crooks VC. Blood pressure levels. Arch Neurol. 2005 Jan;62(1):112-6.
 
---- JOURNAL ARTICLE ---
+2. Journal Article with Notes (DOI / PubMed ID / Epub)
+Template: Author. Article Title. Journal Title. YYYY Mmm;Vol(Issue):Pages. Epub YYYY Mmm DD. doi:[doi number].
+Example: Walsh B. Economic evaluation. BMJ. 2005 Mar 26;330(7493):699. Epub 2005 Mar 9. doi:10.1542/peds.2004-1441.
 
-Template:
-  Author. Article Title. Journal Title. YYYY Mmm DD;Volume(Issue):Pages.
+3. Journal Article in a Language Other Than English
+Template: Author. [Translated Article Title]. Journal Title. YYYY Mmm;Vol(Issue):Pages. Language.
+Example: Berrino F. [Case-control evaluation of screening efficacy]. Epidemiol Prev. 2004 Nov-Dec;28(6):354-9. Italian.
 
-Examples:
-  Sobande A, Arhibong E, Akinola S. Pregnancy outcome in asthmatic patients from high altitudes. Int J Gynaecol Obstet. 2002 May 1;77(2):117-21.
-  Van Hooijdonk R, Winters T, Fischer JC, van Dongen-Lases EC, Krinsley JS, Preiser J. Accuracy and limitation of continuous glucose monitoring using spectroscopy in critically ill patients. Ann Intensive Care. 2014 March 6;4(8):[about 8p.]. doi:10.1186.2110-5820-4-8.
+4. Journal Article without a Volume or Issue
+Template: Author. Article Title. Journal Title. YYYY Mmm DD:Pages.
+Example: Schwartz-Cassell T. Feeding assistants. Contemp Longterm Care. 2005 Jan:26-8.
+(Note: Date ends with a colon `:` here as there is no Vol/Issue)
 
-Rules:
-  - Abbreviate journal titles (omit conjunctions/prepositions, capitalize remaining words, no periods).
-  - Punctuation Chain (Date, Volume, Issue, Pages) is strict:
-    * Date: Ends with a semicolon (;) unless there is no volume/issue, then a colon (:).
-    * Volume: Ends with no punctuation (unless no issue, then a colon).
-    * Issue: Enclosed in parentheses () and ends with a colon (:).
-    * Pages: Ends with a period (.).
-  - Condense page numbers (117-119 → 117-9).
-  - DOIs/URLs go in the "Notes" section at the end (e.g., doi:[doi]. or Available from: [url]).
+5. Journal Article with a Supplement or Part
+Template: Author. Article Title. Journal Title. YYYY Mmm;Vol(Issue Suppl Number):Pages.
+Example: Menter A. Pharmacokinetics. J Am Acad Dermatol. 2000 Aug;43(2 Pt 3):S31-5.
+
+6. Organization as Author
+Template: Organization Name. Article Title. Journal Title. YYYY Mmm;Vol(Issue):Pages.
+Example: American Diabetes Association. Diabetes update. Nursing. 2003 Nov;Suppl:19-20.
+
+7. Specific Parts of a Journal Article (Tables, Figures, Appendices)
+Template: Author. Article Title. Journal Title. YYYY Mmm;Vol(Issue):Pages. Part Name Number, Part Title; p. Page.
+Example: Diaz-Cruz ES. Cyclooxygenase inhibitors. J Clin Endocrinol Metab. 2005 May;90(5):2563-70. Table 2, Aromatase activity; p. 2565.
+
+8. Entire Journal Title (Continuing Publication)
+Template: Journal Title. Place of Publication: Publisher. Vol. [Number], No. [Number], [Date] - .
+Example: Advances in Applied Microbiology. San Diego: Academic Press. Vol. 1, 1959 - .
+
+9. Entire Journal Title (Ceased Publication)
+Template: Journal Title. Place of Publication: Publisher. Vol. [Beginning Vol], No. [Beginning Issue], [Beginning Date] - Vol. [Ending Vol], No. [Ending Issue], [Ending Date].
+Example: Clinics in Endocrinology and Metabolism. London: W.B. Saunders. Vol. 1, Mar 1972 - Vol. 15, No. 4, Nov 1986.
+
+=== BOOKS & OTHER TYPES (General Vancouver Continuation) ===
 
 --- BOOK (PRINT) ---
-
-Template:
-  Author(s). Title of book. Edition. Place of Publication: Publisher; Year. Total pages p.
-
-Example:
-  Pechenik JA. A short guide to writing about biology. 5th ed. New York: Pearson Longman; c2004. 280 p.
-
-Rules:
-  - Edition: only include if not the first edition (e.g., 2nd ed., 3rd ed.).
-  - Place of publication: add state/province abbreviation for ambiguous cities (e.g. Charleston (SC)).
-  - If no place found, use [place unknown].
-  - Publisher followed by semicolon.
-  - Year followed by period.
-  - Total pages followed by "p." and a period.
+Template: Author(s). Title of book. Edition. Place of Publication: Publisher; Year. Total pages p.
+Example: Pechenik JA. A short guide to writing about biology. 5th ed. New York: Pearson Longman; c2004. 280 p.
 
 --- BOOK (ONLINE) ---
-
-Template:
-  Author(s), editor(s). Title of book [Internet]. Edition. Place: Publisher; Year [cited YYYY Mon DD]. Available from: URL
-
-Examples:
-  Drake RL, Vogl AW, Mitchell AW, editors. Gray's anatomy for studies [Internet]. 3rd ed. Philadelphia (PA): Churchill Livingstone; c2015 [cited 2014 May 2].
-
-  Patrias K. Citing medicine: the NLM style guide for authors, editors, and publishers [Internet]. 2nd ed. Wendling DL, technical editor. Bethesda (MD): National Library of Medicine (US); 2007- [updated 2011 Sep 15; cited 2012 May 2]. Available from: http://www.nlm.nih.gov/citingmedicine
+Template: Author(s), editor(s). Title of book [Internet]. Edition. Place: Publisher; Year [cited YYYY Mon DD]. Available from: URL
+Example: Drake RL, Vogl AW, Mitchell AW, editors. Gray's anatomy for studies [Internet]. 3rd ed. Philadelphia (PA): Churchill Livingstone; c2015 [cited 2014 May 2].
 
 --- BOOK CHAPTER ---
+Template: Chapter Author(s). Title of chapter. In: Editor(s), editors. Title of book. Place: Publisher; Year. p. Pages.
+Example: White BC. Healthcare ethics and pain management. In: Smith DS, Pilitsis JG, editors. The art and science of palliative care. Hong Kong: AME Publishing; 2014. p. 1-12.
 
-Template:
-  Chapter Author(s). Title of chapter. In: Editor(s), editors. Title of book. Place: Publisher; Year. p. Pages.
-
-Example:
-  White BC. Healthcare ethics and pain management. In: Smith, DS, Pilitsis, JG, editors. The art and science of palliative care. Hong Kong: AME Publishing; 2014. p. 1-12.
-
-Rules:
-  - Begin with chapter author, then chapter title.
-  - Follow with "In:" then editor names with ", editors." or ", editor."
-  - Page range uses "p." prefix (e.g. p. 1-12, p. 301-7).
-
---- NEWSPAPER ARTICLE (PRINT) ---
-
-Template:
-  Author(s). Title of article. Newspaper Title. Year Mon DD:Sect. Section:Page (col. Column).
-
-Example:
-  Allday E. Alzheimer's research gets extremely personal; S.F. scientist helped develop vaccine – now she's a patient. San Francisco Chronicle. 2011 Jul 30:Sect. A:1 (col.1).
-
---- NEWSPAPER ARTICLE (ONLINE) ---
-
-Template:
-  Author(s). Title of article. Newspaper Title [Internet]. Year Mon DD [cited YYYY Mon DD]; Section:[extent]. Available from: URL
-
-Example:
-  Weidner J. Saturday's walk for organ transplants celebrates life. The Waterloo Region Record [Internet]. 2012 May 2 [cited 2012 May 2]; Local:[about 2 screens]. Available from: http://www.therecord.com/news/local/article/716575
-
---- DISSERTATION / THESIS ---
-
-Template:
-  Author. Title [dissertation] or [master's thesis]. [Place]: University; Year. Pages p.
-
-Examples:
-  Morrison G. Polymer concepts in biophysics [dissertation]. [College Park (MD)]: University of Maryland; 2008. 174 p.
-  Zaplatynski AM. Factors affecting success in organic chemistry [master's thesis]. [Boca Raton (FL)]: Florida Atlantic University; 2006. 79 p.
-
---- ENCYCLOPEDIA / REFERENCE WORK ---
-
-Template:
-  Title of encyclopedia [Internet]. Place: Publisher; Year. Entry name; [cited YYYY Mon DD]; [extent]. Available from: URL
-
-Examples:
-  American heritage dictionary [Internet]. Boston (MA): Houghton Mifflin Harcourt; c2011. Dopamine; [cited 2012 May 2]; [1 paragraph]. Available from: http://ahdictionary.com/word/search.html?q=dopamine
-
-  Encyclopædia britannica [Internet]. Chicago (IL): Encyclopædia Britannica Inc.; 2012. Open-heart surgery; [cited 2012 May 2]; [2 paragraphs]. Available from: http://www.britannica.com/EBchecked/topic/429656/open-heart-surgery
-
---- WEBPAGE / WEBSITE ---
-
-Template:
-  Author(s) or Organization. Title of webpage [Internet]. Place of publication: Publisher; Year [cited YYYY Mon DD]. Available from: URL
-
-Example:
-  World Health Organization. Coronavirus disease (COVID-19) pandemic [Internet]. Geneva: World Health Organization; 2020 [cited 2021 Jan 12]. Available from: https://www.who.int/emergencies/diseases/novel-coronavirus-2019
-
-
---- TECHNICAL / RESEARCH REPORT ---
-
-Template:
-  Author(s). Title [Internet]. Place: Publisher; Year [cited YYYY Mon DD]. Pages p. Report No.: Number. Available from: URL
-
-Example:
-  Chui T, Tran K, Maheux H. 2006 census: immigration in Canada: a portrait of the foreign-born population, 2006 census: findings [Internet]. Ottawa: Statistics Canada; 2007 Dec [cited 2012 May 02]. 37 p. Report No.: 97-557-XIE2006001. Available from: http://www12.statcan.ca/census-recensement/2006/as-sa/97-557/pdf/97-557-XIE2006001.pdf
-
-=== KEY FORMATTING RULES ===
-
-- Author names: Surname then initials with NO periods between initials (e.g. Van Hooijdonk R).
-- Journal titles: abbreviated (NOT italicized in Vancouver style).
-- Book titles: sentence case, NOT italicized in Vancouver style.
-- Article titles: sentence case, NOT italicized.
-- Use semicolons after date of publication (before volume/issue).
-- Use colons after volume(issue) (before pages).
-- Condense page numbers (e.g. 301-7 not 301-307, but 34A-37A stays as is).
-- [Internet] tag after titles of online resources.
-- Include "Available from:" for URLs.
-- Include [cited YYYY Mon DD] for online resources.
-- Reference list is numbered in order of first citation, NOT alphabetical.
+--- NEWSPAPER / WEBPAGE ---
+Newspaper (Print): Author(s). Title of article. Newspaper Title. Year Mon DD:Sect. Section:Page (col. Column).
+Webpage: Author(s) or Organization. Title of webpage [Internet]. Place of publication: Publisher; Year [cited YYYY Mon DD]. Available from: URL
 """

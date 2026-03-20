@@ -1,46 +1,58 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-03-18",
-  "current_index": 0,
-  "total_requests_today": 2,
+  "last_reset_date": "2026-03-20",
+  "current_index": 3,
+  "total_requests_today": 64,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
       "model_usage": {
-        "gemini-3-flash-preview": 2
+        "gemini-3-flash-preview": 20
       },
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 2,
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-03-20T15:34:18.557126",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 1,
       "key_suffix": "...fabg",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3-flash-preview": 20
+      },
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-03-20T16:17:33.494502",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 2,
       "key_suffix": "...bufo",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3-flash-preview": 20
+      },
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-03-20T17:04:00.302503",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 3,
       "key_suffix": "...KkwY",
-      "model_usage": {},
+      "model_usage": {
+        "gemini-3-flash-preview": 4
+      },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 0,
+      "quota_used": 4,
       "exhausted": false
     },
     {

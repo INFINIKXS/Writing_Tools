@@ -8,11 +8,24 @@ const STYLES = [
 ];
 
 function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, toggleMeta }) {
+    const vStatus = r.data.metadata?.verification_status;
+    const vBadge = {
+        verified: { icon: '✓', label: 'Verified', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', tooltip: 'All anti-hallucination checks passed. Paper identity confirmed via PubMed/CrossRef with title match.' },
+        partial: { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled by AI. Review recommended.' },
+        unverified: { icon: '!', label: 'Unverified', cls: 'text-red-400 bg-red-500/10 border-red-500/20', tooltip: 'Could not confirm paper identity via external database. Metadata may be inaccurate.' },
+    }[vStatus] || null;
+
     return (
         <div className="glass-card p-4 border-l-4 border-l-purple-500/50 overflow-hidden">
             <div className="flex justify-between items-start mb-2">
                 <div className="flex items-center gap-2">
                     <span className="badge badge-green">{r.data.type || 'Reference'}</span>
+                    {vBadge && (
+                        <span title={vBadge.tooltip} className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border cursor-help flex items-center gap-1 ${vBadge.cls}`}>
+                            <span className="text-[10px]">{vBadge.icon}</span>
+                            {vBadge.label}
+                        </span>
+                    )}
                     <span className="text-[10px] text-neutral-600 truncate max-w-[150px]">{r.fileName}</span>
                 </div>
                 <button
@@ -52,8 +65,29 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                 <div className="mt-2 flex items-start gap-2 bg-purple-500/5 border border-purple-500/15 rounded-lg px-3 py-1.5">
                     <span className="text-purple-400 text-[10px] mt-0.5">⚠</span>
                     <p className="text-[10px] text-purple-400/80 leading-relaxed">
-                        <strong>CrossRef lookup failed.</strong> Metadata was extracted using AI/Regex and may be inaccurate. Please review.
+                        <strong>API lookup failed.</strong> Metadata was extracted using AI/Regex and may be inaccurate. Please review.
                     </p>
+                </div>
+            )}
+
+            {r.data.metadata?.ai_filled_fields && Object.keys(r.data.metadata.ai_filled_fields).length > 0 && (
+                <div className="mt-2 bg-violet-500/5 border border-violet-500/15 rounded-lg px-3 py-2">
+                    <div className="flex items-center gap-1.5 mb-1.5">
+                        <span className="text-violet-400 text-[10px]">🤖</span>
+                        <span className="text-[10px] font-bold text-violet-400 uppercase tracking-wider">AI-Generated Fields</span>
+                        <span className="text-[9px] text-violet-400/60 ml-1">— verify these values</span>
+                    </div>
+                    <div className="space-y-1">
+                        {Object.entries(r.data.metadata.ai_filled_fields).map(([key, info]) => (
+                            <div key={key} className="flex items-start gap-2">
+                                <span className="text-[9px] font-bold uppercase tracking-widest text-violet-500/70 w-16 shrink-0 pt-0.5">{key}</span>
+                                <span className="text-[10px] text-violet-300 font-mono break-all flex-1">{info.value}</span>
+                                <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border text-amber-400 bg-amber-500/10 border-amber-500/20 shrink-0">
+                                    {info.source === 'ai_verified' ? 'AI ✓' : info.source === 'ai_inferred' ? 'AI ~' : 'AI'}
+                                </span>
+                            </div>
+                        ))}
+                    </div>
                 </div>
             )}
 
@@ -80,8 +114,8 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                         ['URL', 'url', r.data.metadata.url],
                     ].filter(([, , val]) => val).map(([label, key, value]) => {
                         const src = r.data.metadata.field_sources?.[key];
-                        const srcLabel = { crossref: 'CrossRef', ai_verified: 'AI ✓', ai: 'AI', text_parsing: 'Regex', pdf_metadata: 'PDF' }[src];
-                        const srcColor = { crossref: 'text-blue-400 bg-blue-500/10 border-blue-500/20', ai_verified: 'text-green-400 bg-green-500/10 border-green-500/20', ai: 'text-amber-400 bg-amber-500/10 border-amber-500/20', text_parsing: 'text-neutral-400 bg-white/5 border-white/10', pdf_metadata: 'text-neutral-400 bg-white/5 border-white/10' }[src] || '';
+                        const srcLabel = { pubmed: 'PubMed', crossref: 'CrossRef', ai_verified: 'AI ✓', ai: 'AI', text_parsing: 'Regex', pdf_metadata: 'PDF' }[src];
+                        const srcColor = { pubmed: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20', crossref: 'text-blue-400 bg-blue-500/10 border-blue-500/20', ai_verified: 'text-green-400 bg-green-500/10 border-green-500/20', ai: 'text-amber-400 bg-amber-500/10 border-amber-500/20', text_parsing: 'text-neutral-400 bg-white/5 border-white/10', pdf_metadata: 'text-neutral-400 bg-white/5 border-white/10' }[src] || '';
                         return (
                             <div key={label} className="flex items-start gap-2">
                                 <span className="text-[9px] font-bold uppercase tracking-widest text-neutral-600 w-16 shrink-0 pt-0.5">{label}</span>
