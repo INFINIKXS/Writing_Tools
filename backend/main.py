@@ -1177,7 +1177,7 @@ def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expecte
                         t1 = "".join(c for c in expected_title.lower() if c.isalnum() or c.isspace()).strip()
                         t2 = "".join(c for c in pubmed_title.lower() if c.isalnum() or c.isspace()).strip()
                         ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
-                        if ratio < 0.6:
+                        if ratio < 0.9:
                             print(f"[PubMed] Title mismatch for {doi}. Expected: '{expected_title}'. Got: '{pubmed_title}' (Ratio: {ratio:.2f})")
                             return False
                             
@@ -1253,7 +1253,7 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
                     t1 = "".join(c for c in expected_title.lower() if c.isalnum() or c.isspace()).strip()
                     t2 = "".join(c for c in crossref_title.lower() if c.isalnum() or c.isspace()).strip()
                     ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
-                    if ratio < 0.6:
+                    if ratio < 0.9:
                         print(f"[CrossRef] Title mismatch for {doi}. Expected: '{expected_title}'. Got: '{crossref_title}' (Ratio: {ratio:.2f})")
                         return False
             
@@ -1576,7 +1576,8 @@ Respond in strict JSON only:
             # Run the recovery/verification loop if:
             # 1. The initial API check failed (title mismatch or no match found)
             # OR 2. The AI specifically extracted a different DOI than the one we are currently using
-            needs_recovery = (not api_success) or (ai_doi and ai_doi != metadata.get("doi"))
+            # OR 3. There is no DOI at all (regex failed, AI returned None)
+            needs_recovery = (not api_success) or (ai_doi and ai_doi != metadata.get("doi")) or (not metadata.get("doi"))
             
             if needs_recovery and candidate_dois:
                 print(f"[AI Verification] Attempting verification loop using {len(candidate_dois)} candidate DOIs...")
@@ -1593,13 +1594,123 @@ Respond in strict JSON only:
                     if retry_success:
                         print(f"  ✓ Success! Recovered correct paper metadata using DOI: {c_doi}")
                         metadata["doi"] = c_doi
-                        field_sources["doi"] = "ai_verified" if c_doi == ai_doi else "regex_fallback"
                         api_success = True
                         metadata["crossref_failed"] = False
                         break
                 
-                if not retry_success:
-                    print(f"[AI Verification] Exhausted all candidate DOIs. None matched the paper's title '{expected}'.")
+                if retry_success:
+                    needs_recovery = False  # Recovery succeeded, skip Title Search
+            
+            # ─── RETRY: Focused AI DOI Extraction ───
+            # If AI returned doi: None on the broad prompt, retry with a targeted DOI-only prompt
+            if needs_recovery and not api_success and not ai_doi and first_pages_text:
+                print(f"[AI Verification] AI returned no DOI. Retrying with focused DOI extraction prompt...")
+                try:
+                    retry_prompt = f"""You are a DOI extraction specialist. Your ONLY job is to find the DOI of the main document below.
+
+IMPORTANT RULES:
+- Look for patterns like "doi:", "DOI:", "https://doi.org/", or raw "10.XXXX/..." strings
+- The DOI usually appears near the top of the first page, in headers, footers, or citation boxes
+- Do NOT extract DOIs from the bibliography/reference list — only the MAIN document's DOI
+- If you cannot find a DOI, return null. Do NOT guess or hallucinate.
+
+DOCUMENT TEXT (first 3 pages):
+{first_pages_text[:8000]}
+
+Respond with ONLY the DOI string, or the word "null" if not found. No JSON, no explanation."""
+
+                    retry_response = await gemini_request_with_retry(client, retry_prompt, model=model_name)
+                    retry_doi_text = retry_response.text.strip().strip('"').strip("'")
+                    
+                    if retry_doi_text and retry_doi_text.lower() != "null" and retry_doi_text.startswith("10."):
+                        retry_doi_text = retry_doi_text.rstrip('.,;)')
+                        print(f"[AI Verification] Focused DOI retry found: {retry_doi_text}")
+                        
+                        # Verify this DOI through the normal anti-hallucination pipeline
+                        retry_doi_success = perform_pubmed_lookup(retry_doi_text, metadata, field_sources, expected_title=expected)
+                        if not retry_doi_success:
+                            retry_doi_success = perform_crossref_lookup(retry_doi_text, metadata, field_sources, expected_title=expected)
+                        
+                        if retry_doi_success:
+                            print(f"  ✓ Focused DOI retry VERIFIED! DOI: {retry_doi_text}")
+                            metadata["doi"] = retry_doi_text
+                            api_success = True
+                            needs_recovery = False
+                            metadata["crossref_failed"] = False
+                        else:
+                            print(f"  ✗ Focused DOI retry found {retry_doi_text} but it failed title verification.")
+                    else:
+                        print(f"[AI Verification] Focused DOI retry also returned nothing.")
+                except Exception as retry_e:
+                    print(f"[AI Verification] Focused DOI retry FAILED: {retry_e}")
+            
+            # ─── FALLBACK: Search CrossRef by Title ───
+            # Fires if recovery is still needed (DOI loop failed OR was empty)
+            if needs_recovery and not api_success and expected:
+                print(f"[AI Verification] Attempting Title Search Fallback via CrossRef for '{expected}'...")
+                try:
+                    import urllib.parse
+                    title_encoded = urllib.parse.quote(expected)
+                    url = f"https://api.crossref.org/works?query.bibliographic=\"{title_encoded}\"&rows=5"
+                    cr_resp = requests.get(url, timeout=10, headers={'User-Agent': 'WritingTools'})
+                    if cr_resp.status_code == 200:
+                        items = cr_resp.json().get('message', {}).get('items', [])
+                        for item in items:
+                            discovered_doi = item.get('DOI')
+                            if not discovered_doi or discovered_doi in candidate_dois or discovered_doi == metadata.get("doi"):
+                                continue
+                            
+                            # Pre-filter: check CrossRef's own title before hitting PubMed
+                            cr_titles = item.get('title', [])
+                            cr_title = cr_titles[0] if cr_titles else ""
+                            
+                            # Skip correction/erratum/retraction notices
+                            if cr_title and re.match(r'^(Correction|Erratum|Retraction|Corrigendum|Author Correction)\s*:', cr_title, re.IGNORECASE):
+                                print(f"  -> Skipping correction/erratum: {discovered_doi} ('{cr_title[:60]}...')")
+                                continue
+                            
+                            # Pre-check title similarity (90% threshold for title search)
+                            if cr_title:
+                                t1 = "".join(c for c in expected.lower() if c.isalnum() or c.isspace()).strip()
+                                t2 = "".join(c for c in cr_title.lower() if c.isalnum() or c.isspace()).strip()
+                                pre_ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
+                                if pre_ratio < 0.9:
+                                    print(f"  -> Skipping low-confidence match: {discovered_doi} ('{cr_title[:60]}...' ratio={pre_ratio:.2f})")
+                                    continue
+                            
+                            # Cross-check: first author surname must match
+                            cr_authors = item.get('author', [])
+                            ai_authors = ai_data.get('authors', []) or metadata.get('authors', [])
+                            if cr_authors and ai_authors:
+                                cr_first_surname = cr_authors[0].get('family', '').lower().strip()
+                                ai_first = ai_authors[0] if isinstance(ai_authors[0], str) else ''
+                                ai_first_surname = re.split(r'[,\s]', ai_first)[0].lower().strip() if ai_first else ''
+                                if cr_first_surname and ai_first_surname and cr_first_surname != ai_first_surname:
+                                    print(f"  -> Skipping author mismatch: {discovered_doi} (expected '{ai_first_surname}', got '{cr_first_surname}')")
+                                    continue
+                            
+                            # Cross-check: publication year must match (if known)
+                            ai_year = ai_data.get('year') or metadata.get('year')
+                            if ai_year:
+                                cr_date = item.get('published-print', item.get('published-online', item.get('created', {})))
+                                if cr_date and 'date-parts' in cr_date:
+                                    cr_year = str(cr_date['date-parts'][0][0]) if cr_date['date-parts'][0] else None
+                                    if cr_year and cr_year != str(ai_year):
+                                        print(f"  -> Skipping year mismatch: {discovered_doi} (expected {ai_year}, got {cr_year})")
+                                        continue
+                            
+                            print(f"  -> Testing discovered DOI from Title Search: {discovered_doi}")
+                            found_success = perform_pubmed_lookup(discovered_doi, metadata, field_sources, expected_title=expected)
+                            if not found_success:
+                                found_success = perform_crossref_lookup(discovered_doi, metadata, field_sources, expected_title=expected)
+                            if found_success:
+                                print(f"  ✓ Success! Rescue via Title Search! Found DOI: {discovered_doi}")
+                                metadata["doi"] = discovered_doi
+                                api_success = True
+                                metadata["crossref_failed"] = False
+                                break
+                except Exception as fall_e:
+                    print(f"[AI Verification] Title Search Fallback Failed: {fall_e}")
             
             # For each field: fill if missing, or override if from unreliable source (AI verification)
             # Only do this if CrossRef didn't already fill it (CrossRef is authoritative)
@@ -1802,22 +1913,41 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     # ─── Vancouver author formatting ───
     if style == "vancouver":
         # Vancouver (NLM): Surname Initials (no periods), comma-separated.
-        # NLM typically requires listing up to 6 authors, then et al.
+        # NLM: list up to 6 individual authors, then ", et al." for >6.
+        # Group/consortium authors (e.g., "OPERA group") are separated
+        # and appended AFTER the individual author block so they don't inflate the count.
+        # BUT: if the group is the ONLY author (e.g., "American Diabetes Association"),
+        # it stays in the regular author list as an organizational author.
         van_authors = []
+        group_authors = []
+        group_keywords = re.compile(
+            r'\b(group|consortium|committee|collaboration|network|team|'
+            r'investigators|working party|task force)\b',
+            re.IGNORECASE
+        )
         for a in authors:
-            # If already in "Surname AB" format, keep as-is
-            parts = a.strip().split(',')
+            stripped = a.strip()
+            # Detect group/consortium authors (only if there are other individual authors)
+            if group_keywords.search(stripped) and ',' not in stripped and len(authors) > 1:
+                group_authors.append(stripped)
+                continue
+            # Individual author: convert "Surname, I.N." → "Surname IN"
+            parts = stripped.split(',')
             if len(parts) >= 2:
                 surname = parts[0].strip()
                 initials = parts[1].strip().replace('.', '').replace(' ', '')
                 van_authors.append(f"{surname} {initials}")
             else:
-                van_authors.append(a.strip())
+                van_authors.append(stripped)
         
         if len(van_authors) > 6:
             author_str = ', '.join(van_authors[:6]) + ', et al.'
         else:
-            author_str = ', '.join(van_authors) + '.'
+            author_str = ', '.join(van_authors)
+            if group_authors:
+                author_str += ', ' + ', '.join(group_authors) + '.'
+            else:
+                author_str += '.'
             
         # Hook make_sentence_case dynamically to fix Publisher/PubMed Title Cases
         title = make_sentence_case(metadata.get("title") or "Untitled")
