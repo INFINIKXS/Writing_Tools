@@ -440,6 +440,13 @@ export default function VerifierView() {
                         // Lookup helper: find ordered ref entry for a match
                         const getOrderedEntry = (matchedRef) => orderedRefs.find(r => r.ref === matchedRef);
 
+                        const getConfidenceLabel = (score) => {
+                            if (score === 100) return { label: '100% Confidence', color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' };
+                            if (score >= 85) return { label: `${score}% Confidence`, color: 'text-emerald-400', bg: 'bg-emerald-500/10', border: 'border-emerald-500/20' };
+                            if (score >= 60) return { label: `${score}% Confidence`, color: 'text-amber-400', bg: 'bg-amber-500/10', border: 'border-amber-500/20' };
+                            return { label: `${score}% Confidence`, color: 'text-red-400', bg: 'bg-red-500/10', border: 'border-red-500/20' };
+                        };
+
                         const renderMatch = (m, i, isProblem) => {
                             const verbatimData = results.verbatim_references?.[m.matched_ref];
                             const verbatimText = verbatimData?.verbatim || m.matched_ref;
@@ -452,8 +459,13 @@ export default function VerifierView() {
                             const displayNumber = orderedEntry?.display_number;
                             const firstCitedAs = orderedEntry?.first_cited_as;
 
+                            const isOutlier = orderedEntry?.is_style_outlier;
+                            const refStyle = orderedEntry?.ref_style;
+                            const styleNames = { vancouver: 'Vancouver', apa: 'APA', harvard: 'Harvard', mla: 'MLA', chicago: 'Chicago', nlm: 'NLM' };
+                            const outlierBorderClass = isOutlier ? 'border-l-amber-500/50' : borderClass;
+
                             return (
-                                <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${borderClass}`}>
+                                <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${outlierBorderClass}`}>
                                     <div className="flex items-start gap-3 mb-2">
                                         {isVancouver && displayNumber != null && (
                                             <span className="shrink-0 w-7 h-7 rounded-full bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-xs font-bold text-sky-400">
@@ -468,6 +480,11 @@ export default function VerifierView() {
                                                 Source Reference
                                                 {confidence >= 0.8 && <span className="text-emerald-500">(✓ exact match)</span>}
                                                 {confidence > 0 && confidence < 0.8 && <span className="text-amber-500">(~{Math.round(confidence * 100)}% match)</span>}
+                                                {isOutlier && refStyle && (
+                                                    <span className="ml-auto text-[9px] font-bold text-amber-400 bg-amber-500/10 border border-amber-500/20 px-2 py-0.5 rounded-full normal-case tracking-normal">
+                                                        {styleNames[refStyle] || refStyle} style
+                                                    </span>
+                                                )}
                                             </div>
                                             {verbatimHtml ? (
                                                 <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5" dangerouslySetInnerHTML={{ __html: verbatimHtml }} />
@@ -509,30 +526,60 @@ export default function VerifierView() {
 
                         return (
                             <>
-                                {results.style_detection_confidence > 0 && (
-                                    <div className="glass-card mb-3 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 border-l-4 border-l-purple-500/50">
-                                        <div>
-                                            <div className="text-[10px] font-bold uppercase tracking-widest text-purple-400 mb-1">Detected Style</div>
-                                            <div className="flex items-center gap-3">
-                                                <h3 className="text-xl font-bold text-white">{styleLabel}</h3>
-                                                <span className="bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded text-xs font-semibold">
-                                                    {Math.round(results.style_detection_confidence * 100)}% Confidence
-                                                </span>
+                                {results.style_detection_confidence > 0 && (() => {
+                                    const score = Math.round(results.style_detection_confidence);
+                                    const confLabel = getConfidenceLabel(score);
+                                    
+                                    return (
+                                        <div className="glass-card mb-3 p-4 flex flex-col md:flex-row justify-between gap-4 border-l-4 border-l-purple-500/50">
+                                            <div>
+                                                <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-1">Detected Style</div>
+                                                <div className="flex items-center gap-3 mb-2">
+                                                    <h3 className="text-xl font-bold text-white">{styleLabel}</h3>
+                                                    <span className={`${confLabel.bg} ${confLabel.color} border ${confLabel.border} px-2 py-0.5 rounded text-xs font-semibold`}>
+                                                        {confLabel.label}
+                                                    </span>
+                                                </div>
+                                            </div>
+                                            <div className="md:w-1/2 space-y-3">
+                                                {results.style_all_scores && Object.keys(results.style_all_scores).length > 1 && (() => {
+                                                    const styleNames = { vancouver: 'Vancouver', apa: 'APA', harvard: 'Harvard', mla: 'MLA', chicago: 'Chicago', nlm: 'NLM' };
+                                                    const entries = Object.entries(results.style_all_scores).filter(([, v]) => v > 0);
+                                                    return (
+                                                        <div className="bg-white/[0.02] p-3 rounded-lg border border-white/5">
+                                                            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-2">Style Breakdown</div>
+                                                            <div className="space-y-1.5">
+                                                                {entries.map(([style, pct]) => (
+                                                                    <div key={style} className="flex items-center gap-2">
+                                                                        <span className="text-[10px] text-neutral-400 w-16 shrink-0">{styleNames[style] || style}</span>
+                                                                        <div className="flex-1 h-1.5 bg-white/5 rounded-full overflow-hidden">
+                                                                            <div
+                                                                                className={`h-full rounded-full ${style === results.detected_style ? 'bg-purple-500' : 'bg-amber-500/60'}`}
+                                                                                style={{ width: `${pct}%` }}
+                                                                            />
+                                                                        </div>
+                                                                        <span className={`text-[10px] font-semibold w-8 text-right ${style === results.detected_style ? 'text-purple-400' : 'text-amber-400/70'}`}>{pct}%</span>
+                                                                    </div>
+                                                                ))}
+                                                            </div>
+                                                        </div>
+                                                    );
+                                                })()}
+                                                {results.style_detection_evidence?.length > 0 && (
+                                                    <div className="bg-white/[0.02] p-3 rounded-lg border border-white/5 text-xs text-neutral-300 space-y-1">
+                                                        <div className="font-semibold text-neutral-400 mb-1">Key Evidence:</div>
+                                                        {results.style_detection_evidence.slice(0, 3).map((ev, idx) => (
+                                                            <div key={idx} className="flex gap-2">
+                                                                <span className="text-purple-400 shrink-0">•</span>
+                                                                <span>{ev}</span>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                )}
                                             </div>
                                         </div>
-                                        {results.style_detection_evidence?.length > 0 && (
-                                            <div className="md:w-1/2 bg-white/[0.02] p-3 rounded-lg border border-white/5 text-xs text-neutral-300 space-y-1">
-                                                <div className="font-semibold text-neutral-400 mb-1">Key Evidence:</div>
-                                                {results.style_detection_evidence.slice(0, 3).map((ev, idx) => (
-                                                    <div key={idx} className="flex gap-2">
-                                                        <span className="text-purple-400 shrink-0">•</span>
-                                                        <span>{ev}</span>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                )}
+                                    );
+                                })()}
                                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
                                     {/* Left panel — Good Matches (ordered) */}
                                 <div className="glass-card overflow-hidden">

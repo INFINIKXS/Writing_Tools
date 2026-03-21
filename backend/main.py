@@ -480,23 +480,52 @@ def detect_style_from_references(reference_list):
         evidence['apa'].append(f'APA journal format "Vol(Issue), Pages" ({len(a4)} entries)')
 
     # ── HARVARD ───────────────────────────────────────────────────────────
-    # Author format: "Smith, J" — surname comma initial, NO DOT after initial
-    h1 = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z](?:\s|,)', ref_block)
+    # From the Harvard guide:
+    #   Author:  Surname, I. (comma before initial, dot after)
+    #   Year:    (YYYY) — no dot after closing paren (vs APA's "(YYYY).")
+    #   Title:   'Title of article' — in SINGLE QUOTES (unique to Harvard)
+    #   Journal: Title of Journal, vol(issue), pp. X-Y.
+    #   DOI:     doi: https://doi.org/...
+    #   Online:  Available at: URL (Accessed: date)
+    #
+    # Critical: Harvard author "Surname, I." looks like APA, NOT like Vancouver "Surname I,"
+    # The strongest Harvard-only signal is the single-quoted title.
+
+    # Author format: "Surname, I." — comma before initial, dot after (shared with APA)
+    h1 = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z]\.', ref_block)
     if h1:
-        scores['harvard'] += 7 * min(len(h1) / total_refs, 1)
-        evidence['harvard'].append(f'Harvard author format "Surname, I" (no dot) ({len(h1)} times)')
+        scores['harvard'] += 4 * min(len(h1) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard/APA author format "Surname, I." ({len(h1)} times)')
 
-    # Year bare after authors, no parentheses: "Smith, J 2020,"
-    h2 = re.findall(r'[A-Z][a-z]+,\s+[A-Z]\s+\d{4}[,.]', ref_block)
+    # Title in single quotes: 'Title of article', — STRONGEST Harvard signal, unique to Harvard
+    h2 = re.findall(r"'[A-Z][^']{10,}'", ref_block)
     if h2:
-        scores['harvard'] += 10 * min(len(h2) / total_refs, 1)
-        evidence['harvard'].append(f'Harvard year format "Surname, I YYYY," ({len(h2)} entries)')
+        scores['harvard'] += 15 * min(len(h2) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard single-quoted title ({len(h2)} entries)')
 
-    # Harvard journal: vol(issue), pp. X–Y
-    h3 = re.findall(r'\bpp?\.\s*\d+[–\-]\d+', ref_block)
+    # Year in parentheses FOLLOWED by single-quoted title: (2020) 'Title'
+    h3 = re.findall(r"\(\d{4}[a-z]?\)\s+'", ref_block)
     if h3:
-        scores['harvard'] += 8 * min(len(h3) / total_refs, 1)
-        evidence['harvard'].append(f'Harvard "pp. X-Y" page format ({len(h3)} entries)')
+        scores['harvard'] += 12 * min(len(h3) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard year+title pattern "(YYYY) \'Title\'" ({len(h3)} entries)')
+
+    # "pp." page format: pp. 83-95
+    h4 = re.findall(r'\bpp\.\s*\d+[–\-]\d+', ref_block)
+    if h4:
+        scores['harvard'] += 8 * min(len(h4) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard "pp. X-Y" page format ({len(h4)} entries)')
+
+    # "Available at:" phrase — Harvard-specific
+    h5 = re.findall(r'\bAvailable\s+at:', ref_block, re.IGNORECASE)
+    if h5:
+        scores['harvard'] += 7 * min(len(h5) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard "Available at:" phrase ({len(h5)} entries)')
+
+    # "(Accessed:" phrase — Harvard-specific
+    h6 = re.findall(r'\(Accessed:', ref_block, re.IGNORECASE)
+    if h6:
+        scores['harvard'] += 6 * min(len(h6) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard "(Accessed:" phrase ({len(h6)} entries)')
 
     # ── MLA ───────────────────────────────────────────────────────────────
     # "Works Cited" heading is the strongest MLA signal
@@ -541,16 +570,26 @@ def detect_style_from_references(reference_list):
             'all_scores': {}
         }
 
+    MAX_SCORE_PER_STYLE = 100
+
+    # Cap each style's raw accumulated score to MAX_SCORE_PER_STYLE
+    for style in scores:
+        scores[style] = min(scores[style], MAX_SCORE_PER_STYLE)
+    
     total_score = sum(scores.values())
     winner = max(scores, key=scores.get)
-    confidence = round((scores[winner] / total_score) * 100)
+    
+    confidence = min(
+        round((scores[winner] / total_score) * 100),
+        100
+    )
 
     return {
         'style': winner,
         'confidence': confidence,
         'evidence': evidence[winner],
         'all_scores': {
-            k: round((v / total_score) * 100)
+            k: min(round((v / total_score) * 100), 100)
             for k, v in sorted(scores.items(), key=lambda x: -x[1])
         }
     }
@@ -580,142 +619,132 @@ def _extract_ref_number(ref_string):
     return int(m.group(1)) if m else None
 
 
+def _normalise_surname(surname):
+    """Lowercase and strip punctuation for consistent key comparison."""
+    s = unicodedata.normalize('NFKD', surname)
+    s = ''.join(c for c in s if not unicodedata.combining(c))
+    return s.lower().strip()
+
 def _order_by_appearance(body_text, references, verbatim_map):
     """Order references by their first appearance in the body text (Vancouver style)."""
     from collections import OrderedDict
 
-    # Detect what kind of in-text citations we have
-    NUMBERED_CITE = re.compile(r'\[(\d+(?:\s*[,–\-]\s*\d+)*)\]')
-    APA_PAREN = re.compile(
-        r'\(([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+(?:\s+et\s+al\.)?'
-        r'(?:\s*[&,]\s*[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)*)'
-        r',\s*(\d{4}[a-z]?)'
-        r'(?:;\s*[A-Z].*?\d{4}[a-z]?)*\)'
+    UNIFIED_PATTERN = re.compile(
+        r'(?:'
+        # Format 1: Parenthetical APA
+        r'\(([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)'
+        r'(?:\s+(?:and|&)\s+[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)*'
+        r'(?:\s*et\s+al\.)?'
+        r',\s*(\d{4}[a-z]?(?:;\s*[A-Z].*?\d{4}[a-z]?)*)\)'
+        
+        r'|'
+        
+        # Format 2: Narrative APA
+        r'([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)'
+        r'(?:\s+(?:and|&)\s+[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)*'
+        r'(?:\s+et\s+al\.)?'
+        r'\s+\((\d{4}[a-z]?)\)'
+        
+        r'|'
+        
+        # Format 3: Vancouver numbered
+        r'\[(\d+(?:\s*[,–\-]\s*\d+)*)\]'
+        r')'
     )
-    APA_NARRATIVE = re.compile(
-        r'([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+(?:\s+et\s+al\.)?)\s*\((\d{4}[a-z]?)\)'
-    )
 
-    # Try numbered citations first
-    has_numbered = bool(NUMBERED_CITE.search(body_text))
+    seen = OrderedDict()  # canonical_key -> (position, original_text)
 
-    if has_numbered:
-        # Walk body finding [1], [2,3], [1-4] etc. — record first hit per number
-        seen_order = []
-        seen_set = set()
-        for m in NUMBERED_CITE.finditer(body_text):
-            for num in _expand_range(m.group(1)):
-                if num not in seen_set:
-                    seen_order.append(num)
-                    seen_set.add(num)
-
-        # Map old citation number → reference string
-        ref_by_num = {}
-        for ref in references:
-            old_num = _extract_ref_number(ref)
-            if old_num is not None:
-                ref_by_num[old_num] = ref
-
-        reordered = []
-        for new_num, old_num in enumerate(seen_order, start=1):
-            if old_num in ref_by_num:
-                ref_text = ref_by_num[old_num]
-                verbatim_entry = (verbatim_map or {}).get(ref_text, {})
-                reordered.append({
-                    "display_number": new_num,
-                    "ref": ref_text,
-                    "verbatim": verbatim_entry.get("verbatim"),
-                    "verbatim_html": verbatim_entry.get("verbatim_html"),
-                    "first_cited_as": f"[{old_num}]",
-                })
-
-        # Append uncited references
-        cited_old = set(seen_order)
-        next_num = len(reordered) + 1
-        for ref in references:
-            old_num = _extract_ref_number(ref)
-            if old_num not in cited_old:
-                verbatim_entry = (verbatim_map or {}).get(ref, {})
-                reordered.append({
-                    "display_number": next_num,
-                    "ref": ref,
-                    "verbatim": verbatim_entry.get("verbatim"),
-                    "verbatim_html": verbatim_entry.get("verbatim_html"),
-                    "first_cited_as": None,
-                })
-                next_num += 1
-
-        return reordered
-
-    else:
-        # Author-year style: scan for (Author, Year) and Author (Year) patterns
-        seen = OrderedDict()  # (surname_lower, year) -> (position, original_text)
-
-        for pattern in (APA_PAREN, APA_NARRATIVE):
-            for m in pattern.finditer(body_text):
-                surname = m.group(1).split()[0].rstrip(',')
-                year = m.group(2)
-                key = (surname.lower(), year)
+    for m in UNIFIED_PATTERN.finditer(body_text):
+        pos = m.start()
+        
+        if m.group(5):
+            # Vancouver numbered citation
+            for num in _expand_range(m.group(5)):
+                key = ('__numbered__', str(num))
                 if key not in seen:
-                    seen[key] = (m.start(), m.group(0))
+                    seen[key] = (pos, m.group(0))
+                    
+        elif m.group(1) and m.group(2):
+            # Parenthetical citation (could have multiple years separated by semicolons, but we just take the first)
+            year = m.group(2).split(';')[0].strip()
+            key = (_normalise_surname(m.group(1)), year)
+            if key not in seen:
+                seen[key] = (pos, m.group(0))
+                
+        elif m.group(3) and m.group(4):
+            # Narrative citation
+            key = (_normalise_surname(m.group(3)), m.group(4))
+            if key not in seen:
+                seen[key] = (pos, m.group(0))
 
-        appearance_order = sorted(seen.keys(), key=lambda k: seen[k][0])
+    appearance_order = sorted(seen.keys(), key=lambda k: seen[k][0])
 
-        # Build surname+year index from reference list
-        def _ref_surname(ref_text):
-            match = re.search(r'^([A-Za-z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)', ref_text.strip())
-            return match.group(1).strip() if match else None
+    # Build lookup indices for the reference list
+    ref_by_num = {}
+    ref_by_surname_year = {}
+    
+    def _ref_surname(ref_text):
+        match = re.search(r'^([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)', ref_text.strip())
+        return _normalise_surname(match.group(1)) if match else None
 
-        def _ref_year(ref_text):
-            m = re.search(r'\b(19|20)\d{2}[a-z]?\b', ref_text)
-            return m.group(0) if m else None
+    def _ref_year(ref_text):
+        m = re.search(r'\b(19|20)\d{2}[a-z]?\b', ref_text)
+        return m.group(0) if m else None
 
-        ref_index = {}
-        for ref in references:
-            s = _ref_surname(ref)
-            y = _ref_year(ref)
-            if s:
-                ref_index.setdefault((s.lower(), y), ref)
+    for ref in references:
+        old_num = _extract_ref_number(ref)
+        if old_num is not None:
+            ref_by_num[str(old_num)] = ref
+            
+        s = _ref_surname(ref)
+        y = _ref_year(ref)
+        if s:
+            ref_by_surname_year.setdefault((s, y), ref)
 
-        reordered = []
-        counter = 1
-        matched_refs = set()
+    reordered = []
+    counter = 1
+    matched_refs = set()
 
-        for key in appearance_order:
-            matched_ref = ref_index.get(key)
+    for key in appearance_order:
+        matched_ref = None
+        if key[0] == '__numbered__':
+            matched_ref = ref_by_num.get(key[1])
+        else:
+            matched_ref = ref_by_surname_year.get(key)
             if not matched_ref:
-                for rk, rv in ref_index.items():
+                for rk, rv in ref_by_surname_year.items():
                     if rk[0] == key[0]:
                         matched_ref = rv
                         break
-            if not matched_ref or matched_ref in matched_refs:
-                continue
 
-            matched_refs.add(matched_ref)
-            verbatim_entry = (verbatim_map or {}).get(matched_ref, {})
+        if not matched_ref or matched_ref in matched_refs:
+            continue
+
+        matched_refs.add(matched_ref)
+        verbatim_entry = (verbatim_map or {}).get(matched_ref, {})
+        reordered.append({
+            "display_number": counter,
+            "ref": matched_ref,
+            "verbatim": verbatim_entry.get("verbatim"),
+            "verbatim_html": verbatim_entry.get("verbatim_html"),
+            "first_cited_as": seen[key][1],
+        })
+        counter += 1
+
+    # Append uncited references
+    for ref in references:
+        if ref not in matched_refs:
+            verbatim_entry = (verbatim_map or {}).get(ref, {})
             reordered.append({
                 "display_number": counter,
-                "ref": matched_ref,
+                "ref": ref,
                 "verbatim": verbatim_entry.get("verbatim"),
                 "verbatim_html": verbatim_entry.get("verbatim_html"),
-                "first_cited_as": seen[key][1],
+                "first_cited_as": None,
             })
             counter += 1
 
-        # Append uncited references
-        for ref in references:
-            if ref not in matched_refs:
-                verbatim_entry = (verbatim_map or {}).get(ref, {})
-                reordered.append({
-                    "display_number": counter,
-                    "ref": ref,
-                    "verbatim": verbatim_entry.get("verbatim"),
-                    "verbatim_html": verbatim_entry.get("verbatim_html"),
-                    "first_cited_as": None,
-                })
-                counter += 1
-
-        return reordered
+    return reordered
 
 
 def _order_alphabetically(references, verbatim_map):
@@ -738,6 +767,80 @@ def _order_alphabetically(references, verbatim_map):
     return result
 
 
+def classify_single_reference(ref_text):
+    """
+    Classify a single reference entry into its most likely citation style.
+    Returns the style name string (e.g. 'vancouver', 'apa', 'harvard').
+    """
+    from collections import defaultdict
+    scores = defaultdict(float)
+    text = ref_text.strip()
+
+    # ── Vancouver signals ──
+    # Starts with a number
+    if re.match(r'^\[?\d+\]?\.?\s', text):
+        scores['vancouver'] += 10
+    # Author format: Surname Initials, (no dot after initials)
+    van_authors = re.findall(r'\b[A-Z][a-z]+\s+[A-Z]{1,3},', text)
+    if van_authors:
+        scores['vancouver'] += 8
+    # Journal format: YYYY;Vol(Issue):Pages
+    if re.search(r'\.\s*\d{4}\s*;\s*\d+\s*(?:\(\d+\))?\s*:\s*\d+', text):
+        scores['vancouver'] += 9
+
+    # ── APA signals ──
+    # Author: Surname, I. or Surname, I. A.
+    apa_authors = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?(?:,|&|\()', text)
+    if apa_authors:
+        scores['apa'] += 9
+    # Year in parentheses: (2020).
+    if re.search(r'\(\d{4}[a-z]?\)\.', text):
+        scores['apa'] += 10
+    # Journal comma-separated vol(issue), pages
+    if re.search(r',\s*\d+\(\d+\),\s*\d+', text):
+        scores['apa'] += 8
+
+    # ── Harvard signals ──
+    # Harvard uses: Surname, I. (YYYY) 'Title', Journal, vol(issue), pp. X-Y.
+    # The STRONGEST Harvard-only signal is the single-quoted title.
+
+    # Author: Surname, I. (comma+dot, shared with APA — low weight)
+    if re.search(r'\b[A-Z][a-z]+,\s+[A-Z]\.', text):
+        scores['harvard'] += 4
+    # Single-quoted title: 'Title of article' — UNIQUE to Harvard
+    if re.search(r"'[A-Z][^']{10,}'", text):
+        scores['harvard'] += 15
+    # Year followed by single-quoted title: (2020) 'Title'
+    if re.search(r"\(\d{4}[a-z]?\)\s+'", text):
+        scores['harvard'] += 12
+    # pp. X-Y page format
+    if re.search(r'\bpp\.\s*\d+[–\-]\d+', text):
+        scores['harvard'] += 8
+    # "Available at:" — Harvard-specific
+    if re.search(r'\bAvailable\s+at:', text, re.IGNORECASE):
+        scores['harvard'] += 7
+    # "(Accessed:" — Harvard-specific
+    if re.search(r'\(Accessed:', text, re.IGNORECASE):
+        scores['harvard'] += 6
+
+    # ── MLA signals ──
+    # Full first name author: Surname, Firstname.
+    if re.match(r'^[A-Z][a-z]+,\s+[A-Z][a-z]{2,}\.', text):
+        scores['mla'] += 9
+    # Year at end
+    if re.search(r',\s*\d{4}\.\s*(?:Web\.|Print\.|$)', text):
+        scores['mla'] += 8
+
+    # ── Chicago signals ──
+    if re.search(r'[A-Z][a-z]+,\s+[A-Z][a-z]+\.\s+\d{4}\.\s+["*_A-Z]', text):
+        scores['chicago'] += 10
+
+    if not any(scores.values()):
+        return 'unknown'
+
+    return max(scores, key=scores.get)
+
+
 def apply_reference_ordering(body_text, references, verbatim_map=None):
     """
     Main pipeline: detect style, reorder references accordingly.
@@ -750,6 +853,13 @@ def apply_reference_ordering(body_text, references, verbatim_map=None):
         ordered = _order_by_appearance(body_text, references, verbatim_map)
     else:
         ordered = _order_alphabetically(references, verbatim_map)
+
+    # ── Per-reference style classification & outlier flagging ──
+    for entry in ordered:
+        ref_text = entry.get('ref', '')
+        ref_style = classify_single_reference(ref_text)
+        entry['ref_style'] = ref_style
+        entry['is_style_outlier'] = (ref_style != style and ref_style != 'unknown')
 
     return {
         "style": style,
