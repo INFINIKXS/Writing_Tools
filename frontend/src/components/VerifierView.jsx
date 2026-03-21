@@ -225,8 +225,8 @@ export default function VerifierView() {
                             { label: 'Citations', value: results.num_unique_citations || 0 },
                             { label: 'Unique Citations', value: new Set(results.string_verification?.confirmed_matches?.map(m => m.canonical_ref_id || m.matched_ref)).size || 0 },
                             { label: 'References', value: results.num_references || 0 },
-                            { label: 'Missing Refs', value: results.missing_references_for_citations?.length || 0 },
-                            { label: 'Unused Refs', value: results.unused_references?.length || 0 },
+                            { label: 'Missing Refs', value: results.string_verification?.unmatched_citations?.length || 0 },
+                            { label: 'Unused Refs', value: results.string_verification?.unmatched_references?.length || 0 },
                         ].map((stat, i) => (
                             <div key={i} className="glass-card p-5 border-l-4 border-l-white/20">
                                 <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-2">{stat.label}</div>
@@ -235,29 +235,29 @@ export default function VerifierView() {
                         ))}
                     </div>
 
-                    {(results.missing_references_for_citations?.length > 0 || results.unused_references?.length > 0) && (
+                    {(results.string_verification?.unmatched_citations?.length > 0 || results.string_verification?.unmatched_references?.length > 0) && (
                         <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                            {results.missing_references_for_citations?.length > 0 && (
+                            {results.string_verification?.unmatched_citations?.length > 0 && (
                                 <div className="glass-card overflow-hidden">
                                     <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
                                         <FileX size={16} className="text-red-400" />
                                         <h3 className="text-sm font-bold text-red-200">Citations Missing References</h3>
                                     </div>
                                     <div className="p-4 max-h-[250px] overflow-y-auto space-y-2">
-                                        {results.missing_references_for_citations.map((c, i) => (
+                                        {results.string_verification.unmatched_citations.map((c, i) => (
                                             <div key={i} className="bg-white/3 p-3 rounded-lg border border-white/5 text-sm text-red-200 font-mono">{c}</div>
                                         ))}
                                     </div>
                                 </div>
                             )}
-                            {results.unused_references?.length > 0 && (
+                            {results.string_verification?.unmatched_references?.length > 0 && (
                                 <div className="glass-card overflow-hidden">
                                     <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
                                         <AlertCircle size={16} className="text-amber-400" />
                                         <h3 className="text-sm font-bold text-amber-200">Unused References</h3>
                                     </div>
                                     <div className="p-4 max-h-[250px] overflow-y-auto space-y-2">
-                                        {results.unused_references.map((r, i) => (
+                                        {results.string_verification.unmatched_references.map((r, i) => (
                                             <div key={i} className="bg-white/3 p-3 rounded-lg border border-white/5 text-sm text-neutral-300 leading-relaxed">{r}</div>
                                         ))}
                                     </div>
