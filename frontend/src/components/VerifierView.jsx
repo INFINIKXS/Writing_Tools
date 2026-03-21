@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck, ScanSearch, GitCompare, List } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck, ScanSearch, GitCompare } from 'lucide-react';
 
 const STAGE_CONFIG = {
     parsing: { icon: FileSearch, label: 'Parsing Document', step: 1 },
@@ -223,7 +223,7 @@ export default function VerifierView() {
                     <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
                         {[
                             { label: 'Citations', value: results.num_unique_citations || 0 },
-                            { label: 'Unique Citations', value: new Set(results.string_verification?.confirmed_matches?.map(m => m.citation.toLowerCase())).size || 0 },
+                            { label: 'Unique Citations', value: new Set(results.string_verification?.confirmed_matches?.map(m => m.canonical_ref_id || m.matched_ref)).size || 0 },
                             { label: 'References', value: results.num_references || 0 },
                             { label: 'Missing Refs', value: results.missing_references_for_citations?.length || 0 },
                             { label: 'Unused Refs', value: results.unused_references?.length || 0 },
@@ -263,6 +263,43 @@ export default function VerifierView() {
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {results.duplicate_reference_groups?.length > 0 && (
+                        <div className="glass-card overflow-hidden border border-amber-500/20 mb-3">
+                            <div className="bg-amber-500/5 border-b border-amber-500/10 px-5 py-3 flex items-center gap-2">
+                                <AlertCircle size={16} className="text-amber-400" />
+                                <h3 className="text-sm font-bold text-amber-200">
+                                    {results.duplicate_reference_groups.length} Duplicate Reference Group{results.duplicate_reference_groups.length !== 1 ? 's' : ''} Detected and Merged
+                                </h3>
+                            </div>
+                            <div className="p-4 max-h-[350px] overflow-y-auto space-y-4">
+                                {results.duplicate_reference_groups.map((group, i) => {
+                                    const canonical = group[0];
+                                    const duplicates = group.slice(1);
+                                    
+                                    const orderedEntry = results.ordered_references?.find(r => r.ref === canonical);
+                                    const badge = orderedEntry?.display_number ? `[${orderedEntry.display_number}] ` : '';
+
+                                    return (
+                                        <div key={i} className="space-y-2">
+                                            <div className="bg-white/5 p-3 rounded-lg border border-white/5 text-sm text-neutral-300">
+                                                <span className="text-amber-400 font-bold mr-2">{badge}</span>
+                                                {canonical} <span className="text-emerald-400 text-xs ml-2 font-semibold">(kept)</span>
+                                            </div>
+                                            {duplicates.map((dup, j) => (
+                                                <div key={j} className="flex gap-2 pl-4 text-xs text-neutral-500">
+                                                    <span className="text-neutral-600 mt-1">└─</span>
+                                                    <div className="bg-white/3 p-2 rounded border border-white/5 flex-1 break-words">
+                                                        <span className="text-amber-400/70 mr-1">Merged duplicate:</span> {dup}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
                     )}
 
@@ -351,15 +388,57 @@ export default function VerifierView() {
                     )}
 
                     {results.string_verification?.confirmed_matches?.length > 0 && (() => {
-                        const allMatches = results.string_verification.confirmed_matches;
+                        const detectedStyle = results.detected_style || 'apa';
+                        const isVancouver = detectedStyle === 'vancouver';
+                        const styleLabel = {
+                            vancouver: 'Vancouver',
+                            apa: 'APA',
+                            mla: 'MLA',
+                            chicago: 'Chicago',
+                            harvard: 'Harvard',
+                        }[detectedStyle] || detectedStyle.toUpperCase();
+
+                        // Group citations by canonical_ref_id to avoid duplicate cards for the same reference
+                        const uniqueMatchesMap = {};
+                        results.string_verification.confirmed_matches.forEach(m => {
+                            const refKey = m.canonical_ref_id || m.matched_ref;
+                            if (!uniqueMatchesMap[refKey]) {
+                                uniqueMatchesMap[refKey] = {
+                                    ...m,
+                                    citations: [m.citation]
+                                };
+                            } else if (!uniqueMatchesMap[refKey].citations.includes(m.citation)) {
+                                uniqueMatchesMap[refKey].citations.push(m.citation);
+                            }
+                        });
+                        const allMatches = Object.values(uniqueMatchesMap);
+
+                        // Use ordered_references from backend to reorder matched refs
+                        const orderedRefs = results.ordered_references || [];
+                        const orderedRefTexts = orderedRefs.map(r => r.ref);
+
+                        // Partition into good & problem, then sort each by the ordered_references sequence
+                        const orderIndex = {};
+                        orderedRefTexts.forEach((ref, idx) => { orderIndex[ref] = idx; });
+
+                        const sortByOrder = (a, b) => {
+                            const idxA = orderIndex[a.matched_ref] ?? 999;
+                            const idxB = orderIndex[b.matched_ref] ?? 999;
+                            return idxA - idxB;
+                        };
+
                         const goodMatches = allMatches.filter(m => {
                             const conf = results.verbatim_references?.[m.matched_ref]?.confidence || 0;
                             return conf >= 0.75;
-                        });
+                        }).sort(sortByOrder);
+
                         const problemMatches = allMatches.filter(m => {
                             const conf = results.verbatim_references?.[m.matched_ref]?.confidence || 0;
                             return conf < 0.75;
-                        });
+                        }).sort(sortByOrder);
+
+                        // Lookup helper: find ordered ref entry for a match
+                        const getOrderedEntry = (matchedRef) => orderedRefs.find(r => r.ref === matchedRef);
 
                         const renderMatch = (m, i, isProblem) => {
                             const verbatimData = results.verbatim_references?.[m.matched_ref];
@@ -368,11 +447,23 @@ export default function VerifierView() {
                             const confidence = verbatimData?.confidence || 0;
                             const conflict = verbatimData?.conflict;
                             const borderClass = isProblem ? 'border-l-amber-500/50' : conflict ? 'border-l-amber-500/50' : 'border-l-white/15';
+
+                            const orderedEntry = getOrderedEntry(m.matched_ref);
+                            const displayNumber = orderedEntry?.display_number;
+                            const firstCitedAs = orderedEntry?.first_cited_as;
+
                             return (
                                 <div key={i} className={`bg-white/[0.02] p-3 rounded-lg border border-white/5 border-l-4 ${borderClass}`}>
                                     <div className="flex items-start gap-3 mb-2">
+                                        {isVancouver && displayNumber != null && (
+                                            <span className="shrink-0 w-7 h-7 rounded-full bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-xs font-bold text-sky-400">
+                                                {displayNumber}
+                                            </span>
+                                        )}
                                         <div className="flex-1">
-                                            <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">{m.citation}</div>
+                                            <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">
+                                                {m.citations ? m.citations.join(' | ') : m.citation}
+                                            </div>
                                             <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1 flex items-center gap-2">
                                                 Source Reference
                                                 {confidence >= 0.8 && <span className="text-emerald-500">(✓ exact match)</span>}
@@ -382,6 +473,11 @@ export default function VerifierView() {
                                                 <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5" dangerouslySetInnerHTML={{ __html: verbatimHtml }} />
                                             ) : (
                                                 <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
+                                            )}
+                                            {isVancouver && firstCitedAs && (
+                                                <div className="text-[10px] text-neutral-600 mt-1.5">
+                                                    First cited as: <span className="font-mono text-neutral-500">{firstCitedAs}</span>
+                                                </div>
                                             )}
                                             {isProblem && (
                                                 <div className="mt-2 text-[10px] text-amber-400 bg-amber-500/10 px-3 py-2 rounded-lg border border-amber-500/20 space-y-1">
@@ -412,19 +508,50 @@ export default function VerifierView() {
                         };
 
                         return (
-                            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
-                                {/* Left panel — Good Matches */}
+                            <>
+                                {results.style_detection_confidence > 0 && (
+                                    <div className="glass-card mb-3 p-4 flex flex-col md:flex-row md:items-center justify-between gap-4 border-l-4 border-l-purple-500/50">
+                                        <div>
+                                            <div className="text-[10px] font-bold uppercase tracking-widest text-purple-400 mb-1">Detected Style</div>
+                                            <div className="flex items-center gap-3">
+                                                <h3 className="text-xl font-bold text-white">{styleLabel}</h3>
+                                                <span className="bg-purple-500/10 text-purple-300 border border-purple-500/20 px-2 py-0.5 rounded text-xs font-semibold">
+                                                    {Math.round(results.style_detection_confidence * 100)}% Confidence
+                                                </span>
+                                            </div>
+                                        </div>
+                                        {results.style_detection_evidence?.length > 0 && (
+                                            <div className="md:w-1/2 bg-white/[0.02] p-3 rounded-lg border border-white/5 text-xs text-neutral-300 space-y-1">
+                                                <div className="font-semibold text-neutral-400 mb-1">Key Evidence:</div>
+                                                {results.style_detection_evidence.slice(0, 3).map((ev, idx) => (
+                                                    <div key={idx} className="flex gap-2">
+                                                        <span className="text-purple-400 shrink-0">•</span>
+                                                        <span>{ev}</span>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                )}
+                                <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+                                    {/* Left panel — Good Matches (ordered) */}
                                 <div className="glass-card overflow-hidden">
                                     <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <CheckCircle2 size={16} className="text-emerald-400" />
-                                            <h3 className="text-sm font-bold text-emerald-200">Confirmed Matches ({goodMatches.length})</h3>
+                                            <h3 className="text-sm font-bold text-emerald-200">{styleLabel} Reference Order ({goodMatches.length})</h3>
                                         </div>
                                         <button
                                             onClick={() => {
-                                                const allPlain = goodMatches
-                                                    .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref)
-                                                    .join('\n\n');
+                                                const copyList = goodMatches.map((m, idx) => {
+                                                    const text = results.verbatim_references?.[m.matched_ref]?.verbatim || m.matched_ref;
+                                                    const entry = getOrderedEntry(m.matched_ref);
+                                                    if (isVancouver && entry?.display_number != null) {
+                                                        return `${entry.display_number}. ${text}`;
+                                                    }
+                                                    return text;
+                                                });
+                                                const allPlain = copyList.join('\n\n');
                                                 const allHtml = goodMatches
                                                     .map(m => results.verbatim_references?.[m.matched_ref]?.verbatim_html)
                                                     .filter(Boolean)
@@ -482,76 +609,9 @@ export default function VerifierView() {
                                     </div>
                                 </div>
                             </div>
+                            </>
                         );
                     })()}
-                    {results.vancouver_ordered_references?.length > 0 && (
-                        <div className="glass-card overflow-hidden">
-                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
-                                <div className="flex items-center gap-2">
-                                    <List size={16} className="text-sky-400" />
-                                    <h3 className="text-sm font-bold text-sky-200">
-                                        Vancouver Reference Order ({results.vancouver_ordered_references.length})
-                                    </h3>
-                                </div>
-                                <button
-                                    onClick={() => {
-                                        const numbered = results.vancouver_ordered_references
-                                            .map(item => {
-                                                const text = item.verbatim || item.ref;
-                                                return `${item.number}. ${text}`;
-                                            })
-                                            .join('\n\n');
-                                        navigator.clipboard.writeText(numbered).then(() => {
-                                            setCopiedIdx('vancouver-order');
-                                            setTimeout(() => setCopiedIdx(null), 2000);
-                                        });
-                                    }}
-                                    className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors"
-                                >
-                                    {copiedIdx === 'vancouver-order' ? <ClipboardCheck size={13} className="text-emerald-400" /> : <Copy size={13} />}
-                                    {copiedIdx === 'vancouver-order' ? 'Copied!' : 'Copy All'}
-                                </button>
-                            </div>
-                            <div className="p-4 space-y-2 max-h-[600px] overflow-y-auto">
-                                <p className="text-xs text-neutral-500 mb-3">
-                                    References numbered by order of first appearance in the document body.
-                                </p>
-                                {results.vancouver_ordered_references.map((item) => {
-                                    const displayText = item.verbatim_html
-                                        ? sanitizeHtml(item.verbatim_html)
-                                        : null;
-                                    const plainText = item.verbatim || item.ref;
-                                    return (
-                                        <div key={item.number} className="flex items-start gap-3 bg-white/[0.02] border border-white/5 rounded-lg p-3">
-                                            <span className="shrink-0 w-7 h-7 rounded-full bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-xs font-bold text-sky-400">
-                                                {item.number}
-                                            </span>
-                                            <div className="flex-1 min-w-0">
-                                                {displayText ? (
-                                                    <div
-                                                        className="text-xs text-neutral-300 leading-relaxed"
-                                                        dangerouslySetInnerHTML={{ __html: displayText }}
-                                                    />
-                                                ) : (
-                                                    <div className="text-xs text-neutral-300 leading-relaxed">{plainText}</div>
-                                                )}
-                                                <div className="text-[10px] text-neutral-600 mt-1.5">
-                                                    First cited as: <span className="font-mono text-neutral-500">{item.first_cited_as}</span>
-                                                </div>
-                                            </div>
-                                            <button
-                                                onClick={() => copyRichText(plainText, displayText, `van-${item.number}`)}
-                                                className="shrink-0 p-1.5 hover:bg-white/10 rounded-lg text-neutral-600 hover:text-white transition-colors"
-                                                title="Copy reference"
-                                            >
-                                                {copiedIdx === `van-${item.number}` ? <ClipboardCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
-                                            </button>
-                                        </div>
-                                    );
-                                })}
-                            </div>
-                        </div>
-                    )}
                 </div>
             )}
         </div>
