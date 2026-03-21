@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck, ScanSearch, GitCompare } from 'lucide-react';
+import { UploadCloud, File, AlertCircle, CheckCircle2, XCircle, FileX, BarChart3, Loader2, FileSearch, Brain, ShieldCheck, BookOpen, Copy, ClipboardCheck, ScanSearch, GitCompare, List } from 'lucide-react';
 
 const STAGE_CONFIG = {
     parsing: { icon: FileSearch, label: 'Parsing Document', step: 1 },
@@ -484,6 +484,74 @@ export default function VerifierView() {
                             </div>
                         );
                     })()}
+                    {results.vancouver_ordered_references?.length > 0 && (
+                        <div className="glass-card overflow-hidden">
+                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center justify-between">
+                                <div className="flex items-center gap-2">
+                                    <List size={16} className="text-sky-400" />
+                                    <h3 className="text-sm font-bold text-sky-200">
+                                        Vancouver Reference Order ({results.vancouver_ordered_references.length})
+                                    </h3>
+                                </div>
+                                <button
+                                    onClick={() => {
+                                        const numbered = results.vancouver_ordered_references
+                                            .map(item => {
+                                                const text = item.verbatim || item.ref;
+                                                return `${item.number}. ${text}`;
+                                            })
+                                            .join('\n\n');
+                                        navigator.clipboard.writeText(numbered).then(() => {
+                                            setCopiedIdx('vancouver-order');
+                                            setTimeout(() => setCopiedIdx(null), 2000);
+                                        });
+                                    }}
+                                    className="flex items-center gap-1.5 text-xs font-semibold text-neutral-400 hover:text-white bg-white/5 hover:bg-white/10 border border-white/10 px-3 py-1.5 rounded-lg transition-colors"
+                                >
+                                    {copiedIdx === 'vancouver-order' ? <ClipboardCheck size={13} className="text-emerald-400" /> : <Copy size={13} />}
+                                    {copiedIdx === 'vancouver-order' ? 'Copied!' : 'Copy All'}
+                                </button>
+                            </div>
+                            <div className="p-4 space-y-2 max-h-[600px] overflow-y-auto">
+                                <p className="text-xs text-neutral-500 mb-3">
+                                    References numbered by order of first appearance in the document body.
+                                </p>
+                                {results.vancouver_ordered_references.map((item) => {
+                                    const displayText = item.verbatim_html
+                                        ? sanitizeHtml(item.verbatim_html)
+                                        : null;
+                                    const plainText = item.verbatim || item.ref;
+                                    return (
+                                        <div key={item.number} className="flex items-start gap-3 bg-white/[0.02] border border-white/5 rounded-lg p-3">
+                                            <span className="shrink-0 w-7 h-7 rounded-full bg-sky-500/10 border border-sky-500/20 flex items-center justify-center text-xs font-bold text-sky-400">
+                                                {item.number}
+                                            </span>
+                                            <div className="flex-1 min-w-0">
+                                                {displayText ? (
+                                                    <div
+                                                        className="text-xs text-neutral-300 leading-relaxed"
+                                                        dangerouslySetInnerHTML={{ __html: displayText }}
+                                                    />
+                                                ) : (
+                                                    <div className="text-xs text-neutral-300 leading-relaxed">{plainText}</div>
+                                                )}
+                                                <div className="text-[10px] text-neutral-600 mt-1.5">
+                                                    First cited as: <span className="font-mono text-neutral-500">{item.first_cited_as}</span>
+                                                </div>
+                                            </div>
+                                            <button
+                                                onClick={() => copyRichText(plainText, displayText, `van-${item.number}`)}
+                                                className="shrink-0 p-1.5 hover:bg-white/10 rounded-lg text-neutral-600 hover:text-white transition-colors"
+                                                title="Copy reference"
+                                            >
+                                                {copiedIdx === `van-${item.number}` ? <ClipboardCheck size={14} className="text-emerald-400" /> : <Copy size={14} />}
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
                 </div>
             )}
         </div>

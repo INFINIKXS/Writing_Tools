@@ -216,51 +216,66 @@ def verify_matches_with_string_search(in_text_citations, references):
         "unmatched_citations": [],
         "unmatched_references": [],
         "duplicate_first_names": {},
-        "summary": "Simple first-name match verification completed (case-insensitive)."
+        "summary": "Surname + year compound-key match verification completed (case-insensitive)."
     }
 
-    def extract_first_author(citation):
-        match = re.search(r'^([A-Za-z\'-]+)', citation.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip())
+    def extract_first_author(text):
+        """Extract the first author's bare surname from a citation or reference string."""
+        # Strip outer brackets/parens then take the part before 'et al.' or 'and'
+        core = text.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip()
+        match = re.search(r'^([A-Za-z\'-]+)', core)
         if match:
-            return match.group(1).strip()
+            surname = match.group(1).strip()
+            # Strip trailing uppercase initials glued on without a comma (Vancouver: 'Smith JA' -> 'Smith')
+            surname = re.sub(r'\s+[A-Z]{1,3}$', '', surname).strip()
+            return surname
         return None
 
-    def extract_first_ref_author(ref):
-        match = re.search(r'^([A-Za-z\s\'-]+)', ref.strip())
-        if match:
-            author = match.group(1).rstrip(',.').strip()
-            return author
-        return None
+    def extract_year(text):
+        """Extract the first 4-digit year found in a string."""
+        m = re.search(r'\b(19|20)\d{2}\b', text)
+        return m.group(0) if m else None
 
-    ref_groups = {}
+    # Build a compound-key index for the reference list: (surname_lower, year) -> [refs]
+    # Also keep a surname-only fallback index for refs that lack a year.
+    ref_compound_index = {}   # (surname_lower, year) -> list[ref]
+    ref_surname_index = {}    # surname_lower -> list[ref]
+
     for ref in references:
-        ref_author = extract_first_ref_author(ref)
-        if ref_author:
-            ref_groups.setdefault(ref_author.lower(), []).append(ref)
+        ref_surname = extract_first_author(ref)
+        if not ref_surname:
+            continue
+        ref_year = extract_year(ref)
+        key = (ref_surname.lower(), ref_year)  # year may be None
+        ref_compound_index.setdefault(key, []).append(ref)
+        ref_surname_index.setdefault(ref_surname.lower(), []).append(ref)
 
-    for first_name, refs in ref_groups.items():
+    # Report duplicate surnames (for the frontend flag)
+    for surname_lower, refs in ref_surname_index.items():
         if len(refs) > 1:
-            verification_results["duplicate_first_names"][first_name.capitalize()] = refs
+            verification_results["duplicate_first_names"][surname_lower.capitalize()] = refs
 
     matched_refs = set()
 
     for cit in in_text_citations:
-        cit_author = extract_first_author(cit)
-        if not cit_author:
+        cit_surname = extract_first_author(cit)
+        if not cit_surname:
             verification_results["unmatched_citations"].append(cit)
             continue
 
-        matched = False
-        best_ref = None
-        for ref in references:
-            ref_author = extract_first_ref_author(ref)
-            if ref_author and cit_author.lower() == ref_author.lower():
-                matched = True
-                best_ref = ref
-                matched_refs.add(ref)
-                break
+        cit_year = extract_year(cit)
 
-        if matched:
+        # 1. Try compound key (surname + year) — most precise
+        compound_key = (cit_surname.lower(), cit_year)
+        candidates = ref_compound_index.get(compound_key, [])
+
+        # 2. If no year in citation, fall back to surname-only match
+        if not candidates:
+            candidates = ref_surname_index.get(cit_surname.lower(), [])
+
+        if candidates:
+            best_ref = candidates[0]  # Take first (already narrowed by year when possible)
+            matched_refs.add(best_ref)
             verification_results["confirmed_matches"].append({
                 "citation": cit,
                 "matched_ref": best_ref
@@ -271,6 +286,48 @@ def verify_matches_with_string_search(in_text_citations, references):
     verification_results["unmatched_references"] = [ref for ref in references if ref not in matched_refs]
 
     return verification_results
+
+
+def build_vancouver_order(python_citations: list, confirmed_matches: list, verbatim_map: dict = None) -> list:
+    """
+    Reorder and number references in Vancouver style: each reference receives
+    the number corresponding to its FIRST appearance in the document body.
+
+    Args:
+        python_citations: ordered list of {"text": "(Smith, 2020)", "type": ...} dicts
+                          (preserves left-to-right, top-to-bottom document order).
+        confirmed_matches: list of {"citation": str, "matched_ref": str} dicts.
+        verbatim_map: optional dict mapping AI ref -> {"verbatim": str, ...} for
+                      displaying the verbatim source text instead of the AI text.
+    Returns:
+        List of dicts: [{"number": 1, "ref": str, "verbatim": str|None,
+                         "first_cited_as": str}, ...]
+    """
+    # Build a fast citation -> matched_ref lookup
+    cit_to_ref = {m["citation"]: m["matched_ref"] for m in confirmed_matches}
+
+    seen_refs = {}   # ref_text -> assigned number
+    ordered = []
+    counter = 1
+
+    for cit_obj in python_citations:
+        cit_text = cit_obj["text"]
+        matched_ref = cit_to_ref.get(cit_text)
+        if not matched_ref:
+            continue  # skip citations that couldn't be matched to a reference
+        if matched_ref not in seen_refs:
+            seen_refs[matched_ref] = counter
+            verbatim_entry = (verbatim_map or {}).get(matched_ref, {})
+            ordered.append({
+                "number": counter,
+                "ref": matched_ref,
+                "verbatim": verbatim_entry.get("verbatim"),
+                "verbatim_html": verbatim_entry.get("verbatim_html"),
+                "first_cited_as": cit_text,
+            })
+            counter += 1
+
+    return ordered
 
 def count_references_and_citations(analysis):
     num_unique_citations = len(analysis.get("in_text_citations", []))
@@ -485,13 +542,14 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     
     ref_start_pattern = re.compile(
         r'^(?:'
-        r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'       # Surname followed by comma (e.g., "Smith,")
-        r'|\[\d+\]'                             # Numbered reference [1]
-        r'|\d+\.\s+[A-Z]'                       # Numbered reference "1. Author"
-        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('       # Surname followed by "(" (e.g., "Smith (2020)")
-        r'|[A-Z]\.?\s*,?\s*\('                   # Single letter + date (e.g., "A. (2020)" or "A (2020)")
-        r'|[A-Z]\.?\s*,'                         # Single letter + comma (e.g., "A, B." or "A.,")
-        r'|\(\d{4}\)'                             # Year-first format "(2020) Report..."
+        r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'           # Surname followed by comma (e.g., "Smith,")
+        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]{1,4},'  # Vancouver: Surname INITIALS, (e.g., "Smith JA,")
+        r'|\[\d+\]'                               # Numbered reference [1]
+        r'|\d+\.\s+[A-Z]'                         # Numbered reference "1. Author"
+        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('         # Surname followed by "(" (e.g., "Smith (2020)")
+        r'|[A-Z]\.?\s*,?\s*\('                     # Single letter + date (e.g., "A. (2020)" or "A (2020)")
+        r'|[A-Z]\.?\s*,'                           # Single letter + comma (e.g., "A, B." or "A.,")
+        r'|\(\d{4}\)'                               # Year-first format "(2020) Report..."
         r')',
     )
 
@@ -554,9 +612,11 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     # Sometimes PDFs put two references on the same line (DOI followed immediately
     # by the next author's name). Detect and split these.
     demerge_pattern = re.compile(
-        r'(?<=[0-9])'                          # after a digit (end of DOI/year)
-        r'\s+'                                  # whitespace
-        r'(?=[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,)'   # next author surname + comma
+        r'(?<=[0-9])'                            # after a digit (end of DOI/year)
+        r'\s+'                                    # whitespace
+        r'(?=[A-Z][a-zA-Zà-öø-ÿ\'\-]+'          # next author surname
+        r'(?:\s+[A-Z]{1,4})?'                    # optional: Vancouver initials (e.g. 'JA')
+        r'\s*,)'                                  # comma after surname or initials
     )
     demerged_refs = []
     for ref in atomic_refs:
@@ -1139,6 +1199,14 @@ Output in strict JSON format only:
                 plain = verbatim_map[key].get("verbatim", key)
                 verbatim_map[key]["verbatim_html"] = apply_italic_formatting(plain)
             analysis["verbatim_references"] = verbatim_map
+
+            # Stage 8: Build Vancouver ordered reference list
+            vancouver_order = build_vancouver_order(
+                python_citations,
+                analysis.get("string_verification", {}).get("confirmed_matches", []),
+                verbatim_map,
+            )
+            analysis["vancouver_ordered_references"] = vancouver_order
 
             yield f"data: {json.dumps({'stage': 'complete', 'message': 'Analysis complete!', 'data': analysis})}\n\n"
 
