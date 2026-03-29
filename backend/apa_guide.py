@@ -81,7 +81,7 @@ Author, A. A. (Year). Title of report. Publisher. URL
 
 Example:
 Winthrop, R., Ziegler, L., Handa, R., & Fakoya, F. (2019). How playful learning can help leapfrog progress
-in education. Center for Universal Education at Brookings.
+in education. Center for Universal Education at Brookings. https://www.brookings.edu/wp-content/uploads/2019/04/how_playful_learning_can_help_leapfrog_progress_in_education.pdf
 
 Press Release (Section 10.4)
 Group Author. (Year, Month Day). Title of press release [Press release]. URL
@@ -95,7 +95,7 @@ Author, A. A. (Year, Month Day–Day). Title of contribution [Conference session
 
 Example:
 Davidson, R. J. (2019, August 8–11). Well-being is a skill [Conference session]. APA 2019 Convention,
-Chicago, IL, United States.
+Chicago, IL, United States. https://irp-cdn.multiscreensite.com/a5ea5d51/files/uploaded/APA2019_Program_190708.pdf
 
 Dissertation From a Database (Section 10.6)
 Author, A. A. (Year). Title of dissertation (Publication No. xxxxx) [Doctoral dissertation, University Name]. Database Name.

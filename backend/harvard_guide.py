@@ -75,49 +75,49 @@ Examples:
 --- CHAPTER IN EDITED BOOK ---
 
 Template:
-  Surname of chapter author, Initial. (Year) 'Title of chapter', in Initial. Surname of editor (ed.) Title of book. Edition if later than first. Publisher, page reference.
+  Surname of chapter author, Initial. (Year) 'Title of chapter'. In Initial. Surname of editor (ed.) Title of book. Edition if later than first. Publisher, page reference.
 
 If online and unpaginated:
-  Surname of chapter author, Initial. (Year) 'Title of chapter', in Initial. Surname of editor (ed.) Title of book. Edition if later than first. Publisher. Available at: DOI or URL (Accessed: date).
+  Surname of chapter author, Initial. (Year) 'Title of chapter'. In Initial. Surname of editor (ed.) Title of book. Edition if later than first. Publisher. Available at: DOI or URL (Accessed: date).
 
 Examples:
-  Franklin, A.W. (2012) 'Management of the problem', in S.M. Smith (ed.) The maltreatment of children. MTP, pp. 83-95.
-  Due C., Lupack S. and Lamberton R. (2020) 'Homer in a world of song', in C.O. Pache (ed.) The Cambridge guide to Homer: part I - Homeric song and text. Cambridge University Press. Available at: https://www-cambridge-org (Accessed: 27 August 2025).
-  Olby, R. (2014) 'Crick, Francis Harry Compton (1916-2004)', in Oxford dictionary of national biography. Online edn. Oxford University Press. Available at: https://doi.org/10.1093/ref:odnb/93883.
+  Franklin, A.W. (2012) 'Management of the problem'. In S.M. Smith (ed.) The maltreatment of children. MTP, pp. 83-95.
+  Due C., Lupack S. and Lamberton R. (2020) 'Homer in a world of song'. In C.O. Pache (ed.) The Cambridge guide to Homer: part I - Homeric song and text. Cambridge University Press. Available at: https://www-cambridge-org (Accessed: 27 August 2025).
+  Olby, R. (2014) 'Crick, Francis Harry Compton (1916-2004)'. In Oxford dictionary of national biography. Online edn. Oxford University Press. Available at: https://doi.org/10.1093/ref:odnb/93883.
 
 Note: In-text citation should give the author(s) of the chapter, not the editor.
 
 --- JOURNAL ARTICLES ---
 
 Template:
-  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference.
+  Surname, Initial. (Year) 'Title of article'. Title of Journal, volume number (issue number), page reference.
 
 If accessed online with DOI:
-  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference. doi: https://doi.org/...
+  Surname, Initial. (Year) 'Title of article'. Title of Journal, volume number (issue number), page reference. doi: https://doi.org/...
 
 If accessed online without DOI:
-  Surname, Initial. (Year) 'Title of article', Title of Journal, volume number (issue number), page reference. Available at: URL (Accessed: date).
+  Surname, Initial. (Year) 'Title of article'. Title of Journal, volume number (issue number), page reference. Available at: URL (Accessed: date).
 
 Note: Capitalise first letter of each word in the journal title, except linking words (and, of, the, for).
 
 Examples:
-  Sridhar, S. (2025) 'Constructive peer review made practical: a guide to the EMPATHY framework', Journal of Marketing, 89(3), pp. 1-12.
-  Erbil, D.G. (2020) 'A review of flipped classroom and cooperative learning method within the context of Vygotsky theory', Frontiers in Psychology, 11, article 1157. Available at: https://www.frontiersin.org/article/10.3389/fpsyg.2020.01157 (Accessed: 6 May 2024).
-  Barke, M. and Mowl, G. (2016) 'Malaga - a failed resort of the early twentieth century?', Journal of Tourism History, 2(3), pp. 187-212. doi: https://doi.org/10.1080/1755182X.2010.523145
+  Sridhar, S. (2025) 'Constructive peer review made practical: a guide to the EMPATHY framework'. Journal of Marketing, 89(3), pp. 1-12.
+  Erbil, D.G. (2020) 'A review of flipped classroom and cooperative learning method within the context of Vygotsky theory'. Frontiers in Psychology, 11, article 1157. Available at: https://www.frontiersin.org/article/10.3389/fpsyg.2020.01157 (Accessed: 6 May 2024).
+  Barke, M. and Mowl, G. (2016) 'Malaga - a failed resort of the early twentieth century?'. Journal of Tourism History, 2(3), pp. 187-212. doi: https://doi.org/10.1080/1755182X.2010.523145
 
 --- NEWSPAPER ARTICLES ---
 
 Template:
-  Surname, Initial. (Year) 'Title of article', Title of Newspaper, Day and month, page reference.
+  Surname, Initial. (Year) 'Title of article'. Title of Newspaper, Day and month, page reference.
 
 If accessed online:
-  Surname, Initial. (Year) 'Title of article', Title of Newspaper, Day and month, page reference if available. Available at: URL (Accessed: date).
+  Surname, Initial. (Year) 'Title of article'. Title of Newspaper, Day and month, page reference if available. Available at: URL (Accessed: date).
 
 Note: Capitalise first letter of each word in the newspaper title, except linking words.
 
 Examples:
-  Mansell, W. and Bloom, A. (2012) '10,000 carrot to tempt physics experts', The Guardian, 20 June, p. 5.
-  Davis, N (2025) 'Scientists claim to have unlocked secret sauce needed for fine chocolate', The Guardian, 18 August. Available at: https://www.theguardian.com/science/2025/aug/18/scientists (Accessed: 19 August 2025).
+  Mansell, W. and Bloom, A. (2012) '10,000 carrot to tempt physics experts'. The Guardian, 20 June, p. 5.
+  Davis, N (2025) 'Scientists claim to have unlocked secret sauce needed for fine chocolate'. The Guardian, 18 August. Available at: https://www.theguardian.com/science/2025/aug/18/scientists (Accessed: 19 August 2025).
 
 --- WEB PAGES ---
 
@@ -158,10 +158,10 @@ Examples:
 --- FORUM MESSAGES ---
 
 Template:
-  Surname, Initial. (Year) 'Title of message', Title of discussion board, in Module code: Module title. Available at: URL (Accessed: date).
+  Surname, Initial. (Year) 'Title of message'. Title of discussion board, in Module code: Module title. Available at: URL (Accessed: date).
 
 Example:
-  O'Mahony, N. (2024) 'How the course works', Welcome forum, in A215: Creative writing. Available at: https://learn2.open.ac.uk/mod/forumng/discuss.php?d=4749155 (Accessed: 24 January 2025).
+  O'Mahony, N. (2024) 'How the course works'. Welcome forum, in A215: Creative writing. Available at: https://learn2.open.ac.uk/mod/forumng/discuss.php?d=4749155 (Accessed: 24 January 2025).
 
 === KEY FORMATTING RULES ===
 

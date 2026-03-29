@@ -453,6 +453,13 @@ def detect_style_from_references(reference_list):
         scores['vancouver'] += 3 * min(len(v4) / total_refs, 1)
         evidence['vancouver'].append(f'{len(v4)} DOI entries found')
 
+    # ── VANCOUVER SHARED OVERRIDE ──
+    # DOIs are shared by all styles. If no deeply Vancouver-specific
+    # markers are found (numbered lists, "Surname JA", or Vancouver journal structure), zero out score.
+    if not (v1 or v2 or v3):
+        scores['vancouver'] = 0
+        evidence['vancouver'] = []
+
     # ── APA ───────────────────────────────────────────────────────────────
     # Author format: "Smith, J." or "Smith, J. A." — surname COMMA initial DOT
     a1 = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?(?:,|&|\()', ref_block)
@@ -478,6 +485,13 @@ def detect_style_from_references(reference_list):
     if a4:
         scores['apa'] += 8 * min(len(a4) / total_refs, 1)
         evidence['apa'].append(f'APA journal format "Vol(Issue), Pages" ({len(a4)} entries)')
+
+    # ── APA SHARED OVERRIDE ──
+    # APA shares "Surname, I." (a1) with styles like Harvard.
+    # If no uniquely APA signals are found, zero out the score to prevent false positives.
+    if not (a2 or a3 or a4):
+        scores['apa'] = 0
+        evidence['apa'] = []
 
     # ── HARVARD ───────────────────────────────────────────────────────────
     # From the Harvard guide:
@@ -526,6 +540,13 @@ def detect_style_from_references(reference_list):
     if h6:
         scores['harvard'] += 6 * min(len(h6) / total_refs, 1)
         evidence['harvard'].append(f'Harvard "(Accessed:" phrase ({len(h6)} entries)')
+
+    # ── HARVARD SHARED OVERRIDE ──
+    # Harvard shares "Surname, I." (h1) and "pp." (h4) with APA/other styles.
+    # If no Harvard-exclusive signals were found, zero out the score to prevent false positives.
+    if not (h2 or h3 or h5 or h6):
+        scores['harvard'] = 0
+        evidence['harvard'] = []
 
     # ── MLA ───────────────────────────────────────────────────────────────
     # "Works Cited" heading is the strongest MLA signal
@@ -1243,82 +1264,93 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
 
 # Reusable pattern components
 # Surname: handles Smith, Stokes-Parish, Dall'Ora, O'Brien, Khazaee-Pool, etc.
-_SNAME = r"[A-Z\u00C0-\u00D6][a-z\u00E0-\u00F6]+(?:['\u2019\-\u2013\u2014][A-Z\u00C0-\u00D6]?[a-z\u00E0-\u00F6]+)*"
+# Surname prefix — comprehensive list covering Dutch, German, French, Italian,
+# Spanish, Portuguese, Arabic, Hebrew, Irish/Scottish, Scandinavian, Armenian naming.
+# Uses (?-i:...) to enforce case sensitivity even when outer pattern uses re.IGNORECASE.
+# A generic pattern (e.g. [A-Z][a-z]+) causes false positives with English words like
+# "Just", "Each", "As" — a curated list is the standard approach used by bibliography parsers.
+_SPREFIX = (
+    r"(?:(?-i:(?:Van|Von|Den|Der|Het|Ter|Ten|Uit|Del|Dos|Das|Los|Las|Dei|Bin|Ibn|Abu|Bat|Mac|San|Ben|"
+    r"Delle|Della|Degli|De|Di|Da|Du|Le|La|Lo|Li|Al|El|Af|Av|Ap|Op|Ul|Mc))"
+    r"(?:\s+(?-i:(?:der|den|de|het|la|las|los|le|di)))?\s+)?"
+)
+_SNAME = _SPREFIX + r"(?-i:[A-Z\u00C0-\u00D6])[a-z\u00E0-\u00F6]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6])?[a-z\u00E0-\u00F6]+)*"
 # Year or n.d. or "no date"
 _YEAR = r"(?:\d{4}[a-z]?|n\.d\.|no date)"
 # Multi-word corporate author: "NHS England", "Survey Coordination Centre", "Nursing and Midwifery Council"
 # Requires 2+ words, each starting with a letter, allowing "and"/"of"/"for" etc. between
-_CORP = r"(?:[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*\s+)+(?:(?:and|of|for|the)\s+)*[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*(?:\s+(?:(?:and|of|for|the)\s+)*[A-Z\u00C0-\u00D6][A-Za-z\u00C0-\u00F6'\-]*)*"
+_CORP = r"(?:(?-i:[A-Z\u00C0-\u00D6])[A-Za-z\u00C0-\u00F6'\-]*\s+)+(?:(?:and|of|for|the)\s+)*(?-i:[A-Z\u00C0-\u00D6])[A-Za-z\u00C0-\u00F6'\-]*(?:\s+(?:(?:and|of|for|the)\s+)*(?-i:[A-Z\u00C0-\u00D6])[A-Za-z\u00C0-\u00F6'\-]*)*"
 
 # Phase 1: Detect multi-citation blocks (parens with semicolons + years)
 MULTI_CITATION_PATTERN = re.compile(
-    r'\([^()]*\b\d{4}[a-z]?\b[^()]*;[^()]*\b\d{4}[a-z]?\b[^()]*\)'
+    r'\([^()]*\b\d{4}[a-z]?\b[^()]*;[^()]*\b\d{4}[a-z]?\b[^()]*\)',
+    re.IGNORECASE
 )
 
 # Phase 2: Individual citation patterns (most specific first)
 CITATION_PATTERNS = [
     # ── Author-Date Parenthetical ──
     # Org abbreviation: (WHO, 2020) or (CDC, 2020) or (WHO, n.d.)
-    (re.compile(rf'\(\s*[A-Z]{{2,}}[,\s]+{_YEAR}\s*\)'), 'ORG_ABBREV'),
+    (re.compile(rf'\(\s*(?-i:[A-Z]){{2,}}[,.\s]+{_YEAR}\s*\)', re.IGNORECASE), 'ORG_ABBREV'),
 
     # With initials: (J. Smith, 2020)
-    (re.compile(rf'\(\s*[A-Z]\.\s+{_SNAME}[,\s]+{_YEAR}\s*\)'), 'INITIALS'),
+    (re.compile(rf'\(\s*[A-Z]\.\s+{_SNAME}[,.\s]+{_YEAR}\s*\)', re.IGNORECASE), 'INITIALS'),
 
     # Et al.: (Stokes-Parish et al., 2020) or (Dall'Ora et al., 2019, p. 45)
-    (re.compile(rf'\(\s*{_SNAME}\s+et\s+al\.?\s*[,\s]*{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_ETAL'),
+    (re.compile(rf'\(\s*{_SNAME}\s+et\s+al\.?\s*[,.\s]*{_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_ETAL'),
 
     # Two authors (and/&): (Smith and Jones, 2020) or (Smith & Jones, 2020)
-    (re.compile(rf'\(\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,\s]+{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_TWO'),
+    (re.compile(rf'\(\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,.\s]+{_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_TWO'),
 
     # Secondary referencing: (Ecott, 2002, cited in Wilson, 2009) or (West et al., 2007, quoted in Birch, 2017, p. 17)
-    (re.compile(rf'\(\s*{_SNAME}(?:\s+et\s+al\.?)?\s*[,\s]*{_YEAR}[,\s]+(?:cited|quoted)\s+in\s+{_SNAME}(?:\s+et\s+al\.?)?\s*[,\s]*{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_SECONDARY'),
+    (re.compile(rf'\(\s*{_SNAME}(?:\s+et\s+al\.?)?\s*[,.\s]*{_YEAR}[,.\s]+(?:cited|quoted)\s+in\s+{_SNAME}(?:\s+et\s+al\.?)?\s*[,.\s]*{_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_SECONDARY'),
 
     # Multi-word corporate parenthetical: (NHS England, 2025) or (Survey Coordination Centre, 2025)
-    (re.compile(rf'\(\s*{_CORP}[,\s]+{_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)'), 'PAR_CORP'),
+    (re.compile(rf'\(\s*{_CORP}[,.\s]+{_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_CORP'),
 
     # Single author with optional page: (Smith, 2020) or (Smith, 2020, p. 45) or (Smith, n.d.)
-    (re.compile(rf'\(\s*{_SNAME}[,\s]+{_YEAR}(?:[,:\s]+(?:pp?\.\s*)?[\d\-\u2013]+)?\s*\)'), 'PAR_SINGLE'),
+    (re.compile(rf'\(\s*{_SNAME}[,.\s]+{_YEAR}(?:[,:.\s]+(?:pp?\.\s*)?[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_SINGLE'),
 
     # ── Author-Date Narrative ──
     # Et al. narrative: Stokes-Parish et al. (2020)
-    (re.compile(rf'{_SNAME}\s+et\s+al\.?\s*\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_ETAL'),
+    (re.compile(rf'{_SNAME}\s+et\s+al\.?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_ETAL'),
 
     # Two authors narrative: Smith and Jones (2020)
-    (re.compile(rf'{_SNAME}\s+(?:and|&)\s+{_SNAME}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_TWO'),
+    (re.compile(rf'{_SNAME}\s+(?:and|&)\s+{_SNAME}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_TWO'),
 
     # Multi-word corporate narrative: NHS England (2025) or Nuffield Trust (2025)
-    (re.compile(rf'{_CORP}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_CORP'),
+    (re.compile(rf'{_CORP}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_CORP'),
 
     # Single author narrative: Smith (2020) or Smith (2020, p. 45) or Dall'Ora (n.d.)
-    (re.compile(rf'{_SNAME}\s+\({_YEAR}(?:[,\s]+pp?\.\s*[\d\-\u2013]+)?\)'), 'NAR_SINGLE'),
+    (re.compile(rf'{_SNAME}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_SINGLE'),
 
     # ── Numbered Styles (Vancouver/IEEE) ──
     # Mixed/multiple numbers: [1, 3-5, 7]
-    (re.compile(r'\[\d+(?:\s*[,\-\u2013]\s*\d+)+\]'), 'NUM_MIXED'),
+    (re.compile(r'\[\d+(?:\s*[,\-\u2013]\s*\d+)+\]', re.IGNORECASE), 'NUM_MIXED'),
 
     # Single number: [1]
-    (re.compile(r'\[\d+\]'), 'NUM_SINGLE'),
+    (re.compile(r'\[\d+\]', re.IGNORECASE), 'NUM_SINGLE'),
 
     # ── MLA Style (Author Page) ──
     # (Smith 45) or (Smith 45-67)
-    (re.compile(rf'\(\s*{_SNAME}\s+\d+(?:\s*[\-\u2013]\s*\d+)?\s*\)'), 'MLA_PAGE'),
+    (re.compile(rf'\(\s*{_SNAME}\s+\d+(?:\s*[\-\u2013]\s*\d+)?\s*\)', re.IGNORECASE), 'MLA_PAGE'),
 ]
 
 # Patterns to match individual citations inside multi-citation blocks (after semicolon split)
 # These don't need parentheses — they match the inner text
 INNER_CITATION_PATTERNS = [
     # Org abbreviation: WHO, 2020
-    (re.compile(rf'^\s*[A-Z]{{2,}}[,\s]+{_YEAR}\s*$'), 'ORG_ABBREV'),
+    (re.compile(rf'^\s*(?-i:[A-Z]){{2,}}[,.\s]+{_YEAR}\s*$', re.IGNORECASE), 'ORG_ABBREV'),
     # Et al.: Stokes-Parish et al., 2020
-    (re.compile(rf'^\s*{_SNAME}\s+et\s+al\.?\s*[,\s]*{_YEAR}'), 'PAR_ETAL'),
+    (re.compile(rf'^\s*{_SNAME}\s+et\s+al\.?\s*[,.\s]*{_YEAR}', re.IGNORECASE), 'PAR_ETAL'),
     # Two authors: Smith and Jones, 2020 or Smith & Jones, 2020
-    (re.compile(rf'^\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,\s]+{_YEAR}'), 'PAR_TWO'),
+    (re.compile(rf'^\s*{_SNAME}\s+(?:and|&)\s+{_SNAME}[,.\s]+{_YEAR}', re.IGNORECASE), 'PAR_TWO'),
     # Multi-word corporate: NHS England, 2025
-    (re.compile(rf'^\s*{_CORP}[,\s]+{_YEAR}'), 'PAR_CORP'),
+    (re.compile(rf'^\s*{_CORP}[,.\s]+{_YEAR}', re.IGNORECASE), 'PAR_CORP'),
     # Single author: Smith, 2020
-    (re.compile(rf'^\s*{_SNAME}[,\s]+{_YEAR}'), 'PAR_SINGLE'),
+    (re.compile(rf'^\s*{_SNAME}[,.\s]+{_YEAR}', re.IGNORECASE), 'PAR_SINGLE'),
     # Just a year (same author continuation): 2020
-    (re.compile(r'^\s*\d{4}[a-z]?\s*$'), 'YEAR_ONLY'),
+    (re.compile(r'^\s*\d{4}[a-z]?\s*$', re.IGNORECASE), 'YEAR_ONLY'),
 ]
 
 def extract_reference_section(full_text: str) -> tuple:
@@ -1340,6 +1372,33 @@ def extract_reference_section(full_text: str) -> tuple:
     # Fallback: if no heading found, return full text as body
     return (full_text, "")
 
+def check_formatting_irregularities(citation_text: str) -> list:
+    warnings = []
+    
+    # Check lowercase names (no capital letters at start of words)
+    words = re.findall(r'\b[a-zA-Z]+\b', citation_text)
+    lower_words = [w for w in words if w.islower() and w.lower() not in ('et', 'al', 'and', 'in', 'cited', 'quoted', 'pp', 'p', 'the', 'of', 'for', 'a', 'an', 'nd', 'no', 'date', 'v', 'vol', 'issue', 'org', 'who', 'cdc')]
+    if lower_words:
+        warnings.append(f"Potential uncapitalized author name/word: {', '.join(lower_words)}")
+        
+    # Check weird punctuation before the year (e.g., dot instead of comma)
+    if re.search(r'\.\s*\d{4}', citation_text) and not re.search(r'al\.?\s*\d{4}', citation_text):
+        warnings.append("Used a period (.) instead of a comma before the year.")
+        
+    # Check lack of space after comma
+    if re.search(r',\d{4}', citation_text):
+        warnings.append("Missing space after comma before the year.")
+        
+    # Check multiple spaces
+    if re.search(r'\s{2,}', citation_text):
+        warnings.append("Irregular spacing (multiple consecutive spaces).")
+        
+    # Check comma before parenthesis in narrative: "Name, (2020)"
+    if re.search(r',\s*\(', citation_text):
+        warnings.append("Extra comma before the opening parenthesis.")
+        
+    return warnings
+
 def extract_citations_regex(body_text: str) -> list:
     """
     Extract all in-text citations from the body text using regex patterns.
@@ -1347,7 +1406,7 @@ def extract_citations_regex(body_text: str) -> list:
       Phase 1: detect multi-citation blocks, split by semicolon
       Phase 2: match individual citations against single patterns
     
-    Returns list of dicts: [{"text": "(Smith, 2020)", "type": "PAR_SINGLE"}, ...]
+    Returns list of dicts: [{"text": "(Smith, 2020)", "type": "PAR_SINGLE", "irregularities": [...]}, ...]
     """
     found_citations = []
 
@@ -1405,7 +1464,8 @@ def extract_citations_regex(body_text: str) -> list:
                 if pattern.search(part_clean):
                     citation_text = f"({part_clean})"
                     if citation_text not in seen_texts:
-                        found_citations.append({"text": citation_text, "type": label})
+                        warnings = check_formatting_irregularities(citation_text)
+                        found_citations.append({"text": citation_text, "type": label, "irregularities": warnings})
                         seen_texts.add(citation_text)
                     classified = True
                     break
@@ -1414,7 +1474,8 @@ def extract_citations_regex(body_text: str) -> list:
             if not classified and re.search(r'\d{4}', part_clean):
                 citation_text = f"({part_clean})"
                 if citation_text not in seen_texts:
-                    found_citations.append({"text": citation_text, "type": "UNKNOWN"})
+                    warnings = check_formatting_irregularities(citation_text)
+                    found_citations.append({"text": citation_text, "type": "UNKNOWN", "irregularities": warnings})
                     seen_texts.add(citation_text)
     
     # Phase 2: Find standalone citations
@@ -1425,7 +1486,8 @@ def extract_citations_regex(body_text: str) -> list:
             
             citation_text = match.group(0).strip()
             if citation_text not in seen_texts:
-                found_citations.append({"text": citation_text, "type": label})
+                warnings = check_formatting_irregularities(citation_text)
+                found_citations.append({"text": citation_text, "type": label, "irregularities": warnings})
                 seen_texts.add(citation_text)
                 matched_spans.append((match.start(), match.end()))
     
@@ -1707,6 +1769,7 @@ Output in strict JSON format only:
             analysis["cross_validation"] = validation
             analysis["python_citations"] = [c["text"] for c in python_citations]
             analysis["python_citation_types"] = {c["text"]: c["type"] for c in python_citations}
+            analysis["python_formatting_warnings"] = {c["text"]: c["irregularities"] for c in python_citations if c.get("irregularities")}
 
             num_cit = analysis.get("num_unique_citations", 0)
             num_ref = analysis.get("num_references", 0)

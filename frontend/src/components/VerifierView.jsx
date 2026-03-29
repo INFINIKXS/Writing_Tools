@@ -361,7 +361,7 @@ export default function VerifierView() {
                     )}
 
                     {results.irregularities?.length > 0 && (
-                        <div className="glass-card overflow-hidden">
+                        <div className="glass-card overflow-hidden mb-3">
                             <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
                                 <AlertCircle size={16} className="text-purple-400" />
                                 <h3 className="text-sm font-bold text-purple-200">Irregularities ({results.irregularities.length})</h3>
@@ -381,6 +381,27 @@ export default function VerifierView() {
                                                 <div className="font-mono text-xs text-neutral-300">{irr.ref}</div>
                                             </div>
                                         </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {Object.keys(results.python_formatting_warnings || {}).filter(k => results.python_formatting_warnings[k]?.length > 0).length > 0 && (
+                        <div className="glass-card overflow-hidden border border-orange-500/20 mb-3">
+                            <div className="bg-orange-500/5 border-b border-orange-500/10 px-5 py-3 flex items-center gap-2">
+                                <AlertCircle size={16} className="text-orange-400" />
+                                <h3 className="text-sm font-bold text-orange-200">Citation Formatting Warnings ({Object.keys(results.python_formatting_warnings).filter(k => results.python_formatting_warnings[k]?.length > 0).length})</h3>
+                            </div>
+                            <div className="p-4 max-h-[350px] overflow-y-auto space-y-3">
+                                {Object.entries(results.python_formatting_warnings).filter(([k, w]) => w?.length > 0).map(([citation, warnings], i) => (
+                                    <div key={i} className="bg-white/[0.02] p-3 rounded-lg border border-orange-500/10">
+                                        <div className="font-mono text-sm text-neutral-300 mb-2">{citation}</div>
+                                        <ul className="list-disc pl-5 space-y-1">
+                                            {warnings.map((w, j) => (
+                                                <li key={j} className="text-xs text-orange-300/80">{w}</li>
+                                            ))}
+                                        </ul>
                                     </div>
                                 ))}
                             </div>
@@ -473,8 +494,27 @@ export default function VerifierView() {
                                             </span>
                                         )}
                                         <div className="flex-1">
-                                            <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2">
-                                                {m.citations ? m.citations.join(' | ') : m.citation}
+                                            <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2 flex flex-wrap items-center gap-1">
+                                                {m.citations ? m.citations.map((cit, idx) => {
+                                                    const warnings = results.python_formatting_warnings?.[cit];
+                                                    return (
+                                                        <span key={idx} className="inline-flex items-center gap-1">
+                                                            <span>{cit}</span>
+                                                            {warnings && warnings.length > 0 && (
+                                                                <span className="group relative inline-flex items-center justify-center">
+                                                                    <AlertCircle size={14} className="text-orange-500 cursor-help" />
+                                                                    <div className="absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden group-hover:block w-64 p-3 border border-orange-500/30 rounded-lg text-[10px] text-orange-200 shadow-xl z-50" style={{ background: '#050505' }}>
+                                                                        <div className="font-bold mb-1 border-b border-orange-500/20 pb-1">Formatting Warnings:</div>
+                                                                        <ul className="list-disc pl-3 space-y-1 text-orange-300/80">
+                                                                            {warnings.map((w, i) => <li key={i}>{w}</li>)}
+                                                                        </ul>
+                                                                    </div>
+                                                                </span>
+                                                            )}
+                                                            {idx < m.citations.length - 1 && <span className="text-neutral-500 mx-1">|</span>}
+                                                        </span>
+                                                    );
+                                                }) : m.citation}
                                             </div>
                                             <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 mb-1 flex items-center gap-2">
                                                 Source Reference
