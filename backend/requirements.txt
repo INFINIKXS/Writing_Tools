@@ -16,3 +16,4 @@ reportlab
 Pillow
 pdf2image
 pytesseract
+ocrmypdf

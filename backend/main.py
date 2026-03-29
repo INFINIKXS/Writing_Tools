@@ -3906,6 +3906,232 @@ def _ocr_pdf_to_text(pdf_bytes: bytes) -> str:
         return ""
 
 
+def _ocr_pdf_to_docx(pdf_bytes: bytes, docx_path: str):
+    """
+    OCR a scanned PDF and create a DOCX that preserves table structure.
+
+    Uses PyMuPDF's built-in OCR (page.get_textpage_ocr) to get text with positions,
+    then builds tables by detecting column alignment from word bounding boxes.
+    """
+    import fitz  # PyMuPDF
+    from docx.shared import Pt
+
+    # Ensure Tesseract is on PATH
+    env_path = os.environ.get('PATH', '')
+    tess_dir = r'C:\Program Files\Tesseract-OCR'
+    if os.path.isdir(tess_dir) and tess_dir not in env_path:
+        os.environ['PATH'] = tess_dir + ';' + env_path
+
+    try:
+        pdf_doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        print(f"   [i] Opened PDF: {len(pdf_doc)} pages")
+
+        doc = Document()
+        style = doc.styles['Normal']
+        style.font.size = Pt(10)
+        style.font.name = 'Calibri'
+
+        for page_idx in range(len(pdf_doc)):
+            page = pdf_doc[page_idx]
+            if page_idx > 0:
+                doc.add_page_break()
+
+            print(f"   [i] OCR'ing page {page_idx + 1}/{len(pdf_doc)}...")
+
+            # Run OCR via PyMuPDF's Tesseract integration
+            tp = page.get_textpage_ocr(language="eng", dpi=300, full=True)
+
+            # Get word-level data: each word = (x0, y0, x1, y1, "word", block_no, line_no, word_no)
+            words = page.get_text("words", textpage=tp)
+            print(f"   [i]   OCR found {len(words)} words")
+
+            if not words:
+                continue
+
+            page_width = page.rect.width
+
+            # ── Group words into visual lines by Y-coordinate ──
+            line_tolerance = 5  # points (PDF units)
+            lines = []
+            current_line = [words[0]]
+
+            for w in words[1:]:
+                avg_y = sum(ww[1] for ww in current_line) / len(current_line)
+                if abs(w[1] - avg_y) <= line_tolerance:
+                    current_line.append(w)
+                else:
+                    current_line.sort(key=lambda x: x[0])  # sort by x0
+                    lines.append(current_line)
+                    current_line = [w]
+            if current_line:
+                current_line.sort(key=lambda x: x[0])
+                lines.append(current_line)
+
+            # ── Detect column structure via gap consensus ──
+            min_gap = page_width * 0.03  # 3% of page width
+            all_gap_midpoints = []
+
+            for line in lines:
+                if len(line) < 2:
+                    continue
+                for i in range(len(line) - 1):
+                    gap = line[i + 1][0] - line[i][2]  # next.x0 - current.x1
+                    if gap > min_gap:
+                        midpoint = (line[i][2] + line[i + 1][0]) / 2
+                        all_gap_midpoints.append(midpoint)
+
+            # Cluster gap midpoints to find consensus column boundaries
+            strong_boundaries = []
+            if all_gap_midpoints:
+                all_gap_midpoints.sort()
+                cluster_tolerance = page_width * 0.04
+                clusters = []
+                current_cluster = [all_gap_midpoints[0]]
+
+                for gm in all_gap_midpoints[1:]:
+                    if gm - current_cluster[-1] <= cluster_tolerance:
+                        current_cluster.append(gm)
+                    else:
+                        clusters.append(current_cluster)
+                        current_cluster = [gm]
+                clusters.append(current_cluster)
+
+                min_appearances = min(3, max(2, len(lines) // 5))
+                for cluster in clusters:
+                    if len(cluster) >= min_appearances:
+                        strong_boundaries.append(sorted(cluster)[len(cluster) // 2])
+
+            if strong_boundaries:
+                # ── We have column structure — classify lines as table/text ──
+                num_cols = len(strong_boundaries) + 1
+                col_ranges = []
+                prev = 0
+                for b in strong_boundaries:
+                    col_ranges.append((prev, b))
+                    prev = b
+                col_ranges.append((prev, page_width + 50))
+
+                def assign_to_columns(line_words):
+                    row = [''] * num_cols
+                    for w in line_words:
+                        word_center = (w[0] + w[2]) / 2
+                        for ci, (cl, cr) in enumerate(col_ranges):
+                            if cl <= word_center < cr:
+                                row[ci] = (row[ci] + ' ' + w[4]).strip() if row[ci] else w[4]
+                                break
+                        else:
+                            row[-1] = (row[-1] + ' ' + w[4]).strip() if row[-1] else w[4]
+                    return row
+
+                min_cols_for_table = min(3, num_cols)
+                blocks = []
+                pending_text = []
+                pending_table = []
+
+                for line in lines:
+                    row = assign_to_columns(line)
+                    populated = sum(1 for c in row if c.strip())
+
+                    if populated >= min_cols_for_table:
+                        if pending_text:
+                            blocks.append(('text', pending_text))
+                            pending_text = []
+                        pending_table.append(row)
+                    else:
+                        if pending_table:
+                            blocks.append(('table', pending_table))
+                            pending_table = []
+                        line_text = ' '.join(w[4] for w in line)
+                        if line_text.strip():
+                            pending_text.append(line_text.strip())
+
+                if pending_table:
+                    blocks.append(('table', pending_table))
+                if pending_text:
+                    blocks.append(('text', pending_text))
+
+                # Render blocks
+                for btype, bdata in blocks:
+                    if btype == 'text':
+                        for text_line in bdata:
+                            if text_line:
+                                p = doc.add_paragraph(text_line)
+                                if text_line.isupper() and len(text_line) > 3:
+                                    for run in p.runs:
+                                        run.bold = True
+                    elif btype == 'table':
+                        if not bdata:
+                            continue
+                        # Trim empty trailing columns
+                        max_col = 0
+                        for row in bdata:
+                            for ci in range(len(row) - 1, -1, -1):
+                                if row[ci].strip():
+                                    max_col = max(max_col, ci + 1)
+                                    break
+                        if max_col < 2:
+                            for row in bdata:
+                                text = ' '.join(c for c in row if c.strip())
+                                if text:
+                                    doc.add_paragraph(text)
+                            continue
+
+                        table = doc.add_table(rows=len(bdata), cols=max_col)
+                        table.style = 'Table Grid'
+                        for r_idx, row_data in enumerate(bdata):
+                            for c_idx in range(max_col):
+                                cell = table.cell(r_idx, c_idx)
+                                cell.text = (row_data[c_idx] if c_idx < len(row_data) else '').strip()
+                                if r_idx == 0:
+                                    for p in cell.paragraphs:
+                                        for run in p.runs:
+                                            run.bold = True
+                        doc.add_paragraph('')
+            else:
+                # No column structure — output as plain text
+                for line in lines:
+                    line_text = ' '.join(w[4] for w in line)
+                    if line_text.strip():
+                        p = doc.add_paragraph(line_text.strip())
+                        if line_text.strip().isupper() and len(line_text.strip()) > 3:
+                            for run in p.runs:
+                                run.bold = True
+
+        pdf_doc.close()
+        doc.save(docx_path)
+
+        # Log stats
+        final_doc = Document(docx_path)
+        total_text = "\n".join(p.text for p in final_doc.paragraphs).strip()
+        total_tables = len(final_doc.tables)
+        print(f"   [✓] OCR complete: {len(total_text)} chars, {total_tables} tables")
+
+        return True
+
+    except Exception as e:
+        print(f"   [!] PyMuPDF OCR failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+        # Fallback: basic pytesseract text dump
+        if TESSERACT_AVAILABLE and PDF2IMAGE_AVAILABLE:
+            try:
+                images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPPLER_PATH)
+                doc = Document()
+                for page_idx, img in enumerate(images):
+                    if page_idx > 0:
+                        doc.add_page_break()
+                    page_text = pytesseract.image_to_string(img)
+                    for para in page_text.split('\n'):
+                        if para.strip():
+                            doc.add_paragraph(para.strip())
+                doc.save(docx_path)
+                return True
+            except:
+                pass
+        return False
+
+
 @app.get("/api/convert/capabilities")
 async def conversion_capabilities():
     """Return which conversion tools are available on this server."""
@@ -3955,15 +4181,8 @@ async def convert_pdf_to_word(file: UploadFile = File(...)):
         text_content = "\n".join(p.text for p in doc.paragraphs).strip()
 
         if len(text_content) < 50 and TESSERACT_AVAILABLE and PDF2IMAGE_AVAILABLE:
-            # Scanned PDF — run OCR
-            ocr_text = _ocr_pdf_to_text(file_bytes)
-            if ocr_text.strip():
-                doc = Document()
-                doc.add_heading('OCR Extracted Text', level=1)
-                for para in ocr_text.split('\n'):
-                    if para.strip():
-                        doc.add_paragraph(para.strip())
-                doc.save(docx_path)
+            # Scanned PDF — run table-aware OCR
+            _ocr_pdf_to_docx(file_bytes, docx_path)
 
         with open(docx_path, 'rb') as f:
             result_bytes = f.read()
