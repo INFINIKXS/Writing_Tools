@@ -11,3 +11,8 @@ requests
 spacy
 sentence-transformers
 numpy
+pdf2docx
+reportlab
+Pillow
+pdf2image
+pytesseract

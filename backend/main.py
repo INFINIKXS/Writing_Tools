@@ -5,13 +5,19 @@ import re
 import asyncio
 import time
 import random
+import subprocess
+import tempfile
+import shutil
+import zipfile
+from pathlib import Path
 from fastapi import FastAPI, UploadFile, File, HTTPException, Request
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from typing import List, Optional
 from pydantic import BaseModel
 from google import genai
 from google.genai import types
-from PyPDF2 import PdfReader
+from PyPDF2 import PdfReader, PdfWriter
 from docx import Document
 import struct
 import olefile
@@ -22,6 +28,71 @@ import unicodedata
 from difflib import SequenceMatcher
 import search_store
 from phrasebank import process_phrasebank_rewrite
+
+# Document conversion imports
+try:
+    from pdf2docx import Converter as Pdf2DocxConverter
+    PDF2DOCX_AVAILABLE = True
+except ImportError:
+    PDF2DOCX_AVAILABLE = False
+    print("   [i] pdf2docx not available — PDF to Word disabled")
+
+try:
+    from PIL import Image
+    from reportlab.lib.pagesizes import A4
+    from reportlab.pdfgen import canvas as rl_canvas
+    PILLOW_AVAILABLE = True
+except ImportError:
+    PILLOW_AVAILABLE = False
+    print("   [i] Pillow/reportlab not available — Image to PDF disabled")
+
+try:
+    from pdf2image import convert_from_bytes
+    PDF2IMAGE_AVAILABLE = True
+except ImportError:
+    PDF2IMAGE_AVAILABLE = False
+    print("   [i] pdf2image not available — PDF to Images disabled")
+
+# Auto-detect Poppler bin path for pdf2image
+POPPLER_PATH = None
+_poppler_candidates = [
+    r'C:\Program Files\poppler\poppler-25.12.0\Library\bin',
+    r'C:\Program Files\poppler\Library\bin',
+    r'C:\Program Files (x86)\poppler\Library\bin',
+]
+for _pp in _poppler_candidates:
+    if os.path.isdir(_pp) and os.path.isfile(os.path.join(_pp, 'pdftoppm.exe')):
+        POPPLER_PATH = _pp
+        break
+if not POPPLER_PATH:
+    # Search for any poppler version folder
+    _base = r'C:\Program Files\poppler'
+    if os.path.isdir(_base):
+        for _d in os.listdir(_base):
+            _candidate = os.path.join(_base, _d, 'Library', 'bin')
+            if os.path.isdir(_candidate) and os.path.isfile(os.path.join(_candidate, 'pdftoppm.exe')):
+                POPPLER_PATH = _candidate
+                break
+if POPPLER_PATH:
+    print(f"   [✓] Poppler found at: {POPPLER_PATH}")
+else:
+    print("   [i] Poppler not found — PDF to Images may not work")
+
+try:
+    import pytesseract
+    TESSERACT_AVAILABLE = True
+    # Try to find tesseract on PATH or common install locations
+    _tess_paths = [
+        r'C:\Program Files\Tesseract-OCR\tesseract.exe',
+        r'C:\Program Files (x86)\Tesseract-OCR\tesseract.exe',
+    ]
+    for _p in _tess_paths:
+        if os.path.isfile(_p):
+            pytesseract.pytesseract.tesseract_cmd = _p
+            break
+except ImportError:
+    TESSERACT_AVAILABLE = False
+    print("   [i] pytesseract not available — OCR disabled")
 
 # API Key Manager (multi-key rotation)
 try:
@@ -3800,6 +3871,354 @@ async def phrasebank_stats():
     """Get stats about the phrasebank database."""
     stats = phrasebank_store.get_stats()
     return stats
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# ██  DOCUMENT CONVERSION ENDPOINTS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _find_libreoffice():
+    """Find the LibreOffice soffice executable."""
+    candidates = [
+        r'C:\Program Files\LibreOffice\program\soffice.exe',
+        r'C:\Program Files (x86)\LibreOffice\program\soffice.exe',
+        shutil.which('soffice'),
+    ]
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return c
+    return None
+
+
+def _ocr_pdf_to_text(pdf_bytes: bytes) -> str:
+    """Use pytesseract to OCR a scanned PDF. Renders pages to images then runs OCR."""
+    if not TESSERACT_AVAILABLE or not PDF2IMAGE_AVAILABLE:
+        return ""
+    try:
+        images = convert_from_bytes(pdf_bytes, dpi=300, poppler_path=POPPLER_PATH)
+        text_parts = []
+        for img in images:
+            page_text = pytesseract.image_to_string(img)
+            text_parts.append(page_text)
+        return "\n\n".join(text_parts)
+    except Exception as e:
+        print(f"   [!] OCR failed: {e}")
+        return ""
+
+
+@app.get("/api/convert/capabilities")
+async def conversion_capabilities():
+    """Return which conversion tools are available on this server."""
+    libre = _find_libreoffice()
+    return {
+        "pdf_to_word": PDF2DOCX_AVAILABLE,
+        "word_to_pdf": libre is not None,
+        "pdf_to_text": True,  # PyPDF2 always available
+        "image_to_pdf": PILLOW_AVAILABLE,
+        "pdf_to_images": PDF2IMAGE_AVAILABLE,
+        "merge_pdf": True,  # PyPDF2 always available
+        "compress_pdf": True,  # PyPDF2 always available
+        "ocr": TESSERACT_AVAILABLE and PDF2IMAGE_AVAILABLE,
+        "libreoffice_path": libre,
+    }
+
+
+@app.post("/api/convert/pdf-to-word")
+async def convert_pdf_to_word(file: UploadFile = File(...)):
+    """Convert PDF to DOCX. Uses pdf2docx for native PDFs, with OCR fallback for scanned PDFs."""
+    if not PDF2DOCX_AVAILABLE:
+        raise HTTPException(status_code=503, detail="pdf2docx is not installed on this server.")
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
+    file_bytes = await file.read()
+    if file_bytes[:4] != b'%PDF':
+        raise HTTPException(status_code=400, detail="Not a valid PDF file.")
+
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        pdf_path = os.path.join(tmp_dir, "input.pdf")
+        docx_path = os.path.join(tmp_dir, "output.docx")
+
+        with open(pdf_path, 'wb') as f:
+            f.write(file_bytes)
+
+        # Convert with pdf2docx
+        cv = Pdf2DocxConverter(pdf_path)
+        cv.convert(docx_path)
+        cv.close()
+
+        # Check if the conversion produced meaningful text
+        # If not, attempt OCR and create a DOCX from the OCR text
+        doc = Document(docx_path)
+        text_content = "\n".join(p.text for p in doc.paragraphs).strip()
+
+        if len(text_content) < 50 and TESSERACT_AVAILABLE and PDF2IMAGE_AVAILABLE:
+            # Scanned PDF — run OCR
+            ocr_text = _ocr_pdf_to_text(file_bytes)
+            if ocr_text.strip():
+                doc = Document()
+                doc.add_heading('OCR Extracted Text', level=1)
+                for para in ocr_text.split('\n'):
+                    if para.strip():
+                        doc.add_paragraph(para.strip())
+                doc.save(docx_path)
+
+        with open(docx_path, 'rb') as f:
+            result_bytes = f.read()
+
+        out_name = Path(file.filename).stem + ".docx"
+        return StreamingResponse(
+            io.BytesIO(result_bytes),
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/convert/word-to-pdf")
+async def convert_word_to_pdf(file: UploadFile = File(...)):
+    """Convert DOCX to PDF using LibreOffice headless."""
+    soffice = _find_libreoffice()
+    if not soffice:
+        raise HTTPException(status_code=503, detail="LibreOffice is not installed. Please install it to enable Word to PDF conversion.")
+
+    ext = Path(file.filename).suffix.lower()
+    if ext not in ('.docx', '.doc', '.odt', '.rtf'):
+        raise HTTPException(status_code=400, detail="Please upload a Word document (.docx, .doc, .odt, or .rtf).")
+
+    file_bytes = await file.read()
+    tmp_dir = tempfile.mkdtemp()
+    try:
+        in_path = os.path.join(tmp_dir, f"input{ext}")
+        with open(in_path, 'wb') as f:
+            f.write(file_bytes)
+
+        # Run LibreOffice in headless mode
+        result = await asyncio.to_thread(
+            subprocess.run,
+            [soffice, '--headless', '--convert-to', 'pdf', '--outdir', tmp_dir, in_path],
+            capture_output=True, text=True, timeout=120
+        )
+
+        if result.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"LibreOffice conversion failed: {result.stderr}")
+
+        pdf_path = os.path.join(tmp_dir, "input.pdf")
+        if not os.path.isfile(pdf_path):
+            # LibreOffice may name the output differently
+            pdf_files = [f for f in os.listdir(tmp_dir) if f.endswith('.pdf')]
+            if pdf_files:
+                pdf_path = os.path.join(tmp_dir, pdf_files[0])
+            else:
+                raise HTTPException(status_code=500, detail="LibreOffice did not produce a PDF output.")
+
+        with open(pdf_path, 'rb') as f:
+            result_bytes = f.read()
+
+        out_name = Path(file.filename).stem + ".pdf"
+        return StreamingResponse(
+            io.BytesIO(result_bytes),
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+        )
+    except HTTPException:
+        raise
+    except subprocess.TimeoutExpired:
+        raise HTTPException(status_code=504, detail="Conversion timed out. The file may be too large or complex.")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Conversion failed: {str(e)}")
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+@app.post("/api/convert/pdf-to-text")
+async def convert_pdf_to_text(file: UploadFile = File(...)):
+    """Extract text from PDF. Falls back to OCR for scanned PDFs."""
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
+    file_bytes = await file.read()
+    if file_bytes[:4] != b'%PDF':
+        raise HTTPException(status_code=400, detail="Not a valid PDF file.")
+
+    # Try PyPDF2 first
+    text = extract_pdf_text(file_bytes)
+
+    # If barely any text extracted, try OCR
+    if len(text.strip()) < 50 and TESSERACT_AVAILABLE and PDF2IMAGE_AVAILABLE:
+        ocr_text = _ocr_pdf_to_text(file_bytes)
+        if ocr_text.strip():
+            text = ocr_text
+
+    out_name = Path(file.filename).stem + ".txt"
+    return StreamingResponse(
+        io.BytesIO(text.encode('utf-8')),
+        media_type="text/plain; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+    )
+
+
+@app.post("/api/convert/image-to-pdf")
+async def convert_image_to_pdf(files: List[UploadFile] = File(...)):
+    """Convert one or more images (JPG/PNG) to a single PDF."""
+    if not PILLOW_AVAILABLE:
+        raise HTTPException(status_code=503, detail="Pillow/reportlab not installed.")
+
+    images = []
+    for f in files:
+        ext = Path(f.filename).suffix.lower()
+        if ext not in ('.jpg', '.jpeg', '.png', '.bmp', '.tiff', '.tif', '.webp'):
+            raise HTTPException(status_code=400, detail=f"Unsupported image format: {f.filename}. Use JPG, PNG, BMP, TIFF, or WebP.")
+        img_bytes = await f.read()
+        try:
+            img = Image.open(io.BytesIO(img_bytes))
+            if img.mode == 'RGBA':
+                img = img.convert('RGB')
+            images.append(img)
+        except Exception:
+            raise HTTPException(status_code=400, detail=f"Could not read image: {f.filename}")
+
+    if not images:
+        raise HTTPException(status_code=400, detail="No valid images provided.")
+
+    # Create PDF from images
+    buf = io.BytesIO()
+    if len(images) == 1:
+        images[0].save(buf, 'PDF', resolution=150.0)
+    else:
+        images[0].save(buf, 'PDF', resolution=150.0, save_all=True, append_images=images[1:])
+    buf.seek(0)
+
+    out_name = Path(files[0].filename).stem + ".pdf" if len(files) == 1 else "images_combined.pdf"
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{out_name}"'}
+    )
+
+
+@app.post("/api/convert/pdf-to-images")
+async def convert_pdf_to_images(file: UploadFile = File(...)):
+    """Convert each PDF page to a JPG image. Returns a ZIP archive."""
+    if not PDF2IMAGE_AVAILABLE:
+        raise HTTPException(status_code=503, detail="pdf2image is not installed. Please install it and Poppler.")
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
+    file_bytes = await file.read()
+    if file_bytes[:4] != b'%PDF':
+        raise HTTPException(status_code=400, detail="Not a valid PDF file.")
+
+    try:
+        images = await asyncio.to_thread(
+            convert_from_bytes, file_bytes, dpi=200, fmt='jpeg', poppler_path=POPPLER_PATH
+        )
+    except Exception as e:
+        error_msg = str(e)
+        if 'poppler' in error_msg.lower() or 'pdftoppm' in error_msg.lower():
+            raise HTTPException(status_code=503, detail="Poppler is not installed. Download it from https://github.com/oschwartz10612/poppler-windows/releases and add to PATH.")
+        raise HTTPException(status_code=500, detail=f"PDF to images failed: {error_msg}")
+
+    # Package images into a ZIP
+    zip_buf = io.BytesIO()
+    stem = Path(file.filename).stem
+    with zipfile.ZipFile(zip_buf, 'w', zipfile.ZIP_DEFLATED) as zf:
+        for i, img in enumerate(images, 1):
+            img_buf = io.BytesIO()
+            img.save(img_buf, 'JPEG', quality=90)
+            img_buf.seek(0)
+            zf.writestr(f"{stem}_page_{i}.jpg", img_buf.read())
+    zip_buf.seek(0)
+
+    return StreamingResponse(
+        zip_buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{stem}_images.zip"'}
+    )
+
+
+@app.post("/api/convert/merge-pdf")
+async def merge_pdfs(files: List[UploadFile] = File(...)):
+    """Merge multiple PDF files into one."""
+    if len(files) < 2:
+        raise HTTPException(status_code=400, detail="Please upload at least 2 PDF files to merge.")
+
+    writer = PdfWriter()
+    for f in files:
+        if not f.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail=f"All files must be PDFs. '{f.filename}' is not a PDF.")
+        file_bytes = await f.read()
+        if file_bytes[:4] != b'%PDF':
+            raise HTTPException(status_code=400, detail=f"'{f.filename}' is not a valid PDF file.")
+        try:
+            reader = PdfReader(io.BytesIO(file_bytes))
+            for page in reader.pages:
+                writer.add_page(page)
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Error reading '{f.filename}': {str(e)}")
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    buf.seek(0)
+
+    return StreamingResponse(
+        buf,
+        media_type="application/pdf",
+        headers={"Content-Disposition": 'attachment; filename="merged.pdf"'}
+    )
+
+
+@app.post("/api/convert/compress-pdf")
+async def compress_pdf(file: UploadFile = File(...)):
+    """Compress a PDF by removing metadata and re-encoding streams."""
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Please upload a PDF file.")
+
+    file_bytes = await file.read()
+    if file_bytes[:4] != b'%PDF':
+        raise HTTPException(status_code=400, detail="Not a valid PDF file.")
+
+    original_size = len(file_bytes)
+
+    try:
+        reader = PdfReader(io.BytesIO(file_bytes))
+        writer = PdfWriter()
+
+        for page in reader.pages:
+            page.compress_content_streams()
+            writer.add_page(page)
+
+        # Remove metadata to save space
+        writer.add_metadata({
+            '/Producer': 'WritingTools',
+            '/Creator': 'WritingTools PDF Compressor',
+        })
+
+        buf = io.BytesIO()
+        writer.write(buf)
+        compressed_size = buf.tell()
+        buf.seek(0)
+
+        out_name = Path(file.filename).stem + "_compressed.pdf"
+        return StreamingResponse(
+            buf,
+            media_type="application/pdf",
+            headers={
+                "Content-Disposition": f'attachment; filename="{out_name}"',
+                "X-Original-Size": str(original_size),
+                "X-Compressed-Size": str(compressed_size),
+                "X-Compression-Ratio": f"{(1 - compressed_size / original_size) * 100:.1f}%" if original_size > 0 else "0%",
+            }
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Compression failed: {str(e)}")
+
 
 if __name__ == "__main__":
     import uvicorn

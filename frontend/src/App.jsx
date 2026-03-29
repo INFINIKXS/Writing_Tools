@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2 } from 'lucide-react';
+import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2, ArrowLeftRight } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
@@ -8,6 +8,7 @@ import LibraryView from './components/LibraryView';
 import SearchView from './components/SearchView';
 import HumanizerView from './components/HumanizerView';
 import PhrasebankView from './components/PhrasebankView';
+import ConverterView from './components/ConverterView';
 import SettingsView from './components/SettingsView';
 
 const NAV_ITEMS = [
@@ -18,6 +19,7 @@ const NAV_ITEMS = [
   { id: 'search', label: 'Search', icon: Search },
   { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
   { id: 'phrasebank', label: 'Phrasebank', icon: BookOpen },
+  { id: 'converter', label: 'Converter', icon: ArrowLeftRight },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -33,6 +35,7 @@ function App() {
     { id: 'search', component: <SearchView /> },
     { id: 'humanizer', component: <HumanizerView /> },
     { id: 'phrasebank', component: <PhrasebankView /> },
+    { id: 'converter', component: <ConverterView /> },
     { id: 'settings', component: <SettingsView /> },
   ], []);
 
