@@ -47,6 +47,8 @@ app.include_router(search_router)
 app.include_router(humanizer_router)
 app.include_router(phrasebank_router)
 app.include_router(converter_router)
+from pdf_routes.editor import router as pdf_editor_router
+app.include_router(pdf_editor_router, prefix="/api/pdf")
 
 
 # ─── Backward-compatibility re-exports ───────────────────────────────────

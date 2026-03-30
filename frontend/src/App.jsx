@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2, ArrowLeftRight } from 'lucide-react';
+import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2, ArrowLeftRight, PenTool } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
@@ -10,6 +10,7 @@ import HumanizerView from './components/HumanizerView';
 import PhrasebankView from './components/PhrasebankView';
 import ConverterView from './components/ConverterView';
 import SettingsView from './components/SettingsView';
+import PDFEditorPage from './pages/PDFEditorPage';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
@@ -20,6 +21,7 @@ const NAV_ITEMS = [
   { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
   { id: 'phrasebank', label: 'Phrasebank', icon: BookOpen },
   { id: 'converter', label: 'Converter', icon: ArrowLeftRight },
+  { id: 'pdf_editor', label: 'PDF Editor', icon: PenTool },
   { id: 'settings', label: 'Settings', icon: Settings },
 ];
 
@@ -36,6 +38,7 @@ function App() {
     { id: 'humanizer', component: <HumanizerView /> },
     { id: 'phrasebank', component: <PhrasebankView /> },
     { id: 'converter', component: <ConverterView /> },
+    { id: 'pdf_editor', component: <PDFEditorPage /> },
     { id: 'settings', component: <SettingsView /> },
   ], []);
 
