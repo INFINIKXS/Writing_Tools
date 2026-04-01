@@ -1,37 +1,45 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-03-30",
-  "current_index": 0,
-  "total_requests_today": 10,
+  "last_reset_date": "2026-04-01",
+  "current_index": 2,
+  "total_requests_today": 31,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
       "model_usage": {
-        "gemini-3-flash-preview": 10
+        "gemini-3-flash-preview": 9
       },
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 10,
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-04-01T12:32:52.097149",
+      "quota_used": 9,
       "exhausted": false
     },
     {
       "index": 1,
       "key_suffix": "...fabg",
-      "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 0,
+      "model_usage": {
+        "gemini-3-flash-preview": 15
+      },
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-04-01T12:46:19.999417",
+      "quota_used": 15,
       "exhausted": false
     },
     {
       "index": 2,
       "key_suffix": "...bufo",
-      "model_usage": {},
+      "model_usage": {
+        "gemini-3-flash-preview": 7
+      },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 0,
+      "quota_used": 7,
       "exhausted": false
     },
     {

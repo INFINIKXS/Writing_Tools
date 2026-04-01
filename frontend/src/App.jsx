@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from 'react';
-import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2, ArrowLeftRight, PenTool } from 'lucide-react';
+import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wand2, ArrowLeftRight, PenTool, GitCompareArrows } from 'lucide-react';
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
@@ -9,6 +9,7 @@ import SearchView from './components/SearchView';
 import HumanizerView from './components/HumanizerView';
 import PhrasebankView from './components/PhrasebankView';
 import ConverterView from './components/ConverterView';
+import MatcherView from './components/MatcherView';
 import SettingsView from './components/SettingsView';
 import PDFEditorPage from './pages/PDFEditorPage';
 
@@ -17,6 +18,7 @@ const NAV_ITEMS = [
   { id: 'verifier', label: 'Verifier', icon: CheckCircle },
   { id: 'formatter', label: 'Formatter', icon: FileText },
   { id: 'library', label: 'Library', icon: BookOpen },
+  { id: 'matcher', label: 'Matcher', icon: GitCompareArrows },
   { id: 'search', label: 'Search', icon: Search },
   { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
   { id: 'phrasebank', label: 'Phrasebank', icon: BookOpen },
@@ -35,6 +37,7 @@ function App() {
     { id: 'formatter', component: <FormatterView /> },
     { id: 'library', component: <LibraryView /> },
     { id: 'search', component: <SearchView /> },
+    { id: 'matcher', component: <MatcherView /> },
     { id: 'humanizer', component: <HumanizerView /> },
     { id: 'phrasebank', component: <PhrasebankView /> },
     { id: 'converter', component: <ConverterView /> },
