@@ -11,9 +11,11 @@ import re
 # Spanish, Portuguese, Arabic, Hebrew, Irish/Scottish, Scandinavian, Armenian naming.
 # Uses (?-i:...) to enforce case sensitivity even when outer pattern uses re.IGNORECASE.
 _SPREFIX = (
-    r"(?:(?-i:(?:Van|Von|Den|Der|Het|Ter|Ten|Uit|Del|Dos|Das|Los|Las|Dei|Bin|Ibn|Abu|Bat|Mac|San|Ben|"
-    r"Delle|Della|Degli|De|Di|Da|Du|Le|La|Lo|Li|Al|El|Af|Av|Ap|Op|Ul|Mc))"
-    r"(?:\s+(?-i:(?:der|den|de|het|la|las|los|le|di)))?\s+)?"
+    r"(?:(?:Van|Von|Den|Der|Het|Ter|Ten|Uit|Del|Dos|Das|Los|Las|Dei|Bin|Ibn|Abu|Bat|Mac|San|Ben|"
+    r"Delle|Della|Degli|De|Di|Da|Du|Le|La|Lo|Li|Al|El|Af|Av|Ap|Op|Ul|Mc|"
+    r"van|von|den|der|het|ter|ten|uit|del|dos|das|los|las|dei|bin|ibn|abu|bat|mac|san|ben|"
+    r"delle|della|degli|de|di|da|du|le|la|lo|li|al|el|af|av|ap|op|ul|mc)"
+    r"(?:\s+(?:der|den|de|het|la|las|los|le|di))?\s+)?"
 )
 _SNAME = _SPREFIX + r"(?-i:[A-Z\u00C0-\u00D6])[a-z\u00E0-\u00F6]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6])?[a-z\u00E0-\u00F6]+)*"
 # Year or n.d. or "no date"
@@ -152,8 +154,14 @@ def extract_citations_regex(body_text: str) -> list:
     """
     found_citations = []
 
-    # Normalize common Unicode variants from PDF/DOCX extraction
-    body_text = body_text.replace('\u00a0', ' ')     # non-breaking space -> space
+    # Normalize common Unicode variants and invisible field-code chars from PDF/DOCX
+    body_text = body_text.replace('\u00a0', ' ')      # non-breaking space -> space
+    body_text = body_text.replace('\u202f', ' ')      # narrow no-break space -> space
+    body_text = body_text.replace('\u2006', ' ')      # thin space
+    body_text = body_text.replace('\u2009', ' ')      # thin space
+    body_text = body_text.replace('\u200b', '')       # zero-width space
+    body_text = body_text.replace('\u200c', '')       # zero-width non-joiner
+    body_text = body_text.replace('\u200d', '')       # zero-width joiner
     body_text = body_text.replace('\u2018', "'")      # left single quote -> apostrophe
     body_text = body_text.replace('\u2019', "'")      # right single quote -> apostrophe
     body_text = body_text.replace('\u201c', '"')      # left double quote -> quote

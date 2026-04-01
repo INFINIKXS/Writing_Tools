@@ -2,7 +2,7 @@
   "service": "Google",
   "last_reset_date": "2026-04-01",
   "current_index": 2,
-  "total_requests_today": 31,
+  "total_requests_today": 33,
   "quota_limit_per_key": 20,
   "keys": [
     {
@@ -35,11 +35,11 @@
       "index": 2,
       "key_suffix": "...bufo",
       "model_usage": {
-        "gemini-3-flash-preview": 7
+        "gemini-3-flash-preview": 9
       },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 7,
+      "quota_used": 9,
       "exhausted": false
     },
     {
