@@ -183,7 +183,15 @@ Output in strict JSON format only:
             # Post-process: Split merged references
             def split_merged_references(refs):
                 split_refs = []
-                split_pattern = re.compile(r'\s+(?=[A-Z][a-z\-\u2010-\u2015\w]+,\s*[A-Z]\.)')
+                split_pattern = re.compile(
+                    r'(?:(?<=pdf)|(?<=html)|(?<=org)|(?<=\d)|(?<=/))[.]?\s+'
+                    r'(?='
+                    r'(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+'
+                    r'\s*,\s*(?:[A-Z]\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
+                    r'|\[\d+\]'
+                    r'|\d+\.\s+[A-Z]'
+                    r')'
+                )
                 for ref in refs:
                     parts = split_pattern.split(ref)
                     if len(parts) == 1:
@@ -192,7 +200,12 @@ Output in strict JSON format only:
                     current_ref = parts[0]
                     for pt in parts[1:]:
                         ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
-                        starts_like_ref = bool(re.match(r'^[A-Z][a-z\-\u2010-\u2015\w]+,\s*[A-Z]\.', pt))
+                        
+                        starts_like_ref = bool(re.match(
+                            r'^(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+\s*,\s*[A-Z]\.'
+                            r'|\[\d+\]'
+                            r'|\d+\.\s+[A-Z]', pt))
+                            
                         if ends_like_ref and starts_like_ref:
                             split_refs.append(current_ref.strip())
                             current_ref = pt

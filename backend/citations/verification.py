@@ -160,6 +160,23 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     
     Returns a dict mapping AI reference -> verbatim source text with confidence.
     """
+    # ─── PRE-STEP: Clean Invisible Garbage (Docs/PDFs) ───
+    full_text = full_text.replace('\u00a0', ' ')      # non-breaking space
+    full_text = full_text.replace('\u202f', ' ')      # narrow no-break space
+    full_text = full_text.replace('\u2006', ' ')      # thin space
+    full_text = full_text.replace('\u2009', ' ')      # thin space
+    full_text = full_text.replace('\u200b', '')       # zero-width space
+    full_text = full_text.replace('\u200c', '')       # zero-width non-joiner
+    full_text = full_text.replace('\u200d', '')       # zero-width joiner
+    full_text = full_text.replace('\u2018', "'")      # left single quote
+    full_text = full_text.replace('\u2019', "'")      # right single quote
+    full_text = full_text.replace('\u201c', '"')      # left double quote
+    full_text = full_text.replace('\u201d', '"')      # right double quote
+    full_text = full_text.replace('\u2013', '-')      # en-dash -> hyphen
+    full_text = full_text.replace('\u2014', '-')      # em-dash -> hyphen
+    full_text = full_text.replace('\ufb01', 'fi')     # fi ligature
+    full_text = full_text.replace('\ufb02', 'fl')     # fl ligature
+
     # ─── STEP 1: Isolate the reference section ───
     ref_section = full_text
     ref_heading_patterns = [
@@ -237,23 +254,36 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
 
     # ─── POST-SPLIT PASS: detect merged references ───
     demerge_pattern = re.compile(
-        r'(?<=\d)'
-        r'\s+'
-        r'(?=[A-Z][a-zA-Zà-öø-ÿ\'\-]+'
-        r'(?:\s+[A-Z]{1,4})?'
-        r'\s*,)'
+        r'(?:(?<=pdf)|(?<=html)|(?<=org)|(?<=\d)|(?<=/))[.]?\s+'
+        r'(?='
+        r'(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+'
+        r'\s*,\s*(?:[A-Z]\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
+        r'|\[\d+\]'
+        r'|\d+\.\s+[A-Z]'
+        r')'
     )
     demerged_refs = []
     for ref in atomic_refs:
-        doi_count = len(re.findall(r'(?:doi[\s.:]+|https?://doi\.org/)', ref, re.IGNORECASE))
-        if doi_count >= 2:
-            parts = demerge_pattern.split(ref, maxsplit=1)
-            if len(parts) > 1:
-                demerged_refs.extend([p.strip() for p in parts if len(p.strip()) > 20])
+        parts = demerge_pattern.split(ref)
+        if len(parts) == 1:
+            demerged_refs.append(parts[0].strip())
+            continue
+        current_ref = parts[0]
+        for pt in parts[1:]:
+            ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
+            
+            starts_like_ref = bool(re.match(
+                r'^(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+\s*,\s*[A-Z]\.'
+                r'|\[\d+\]'
+                r'|\d+\.\s+[A-Z]', pt))
+                
+            if ends_like_ref and starts_like_ref:
+                demerged_refs.append(current_ref.strip())
+                current_ref = pt
             else:
-                demerged_refs.append(ref)
-        else:
-            demerged_refs.append(ref)
+                current_ref += " " + pt
+        if current_ref.strip():
+            demerged_refs.append(current_ref.strip())
     atomic_refs = demerged_refs
     
     # ─── STEP 3: Match using author + year compound key ───
