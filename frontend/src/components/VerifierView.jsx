@@ -303,46 +303,7 @@ export default function VerifierView() {
                         </div>
                     )}
 
-                    {results.cross_validation && (
-                        <div className="glass-card overflow-hidden">
-                            <div className="bg-white/3 border-b border-white/5 px-5 py-3 flex items-center gap-2">
-                                <GitCompare size={16} className="text-sky-400" />
-                                <h3 className="text-sm font-bold text-sky-200">Cross-Validation (Python vs AI)</h3>
-                            </div>
-                            <div className="p-4 space-y-3">
-                                <div className="grid grid-cols-3 gap-3">
-                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
-                                        <div className="text-lg font-bold text-emerald-400">{results.cross_validation.confirmed_by_both?.length || 0}</div>
-                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">Confirmed</div>
-                                    </div>
-                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
-                                        <div className="text-lg font-bold text-sky-400">{results.cross_validation.python_only?.length || 0}</div>
-                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">Python Only</div>
-                                    </div>
-                                    <div className="bg-white/[0.03] p-3 rounded-lg border border-white/5 text-center">
-                                        <div className="text-lg font-bold text-red-400">{results.cross_validation.ai_only_potential_hallucination?.length || 0}</div>
-                                        <div className="text-[10px] uppercase tracking-widest text-neutral-500">AI Only ⚠</div>
-                                    </div>
-                                </div>
-                                {results.cross_validation.python_only?.length > 0 && (
-                                    <div className="bg-sky-500/5 p-3 rounded-lg border border-sky-500/20">
-                                        <div className="text-[10px] font-bold uppercase tracking-widest text-sky-400 mb-2">Found by Python regex only (AI missed these)</div>
-                                        {results.cross_validation.python_only.map((c, i) => (
-                                            <div key={i} className="text-xs text-neutral-300 font-mono bg-white/[0.02] px-2 py-1 rounded mb-1">{c}</div>
-                                        ))}
-                                    </div>
-                                )}
-                                {results.cross_validation.ai_only_potential_hallucination?.length > 0 && (
-                                    <div className="bg-red-500/5 p-3 rounded-lg border border-red-500/20">
-                                        <div className="text-[10px] font-bold uppercase tracking-widest text-red-400 mb-2">⚠ AI-only citations (not found in document by Python — possible hallucination)</div>
-                                        {results.cross_validation.ai_only_potential_hallucination.map((c, i) => (
-                                            <div key={i} className="text-xs text-neutral-300 font-mono bg-white/[0.02] px-2 py-1 rounded mb-1">{c}</div>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        </div>
-                    )}
+
 
                     {results.ai_additional_citations?.length > 0 && (
                         <div className="glass-card overflow-hidden border border-amber-500/20">
