@@ -142,9 +142,10 @@ export function InlineEditor({ item, pageHeight, scale, onCommit, onCancel }) {
         style={{
           position: 'absolute', 
           left: r.x - 2, 
-          top: r.y - 2 - keyboardOffset,
+          // Match the precise typographic positioning from TextOverlay
+          top: ((pageHeight - item.y) * scale - (fsize * 0.85)) - keyboardOffset,
           width: Math.max(r.w + 4, 150),
-          height: Math.max(r.h + 4, fsize * 1.6),
+          height: Math.max(fsize * 1.2, fsize * 1.6),
           fontSize: fsize, 
           lineHeight: 1.4,
           fontFamily: currentFontFamily,

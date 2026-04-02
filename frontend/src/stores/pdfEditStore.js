@@ -47,6 +47,29 @@ export const pdfEditStore = {
     emit();
   },
 
+  updateEdit(fileId = activeFileId, pageNum, nodeIndex, partialEdit) {
+    if (!store.has(fileId)) return;
+    
+    // Save state for undo/redo
+    if (!undoStacks.has(fileId)) undoStacks.set(fileId, []);
+    const currentEdits = [...this.getEdits(fileId)];
+    undoStacks.get(fileId).push(currentEdits.map(e => ({...e}))); // Deep copy the array of objects
+    
+    if (!redoStacks.has(fileId)) redoStacks.set(fileId, []);
+    redoStacks.get(fileId).length = 0;
+
+    if (undoStacks.get(fileId).length > 50) {
+      undoStacks.get(fileId).shift();
+    }
+
+    const edits = store.get(fileId);
+    const targetIdx = edits.findIndex(e => e.pageNum === pageNum && e.nodeIndex === nodeIndex);
+    if (targetIdx !== -1) {
+      edits[targetIdx] = { ...edits[targetIdx], ...partialEdit };
+      emit();
+    }
+  },
+
   undo(fileId = activeFileId) {
     if (!undoStacks.has(fileId) || undoStacks.get(fileId).length === 0) return;
     

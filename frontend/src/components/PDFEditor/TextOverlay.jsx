@@ -1,26 +1,37 @@
 import React, { useRef, useEffect, useState } from 'react';
 import { pdfToScreen } from '../../utils/pdfCoords';
 
+import { DraggableItem } from './DraggableItem';
+import { pdfEditStore, activeFileId } from '../../stores/pdfEditStore';
+
 /**
  * Renders the replacement text for an edited item, scaling it horizontally
  * to exactly fill the container width — the same trick pdfjs uses with scaleX.
  * Uses the actual renderedFontFamily from pdfjs for exact font matching.
  */
-function ScaledTextSpan({ text, fontFamily, fontSize, fontWeight, fontStyle, color, containerW }) {
+function ScaledTextSpan({ text, origText, fontFamily, fontSize, fontWeight, fontStyle, color, containerW }) {
   const spanRef = useRef(null);
   const [scaleX, setScaleX] = useState(1);
 
   useEffect(() => {
     if (!spanRef.current || containerW <= 0) return;
-    // Wait a frame for the font to load and render
     requestAnimationFrame(() => {
       if (!spanRef.current) return;
+      
+      // If the user actually changed the text content, do not stretch it to fit the old box.
+      // We only stretch if the text is identical (e.g. they only changed the color/style),
+      // to perfectly align with the PDF's native internal kerning.
+      if (text !== origText) {
+        setScaleX(1);
+        return;
+      }
+      
       const naturalW = spanRef.current.scrollWidth;
       if (naturalW > 0) {
         setScaleX(containerW / naturalW);
       }
     });
-  }, [text, fontFamily, fontSize, fontWeight, fontStyle, containerW]);
+  }, [text, origText, fontFamily, fontSize, fontWeight, fontStyle, containerW]);
 
   return (
     <span
@@ -43,7 +54,7 @@ function ScaledTextSpan({ text, fontFamily, fontSize, fontWeight, fontStyle, col
   );
 }
 
-export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, edits = [] }) {
+export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, edits = [], pageNum }) {
   if (!items || items.length === 0) return null;
 
   return (
@@ -53,54 +64,39 @@ export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, e
 
         const r = pdfToScreen(item, pageHeight, scale);
 
-        // item.h from pdfjs is often just the glyph height (tiny/0). Use a roomy
-        // minimum based on the fontSize so the hover box actually contains the text.
-        const minH = item.fontSize * scale * 1.2;
-        const displayH = Math.max(r.h, minH);
+        const screenBaselineY = (pageHeight - item.y) * scale;
+        const fontPx = item.fontSize * scale;
+        
+        // Typical typographic bounds: ~0.8em above baseline, ~0.25em below baseline
+        const boxTop = screenBaselineY - (fontPx * 0.85);
+        const boxHeight = fontPx * 1.2;
 
         const hasEdit = edits.find(e => e.nodeIndex === i);
 
         return (
-          <div
+          <DraggableItem
             key={i}
-            onClick={(e) => {
-              e.stopPropagation();
-              onSelect(i);
-            }}
-            style={{
-              position: 'absolute',
-              left: r.x,
-              top: r.y,
-              width: r.w,
-              height: displayH,
-              cursor: 'text',
-              pointerEvents: 'all',
-              // When edited: white background masks the original PDF text underneath
-              backgroundColor: hasEdit ? 'white' : 'transparent',
-              // Align text to the bottom of the box (baseline-like alignment)
-              display: 'flex',
-              alignItems: 'flex-end',
-            }}
-            className={`box-border transition-colors duration-150 rounded-[2px] ${
-              selectedIdx === i
-                ? 'ring-2 ring-blue-500 bg-blue-500/10'
-                : hasEdit
-                  ? 'hover:bg-blue-50/30'
-                  : 'border-[1px] border-dashed border-slate-300/60 hover:border-[1.5px] hover:border-solid hover:border-blue-500 hover:bg-blue-500/5'
-            }`}
-            title={hasEdit ? `Edited: ${hasEdit.newStr}` : item.str}
+            item={item}
+            index={i}
+            selectedIdx={selectedIdx}
+            hasEdit={hasEdit}
+            scale={scale}
+            r={r}
+            boxTop={boxTop}
+            boxHeight={boxHeight}
+            onSelect={onSelect}
+            updateEdit={(pNum, idx, partial) => pdfEditStore.updateEdit(activeFileId, pNum, idx, partial)}
           >
             {hasEdit && (
               <ScaledTextSpan
                 text={hasEdit.newStr}
+                origText={hasEdit.origStr || item.str}
                 fontFamily={
                   (hasEdit.customFontFamily && hasEdit.customFontFamily !== 'Original')
                     ? hasEdit.customFontFamily
                     : (item.renderedFontFamily || `ForceSpace, "${hasEdit.fontName}", sans-serif`)
                 }
                 fontSize={
-                  // Use the ACTUAL font-size pdfjs computed (in px, includes scale).
-                  // Fall back to our formula if onRenderSuccess hasn't run yet.
                   (item.renderedFontSize || Math.max(4, hasEdit.origFontSize * scale)) + hasEdit.fontSizeAdj
                 }
                 fontWeight={hasEdit.isBold ? 'bold' : (item.renderedFontWeight || 'normal')}
@@ -109,7 +105,7 @@ export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, e
                 containerW={r.w}
               />
             )}
-          </div>
+          </DraggableItem>
         );
       })}
     </div>
