@@ -11,13 +11,13 @@ import re
 # Spanish, Portuguese, Arabic, Hebrew, Irish/Scottish, Scandinavian, Armenian naming.
 # Uses (?-i:...) to enforce case sensitivity even when outer pattern uses re.IGNORECASE.
 _SPREFIX = (
-    r"(?:(?:Van|Von|Den|Der|Het|Ter|Ten|Uit|Del|Dos|Das|Los|Las|Dei|Bin|Ibn|Abu|Bat|Mac|San|Ben|"
+    r"(?:(?<![a-zA-Z])(?:Van|Von|Den|Der|Het|Ter|Ten|Uit|Del|Dos|Das|Los|Las|Dei|Bin|Ibn|Abu|Bat|Mac|San|Ben|"
     r"Delle|Della|Degli|De|Di|Da|Du|Le|La|Lo|Li|Al|El|Af|Av|Ap|Op|Ul|Mc|"
     r"van|von|den|der|het|ter|ten|uit|del|dos|das|los|las|dei|bin|ibn|abu|bat|mac|san|ben|"
     r"delle|della|degli|de|di|da|du|le|la|lo|li|al|el|af|av|ap|op|ul|mc)"
     r"(?:\s+(?:der|den|de|het|la|las|los|le|di))?\s+)?"
 )
-_SNAME = _SPREFIX + r"(?-i:[A-Z\u00C0-\u00D6])[a-z\u00E0-\u00F6]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6])?[a-z\u00E0-\u00F6]+)*"
+_SNAME = _SPREFIX + r"(?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])[a-z\u00E0-\u00F6\u00F8-\u00FF]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])?[a-z\u00E0-\u00F6\u00F8-\u00FF]+)*"
 # Year or n.d. or "no date"
 _YEAR = r"(?:\d{4}[a-z]?|n\.d\.|no date)"
 # Multi-word corporate author
@@ -54,17 +54,17 @@ CITATION_PATTERNS = [
     (re.compile(rf'\(\s*{_SNAME}[,.\s]+{_YEAR}(?:[,:.\s]+(?:pp?\.\s*)?[\d\-\u2013]+)?\s*\)', re.IGNORECASE), 'PAR_SINGLE'),
 
     # ── Author-Date Narrative ──
-    # Et al. narrative: Stokes-Parish et al. (2020)
-    (re.compile(rf'{_SNAME}\s+et\s+al\.?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_ETAL'),
+    # Et al. narrative: Stokes-Parish et al. (2020) or Stokes-Parish et al.'s (2020)
+    (re.compile(rf'{_SNAME}\s+et\s+al\.?(?:[\'’]s?)?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_ETAL'),
 
-    # Two authors narrative: Smith and Jones (2020)
-    (re.compile(rf'{_SNAME}\s+(?:and|&)\s+{_SNAME}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_TWO'),
+    # Two authors narrative: Smith and Jones (2020) or Smith and Jones's (2020)
+    (re.compile(rf'{_SNAME}\s+(?:and|&)\s+{_SNAME}(?:[\'’]s?)?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_TWO'),
 
-    # Multi-word corporate narrative: NHS England (2025)
-    (re.compile(rf'{_CORP}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_CORP'),
+    # Multi-word corporate narrative: NHS England's (2025)
+    (re.compile(rf'{_CORP}(?:[\'’]s?)?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_CORP'),
 
-    # Single author narrative: Smith (2020)
-    (re.compile(rf'{_SNAME}[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_SINGLE'),
+    # Single author narrative: Smith's (2020)
+    (re.compile(rf'{_SNAME}(?:[\'’]s?)?[,.\s]*\({_YEAR}(?:[,.\s]+pp?\.\s*[\d\-\u2013]+)?\)', re.IGNORECASE), 'NAR_SINGLE'),
 
     # ── Numbered Styles (Vancouver/IEEE) ──
     # Mixed/multiple numbers: [1, 3-5, 7]
@@ -120,7 +120,7 @@ def check_formatting_irregularities(citation_text: str) -> list:
     
     # Check lowercase names (no capital letters at start of words)
     words = re.findall(r'\b[a-zA-Z]+\b', citation_text)
-    lower_words = [w for w in words if w.islower() and w.lower() not in ('et', 'al', 'and', 'in', 'cited', 'quoted', 'pp', 'p', 'the', 'of', 'for', 'a', 'an', 'nd', 'no', 'date', 'v', 'vol', 'issue', 'org', 'who', 'cdc')]
+    lower_words = [w for w in words if w.islower() and w.lower() not in ('et', 'al', 'and', 'in', 'cited', 'quoted', 'pp', 'p', 's', 'the', 'of', 'for', 'a', 'an', 'nd', 'no', 'date', 'v', 'vol', 'issue', 'org', 'who', 'cdc')]
     if lower_words:
         warnings.append(f"Potential uncapitalized author name/word: {', '.join(lower_words)}")
         

@@ -16,7 +16,7 @@ from utils.text_extraction import extract_pdf_text, extract_docx_text, extract_d
 from utils.text_utils import count_references_and_citations
 from citations.extraction import extract_reference_section, extract_citations_regex
 from citations.deduplication import deduplicate_references
-from citations.verification import verify_matches_with_string_search, cross_validate, extract_verbatim_references
+from citations.verification import verify_matches_with_string_search, cross_validate, extract_verbatim_references, detect_irregularities_deterministically
 from citations.formatting import apply_italic_formatting
 from citations.ordering import apply_reference_ordering
 
@@ -111,7 +111,6 @@ Your tasks:
 3. Identify mismatches:
    - Citations without a matching reference (missing references).
    - References without a corresponding citation (unused references).
-   - Irregularities: Date mismatches, author name inconsistencies, formatting issues, duplicates.
 4. INDEPENDENTLY scan the document for any in-text citations that Python may have MISSED. Report these separately as "ai_additional_citations". These are NOT confirmed — they are warnings for the user to review.
 
 Output in strict JSON format only:
@@ -121,10 +120,6 @@ Output in strict JSON format only:
     "ai_additional_citations": ["any citations YOU found that are NOT in the pre-extracted list above"],
     "missing_references_for_citations": ["unmatched_citation1", ...],
     "unused_references": ["extra_ref1", ...],
-    "irregularities": [
-        {{"type": "date_mismatch", "citation": "Author (2020)", "ref": "Author (2019)", "details": "Year differs"}},
-        {{"type": "name_mismatch", "citation": "Smith", "ref": "Smyth", "details": "Spelling error"}}
-    ],
     "summary": "Brief overview of issues found."
 }}
 """
@@ -241,6 +236,12 @@ Output in strict JSON format only:
             analysis["python_citations"] = [c["text"] for c in python_citations]
             analysis["python_citation_types"] = {c["text"]: c["type"] for c in python_citations}
             analysis["python_formatting_warnings"] = {c["text"]: c["irregularities"] for c in python_citations if c.get("irregularities")}
+
+            # Deterministic irregularity detection (replaces AI-based guessing)
+            analysis["irregularities"] = detect_irregularities_deterministically(
+                python_citations,
+                analysis.get("references", [])
+            )
 
             num_cit = analysis.get("num_unique_citations", 0)
             num_ref = analysis.get("num_references", 0)

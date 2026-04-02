@@ -151,6 +151,128 @@ def cross_validate(python_citations: list, ai_citations: list, ai_references: li
         "ai_total": len(ai_citations),
     }
 
+def detect_irregularities_deterministically(citations_list: list, references: list) -> list:
+    """
+    Deterministically cross-references in-text citations against the reference list 
+    to find mismatched dates, spelling errors, or invalid formats.
+    """
+    import datetime
+    from difflib import SequenceMatcher
+    current_year = datetime.datetime.now().year
+    irregularities = []
+    
+    # Lowercase everything for faster/simpler reference checking
+    ref_pool = [(ref, ref[:150].lower()) for ref in references]
+
+    for cit in citations_list:
+        cit_text = cit.get("text", "")
+        if not cit_text: continue
+        
+        # 1. Extract the year
+        year_match = re.search(r'\b(18\d\d|19\d\d|20\d\d)\b', cit_text)
+        if not year_match: continue
+        cit_year = year_match.group(1)
+        
+        # Check unusual date
+        if int(cit_year) > current_year:
+            irregularities.append({
+                'type': 'UNUSUAL_DATE',
+                'citation': cit_text,
+                'ref': cit_text, # Unpaired at this stage
+                'details': f'Citation uses a future publication year ({cit_year}).'
+            })
+            
+        # 2. Extract Author Block (strip possessive 's before processing)
+        author_part_raw = cit_text[:year_match.start()].strip(' (,')
+        cit_author_clean = re.sub(r'(?i)\s+et\s+al\.?', '', author_part_raw)
+        cit_author_clean = re.sub(r"['\u2019]s\b", '', cit_author_clean)  # strip possessive 's
+        c_words = [w for w in re.sub(r'[^A-Za-z\s]', '', cit_author_clean).split() if len(w) > 2 and w.lower() not in ('and')]
+        if not c_words: continue
+
+        # 3. Find the best matching reference (match against PRIMARY authors only)
+        best_ref = None
+        best_ref_year = None
+        best_score = 0
+        best_r_words = []
+
+        cit_author_lower = cit_author_clean.lower()
+        for ref, ref_lower in ref_pool:
+            ref_year_match = re.search(r'(?<!\d)(18\d\d|19\d\d|20\d\d)(?!\d)', ref_lower)
+            if not ref_year_match: continue
+            
+            ref_year = ref_year_match.group(1)
+            ref_author_part = ref[:ref_year_match.start()]
+            
+            # Extract only primary authors (before first "&" or "...") to avoid
+            # matching citation "Wang and Zhang" against co-authors buried inside
+            # an unrelated "Cheng, Q., Duan, Y., Wang, Y., Zhang, Q." reference.
+            # For single/two-author citations, match only the first 1-2 surnames.
+            # For "et al." citations, match only the first surname.
+            first_amp = ref_author_part.find('&')
+            if len(c_words) == 1:
+                # Single author or et al. — only check the first surname in the ref.
+                first_comma = ref_author_part.find(',')
+                if first_comma > 0:
+                    ref_author_part = ref_author_part[:first_comma]
+            elif len(c_words) == 2 and first_amp > 0:
+                # Two-author citation — check if this ref is genuinely a 2-author ref.
+                # A real two-author ref: "Capili, B., & Anastasi, J. K." has ~2 commas before &
+                # A multi-author ref:   "Cheng, Q., Duan, Y., Wang, Y., Zhang, Q., &" has many more
+                before_amp = ref_author_part[:first_amp]
+                commas_before = before_amp.count(',')
+                if commas_before > 2:
+                    # This is a multi-author ref, not a two-author ref — skip
+                    continue
+                    
+            r_words = [w for w in re.sub(r'[^A-Za-z\s]', '', ref_author_part).split() if len(w) > 2 and w.lower() not in ('and')]
+            
+            # Simple word overlap scoring
+            matches = 0
+            for cw in c_words:
+                if any(SequenceMatcher(None, cw.lower(), rw.lower()).ratio() > 0.8 for rw in r_words):
+                    matches += 1
+            
+            score = (matches / len(c_words)) if c_words else 0
+            
+            if score > best_score:
+                best_score = score
+                best_ref = ref
+                best_ref_year = ref_year
+                best_r_words = r_words
+
+        # 4. Process Irregularities on the best match
+        if best_score > 0.6 and best_ref:
+            # Check Date Mismatch
+            if cit_year != best_ref_year:
+                irregularities.append({
+                    'type': 'DATE_MISMATCH',
+                    'citation': cit_text,
+                    'ref': best_ref[:80] + '...' if len(best_ref) > 80 else best_ref,
+                    'details': f'Citation year ({cit_year}) does not match the reference year ({best_ref_year}).'
+                })
+            
+            # Check Spelling Errors
+            for cw in c_words:
+                best_w_score = 0
+                best_rw = None
+                for rw in best_r_words:
+                    w_score = SequenceMatcher(None, cw.lower(), rw.lower()).ratio()
+                    if w_score > best_w_score:
+                        best_w_score = w_score
+                        best_rw = rw
+                
+                # If they are very similar but not identical (Spelling error found!)
+                if 0.82 <= best_w_score < 1.0:
+                    irregularities.append({
+                        'type': 'NAME_MISMATCH',
+                        'citation': cit_text,
+                        'ref': best_ref[:80] + '...' if len(best_ref) > 80 else best_ref,
+                        'details': f"The surname '{best_rw}' in the reference is cited as '{cw}' in the text."
+                    })
+                    break # Only flag one name mismatch per citation to avoid spam
+                    
+    return irregularities
+
 
 def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     """
