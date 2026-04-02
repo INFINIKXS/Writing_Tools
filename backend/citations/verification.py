@@ -16,9 +16,8 @@ def verify_matches_with_string_search(in_text_citations, references):
 
     def extract_first_author(text):
         """Extract the first author's bare surname from a citation or reference string."""
-        core = text.split(' et al.')[0].split(' and ')[0].strip()
-        core = re.sub(r'^[\(\[\s]+', '', core)
-        match = re.search(r'^(?:\d+(?:\]|\)|\.)?\s*)?((?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{1,4})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+)', core)
+        core = text.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip()
+        match = re.search(r'^([A-Za-z\'\-]+)', core)
         if match:
             surname = match.group(1).strip()
             surname = re.sub(r'\s+[A-Z]{1,3}$', '', surname).strip()
@@ -312,7 +311,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             candidate_lower = candidate.lower().strip()
             
             len_ratio = len(candidate_lower) / max(len(ai_ref_lower), 1)
-            if len_ratio < 0.3 or len_ratio > 3.0:
+            if len_ratio < 0.3 or len_ratio > 15.0:  # Loosened massively to handle un-split document text
                 continue
             
             cand_author, cand_year = extract_author_year(candidate)
@@ -323,7 +322,23 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             if not author_ok or not year_ok:
                 continue
             
-            score = SequenceMatcher(None, ai_ref_lower, candidate_lower).ratio()
+            sm = SequenceMatcher(None, ai_ref_lower, candidate_lower)
+            score = sm.ratio()
+            
+            # If candidate is a massive merged block, calculate partial matching score
+            if len_ratio > 1.5:
+                # Find the longest contiguous matching block
+                match_blocks = sm.get_matching_blocks()
+                if match_blocks:
+                    best_block = max(match_blocks[:-1], key=lambda x: x.size)
+                    # If we matched at least 80% of the AI reference in one contiguous block
+                    if best_block.size / max(len(ai_ref_lower), 1) > 0.8:
+                        score = 1.0
+                        # Slice the candidate down to just the matched area
+                        start_idx = max(0, best_block.b - best_block.a)
+                        end_idx = min(len(candidate), start_idx + len(ai_ref_lower))
+                        candidate = candidate[start_idx:end_idx].strip()
+            
             if score > best_score:
                 best_score = score
                 best_match = candidate

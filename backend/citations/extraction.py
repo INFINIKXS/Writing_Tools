@@ -232,11 +232,12 @@ def extract_citations_regex(body_text: str) -> list:
             if is_overlapping(match.start(), match.end()):
                 continue
             
+            matched_spans.append((match.start(), match.end()))
+            
             citation_text = match.group(0).strip()
             if citation_text not in seen_texts:
                 warnings = check_formatting_irregularities(citation_text)
                 found_citations.append({"text": citation_text, "type": label, "irregularities": warnings})
                 seen_texts.add(citation_text)
-                matched_spans.append((match.start(), match.end()))
     
     return found_citations
