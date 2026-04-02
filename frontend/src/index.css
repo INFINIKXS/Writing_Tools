@@ -4,6 +4,12 @@
 @tailwind components;
 @tailwind utilities;
 
+@font-face {
+  font-family: 'ForceSpace';
+  src: local('Arial'), local('Helvetica'), local('sans-serif');
+  unicode-range: U+0020;
+}
+
 @property --angle {
   syntax: '<angle>';
   initial-value: 0deg;

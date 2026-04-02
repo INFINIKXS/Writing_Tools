@@ -2,6 +2,7 @@ import React, { useState, useCallback } from 'react';
 import Toolbar from '../components/PDFEditor/Toolbar';
 import PDFViewer from '../components/PDFEditor/Viewer';
 import { applyTextAnnotations } from '../utils/pdfModifier';
+import { pdfEditStore, activeFileId } from '../stores/pdfEditStore';
 
 export default function PDFEditorPage() {
   const [currentFile, setCurrentFile] = useState(null);
@@ -98,14 +99,44 @@ export default function PDFEditorPage() {
   };
 
   const handleSave = async () => {
-    if (!fileBytes) return;
+    if (!currentFile || !fileBytes) return;
+    
+    const inlineEdits = pdfEditStore.getEdits(activeFileId);
+
     try {
-      const editedDocBytes = await applyTextAnnotations(fileBytes, annotations);
-      const blob = new Blob([editedDocBytes], { type: "application/pdf" });
-      const link = document.createElement("a");
-      link.href = URL.createObjectURL(blob);
-      link.download = `edited_${currentFile.name}`;
-      link.click();
+      // 1. Process any legacy overlay annotations via frontend pdf-lib first
+      let fileToSend = currentFile;
+      if (annotations.length > 0) {
+        const editedDocBytes = await applyTextAnnotations(fileBytes, annotations);
+        fileToSend = new Blob([editedDocBytes], { type: "application/pdf" });
+      }
+
+      // 2. If no inline edits, just download the pdf-lib version directly
+      if (inlineEdits.length === 0) {
+        if (annotations.length === 0) return; // Nothing changed
+        const blob = fileToSend instanceof Blob ? fileToSend : new Blob([fileBytes], { type: "application/pdf" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = `edited_${currentFile.name}`;
+        link.click();
+        return;
+      }
+
+      // 3. Process deep inplace text replacements via Python backend
+      const fd = new FormData();
+      fd.append('file', fileToSend, 'document.pdf');
+      fd.append('edits', JSON.stringify(inlineEdits));
+
+      const res = await fetch('http://localhost:8000/api/pdf/apply-edits', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error("Backend edit failed");
+
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `edited_${currentFile.name}`;
+      a.click();
+      URL.revokeObjectURL(url);
     } catch (err) {
       console.error("Error saving PDF", err);
       alert("Failed to modify the PDF backend array.");

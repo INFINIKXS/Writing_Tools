@@ -1,0 +1,579 @@
+
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font-sans); }
+
+  .plan-root { padding: 1.5rem 0; }
+
+  .phase-nav { display: flex; gap: 6px; flex-wrap: wrap; margin-bottom: 1.5rem; }
+  .phase-btn {
+    padding: 5px 14px; border-radius: 20px; border: 0.5px solid var(--color-border-secondary);
+    font-size: 13px; cursor: pointer; background: transparent; color: var(--color-text-secondary);
+    transition: all .15s;
+  }
+  .phase-btn:hover { background: var(--color-background-secondary); color: var(--color-text-primary); }
+  .phase-btn.active { background: var(--color-background-primary); color: var(--color-text-primary); border-color: var(--color-border-primary); font-weight: 500; }
+
+  .phase-panel { display: none; }
+  .phase-panel.active { display: block; }
+
+  .phase-header { margin-bottom: 1.25rem; }
+  .phase-label { font-size: 11px; font-weight: 500; letter-spacing: .08em; color: var(--color-text-tertiary); text-transform: uppercase; margin-bottom: 4px; }
+  .phase-title { font-size: 18px; font-weight: 500; color: var(--color-text-primary); margin-bottom: 4px; }
+  .phase-meta { font-size: 13px; color: var(--color-text-secondary); display: flex; gap: 16px; flex-wrap: wrap; }
+  .phase-meta span { display: flex; align-items: center; gap: 5px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; display: inline-block; }
+  .dot-blue { background: #378ADD; }
+  .dot-teal { background: #1D9E75; }
+  .dot-amber { background: #BA7517; }
+  .dot-coral { background: #D85A30; }
+  .dot-purple { background: #7F77DD; }
+
+  .section-title { font-size: 13px; font-weight: 500; color: var(--color-text-secondary); margin: 1.25rem 0 .6rem; text-transform: uppercase; letter-spacing: .06em; }
+
+  .task-grid { display: flex; flex-direction: column; gap: 8px; }
+  .task {
+    background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-lg); padding: 12px 14px; cursor: pointer;
+    transition: border-color .15s; position: relative;
+  }
+  .task:hover { border-color: var(--color-border-secondary); }
+  .task-header { display: flex; align-items: center; gap: 8px; margin-bottom: 2px; }
+  .task-tag { font-size: 11px; padding: 2px 8px; border-radius: 10px; font-weight: 500; }
+  .tag-fe { background: #E6F1FB; color: #185FA5; }
+  .tag-be { background: #E1F5EE; color: #0F6E56; }
+  .tag-fs { background: #EEEDFE; color: #534AB7; }
+  .tag-warn { background: #FAEEDA; color: #854F0B; }
+  .task-name { font-size: 14px; font-weight: 500; color: var(--color-text-primary); }
+  .task-file { font-size: 12px; color: var(--color-text-tertiary); font-family: var(--font-mono); margin-top: 4px; }
+  .task-desc { font-size: 13px; color: var(--color-text-secondary); margin-top: 6px; line-height: 1.55; display: none; }
+  .task.open .task-desc { display: block; }
+  .task-chevron { margin-left: auto; font-size: 12px; color: var(--color-text-tertiary); transition: transform .15s; }
+  .task.open .task-chevron { transform: rotate(90deg); }
+
+  .code-block {
+    background: var(--color-background-secondary); border: 0.5px solid var(--color-border-tertiary);
+    border-radius: var(--border-radius-md); padding: 10px 12px; margin-top: 8px;
+    font-family: var(--font-mono); font-size: 12px; color: var(--color-text-secondary);
+    line-height: 1.6; white-space: pre-wrap; overflow-x: auto;
+  }
+
+  .pitfall-block {
+    background: #FAEEDA; border: 0.5px solid #EF9F27; border-radius: var(--border-radius-md);
+    padding: 10px 14px; margin-top: 8px; font-size: 13px; color: #633806; line-height: 1.55;
+  }
+  .pitfall-block b { color: #412402; }
+
+  .flow-strip { display: flex; gap: 0; align-items: center; margin: 1.25rem 0; overflow-x: auto; }
+  .flow-node {
+    background: var(--color-background-primary); border: 0.5px solid var(--color-border-secondary);
+    border-radius: var(--border-radius-md); padding: 8px 14px; font-size: 12px;
+    color: var(--color-text-primary); white-space: nowrap; font-weight: 500; flex-shrink: 0;
+  }
+  .flow-arr { color: var(--color-text-tertiary); font-size: 14px; padding: 0 4px; flex-shrink: 0; }
+
+  .stat-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 10px; margin: 1rem 0; }
+  .stat { background: var(--color-background-secondary); border-radius: var(--border-radius-md); padding: 12px; }
+  .stat-label { font-size: 11px; color: var(--color-text-tertiary); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .06em; }
+  .stat-val { font-size: 22px; font-weight: 500; color: var(--color-text-primary); }
+  .stat-sub { font-size: 12px; color: var(--color-text-secondary); margin-top: 2px; }
+
+  .constraint-list { display: flex; flex-direction: column; gap: 6px; margin-top: .5rem; }
+  .constraint {
+    display: flex; gap: 10px; align-items: flex-start;
+    background: var(--color-background-secondary); border-radius: var(--border-radius-md);
+    padding: 10px 12px; font-size: 13px; color: var(--color-text-secondary); line-height: 1.5;
+  }
+  .constraint-icon { font-size: 14px; flex-shrink: 0; margin-top: 1px; }
+
+  .divider { border: none; border-top: 0.5px solid var(--color-border-tertiary); margin: 1.25rem 0; }
+
+  .send-btn {
+    display: inline-flex; align-items: center; gap: 5px; margin-top: 10px;
+    padding: 6px 14px; border-radius: var(--border-radius-md); border: 0.5px solid var(--color-border-secondary);
+    font-size: 13px; cursor: pointer; background: transparent; color: var(--color-text-secondary);
+    transition: all .15s;
+  }
+  .send-btn:hover { background: var(--color-background-secondary); color: var(--color-text-primary); }
+</style>
+
+<div class="plan-root">
+
+  <div class="stat-row">
+    <div class="stat"><div class="stat-label">Total phases</div><div class="stat-val">5</div><div class="stat-sub">sequential</div></div>
+    <div class="stat"><div class="stat-label">Est. effort</div><div class="stat-val">~4</div><div class="stat-sub">dev days</div></div>
+    <div class="stat"><div class="stat-label">New files</div><div class="stat-val">3</div><div class="stat-sub">+ 4 modified</div></div>
+    <div class="stat"><div class="stat-label">Depends on</div><div class="stat-val">0</div><div class="stat-sub">new packages</div></div>
+  </div>
+
+  <div class="flow-strip">
+    <div class="flow-node">1 · Text layer overlay</div><div class="flow-arr">›</div>
+    <div class="flow-node">2 · Edit UX</div><div class="flow-arr">›</div>
+    <div class="flow-node">3 · Change tracking</div><div class="flow-arr">›</div>
+    <div class="flow-node">4 · Backend burn</div><div class="flow-arr">›</div>
+    <div class="flow-node">5 · Font fallback</div>
+  </div>
+
+  <div class="phase-nav" id="nav"></div>
+  <div id="panels"></div>
+
+</div>
+
+<script>
+const phases = [
+  {
+    id: 'p1',
+    label: 'Phase 1',
+    title: 'Text block detection & hit-testing',
+    time: '~0.5 days',
+    scope: 'Frontend only',
+    color: 'dot-blue',
+    summary: 'Extract every text item from the react-pdf text layer, compute their bounding boxes in screen coordinates, and render dashed selection outlines over the PDF canvas — replicating the WPS "dotted frame" mode exactly.',
+    flow: ['PDF loads via react-pdf', 'onGetTextSuccess callback fires', 'Build hitmap[]', 'Render overlay <div>s', 'Hover → dashed box', 'Click → select box'],
+    tasks: [
+      {
+        tag: 'fe', name: 'Extract text items from react-pdf',
+        file: 'frontend/src/components/PDFEditorPage.jsx',
+        desc: 'Use the onGetTextSuccess prop on <Page> to receive the raw text content object. Iterate textContent.items[] — each item has str, transform (a 6-element matrix), width, height, fontName, and fontSize. Store these in a ref: textItemsRef.current[pageNum] = items.',
+        code: `// Inside <Page> component:
+onGetTextSuccess={(textContent) => {
+  const items = textContent.items.map(item => ({
+    str: item.str,
+    x: item.transform[4],          // PDF-space x
+    y: item.transform[5],          // PDF-space y (bottom-left origin)
+    w: item.width,
+    h: item.height,
+    fontSize: item.transform[0],   // scale factor
+    fontName: item.fontName,
+  }));
+  textItemsRef.current[pageNum] = items;
+  buildHitmap(pageNum);
+}}`,
+      },
+      {
+        tag: 'fe', name: 'Build coordinate transformer',
+        file: 'frontend/src/utils/pdfCoords.js  (NEW)',
+        desc: 'PDF coordinates use bottom-left origin and are in PDF units. Screen coordinates use top-left origin in CSS pixels. You need a bidirectional transformer. The react-pdf <Page> exposes its rendered scale via a ref — capture it in the onRenderSuccess callback.',
+        code: `// pdfCoords.js
+export function pdfToScreen(item, pageHeight, scale) {
+  return {
+    x:  item.x * scale,
+    y:  (pageHeight - item.y - item.h) * scale,  // flip Y
+    w:  item.w  * scale,
+    h:  item.h  * scale,
+  };
+}
+export function screenToPdf(rect, pageHeight, scale) {
+  return {
+    x:  rect.x / scale,
+    y:  pageHeight - (rect.y / scale) - (rect.h / scale),
+    w:  rect.w / scale,
+    h:  rect.h / scale,
+  };
+}`,
+        pitfall: 'react-pdf renders at a dynamic scale depending on window width and the scale prop. If you hardcode scale=1 your boxes will drift. Capture the actual rendered scale from the Page\'s onRenderSuccess: it passes { pageNumber, width, height } — divide by the PDF\'s natural page dimensions to get the true scale factor.',
+      },
+      {
+        tag: 'fe', name: 'Render the overlay layer',
+        file: 'frontend/src/components/TextOverlay.jsx  (NEW)',
+        desc: 'A React component absolutely positioned over the PDF canvas. It maps every text item to a <div> with a dashed border. On hover, the border goes solid blue. On click, calls onSelect(itemIndex). Uses pointer-events: none on non-interactive overlays so scroll still works.',
+        code: `// TextOverlay.jsx
+export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect }) {
+  return (
+    <div style={{ position:'absolute', top:0, left:0, width:'100%', height:'100%', pointerEvents:'none' }}>
+      {items.map((item, i) => {
+        const r = pdfToScreen(item, pageHeight, scale);
+        return (
+          <div key={i} onClick={() => onSelect(i)}
+            style={{
+              position: 'absolute', left: r.x, top: r.y, width: r.w, height: r.h,
+              border: selectedIdx===i ? '1.5px solid #2563EB' : '1px dashed #94A3B8',
+              borderRadius: 2, cursor: 'text', pointerEvents: 'all',
+              boxSizing: 'border-box',
+            }}
+          />
+        );
+      })}
+    </div>
+  );
+}`,
+      },
+    ],
+    constraints: [
+      { icon: '⚠', text: 'react-pdf\'s built-in text layer also renders absolute <span>s — you must either disable it (renderTextLayer={false}) or z-index your overlay above it to avoid double-click capture.' },
+      { icon: '⚠', text: 'PDF items with empty str (e.g. spacing glyphs) will create invisible hit targets. Filter out items where item.str.trim() === "".' },
+    ]
+  },
+  {
+    id: 'p2',
+    label: 'Phase 2',
+    title: 'In-place editing UX',
+    time: '~1 day',
+    scope: 'Frontend only',
+    color: 'dot-teal',
+    summary: 'When a text block is selected, overlay a <textarea> precisely positioned and sized over it. Match the font size. Let the user type. On blur or Enter, commit the edit. This is the WPS "solid blue box + keyboard opens" moment.',
+    flow: ['User clicks box', 'Overlay mounts at exact coords', 'Textarea auto-focused', 'User types', 'Blur / Done button', 'Commit to editStore'],
+    tasks: [
+      {
+        tag: 'fe', name: 'InlineEditor component',
+        file: 'frontend/src/components/InlineEditor.jsx  (NEW)',
+        desc: 'Mounts a <textarea> absolutely positioned at the selected item\'s screen coordinates. fontSize is derived from the PDF item\'s transform matrix scale × page scale. The textarea has a transparent background so the PDF text shows through initially as a reference — on first keystroke, the original text is cleared and replaced with user input.',
+        code: `// InlineEditor.jsx
+export function InlineEditor({ item, pageHeight, scale, onCommit, onCancel }) {
+  const [val, setVal] = useState(item.str);
+  const r = pdfToScreen(item, pageHeight, scale);
+  const fsize = Math.round(item.fontSize * scale);
+
+  const ref = useAutoFocus();   // useEffect focusing on mount
+
+  return (
+    <textarea ref={ref}
+      value={val}
+      onChange={e => setVal(e.target.value)}
+      onBlur={() => onCommit(val)}
+      onKeyDown={e => { if(e.key==='Escape') onCancel(); }}
+      style={{
+        position: 'absolute', left: r.x - 2, top: r.y - 2,
+        width: r.w + 4, height: Math.max(r.h + 4, fsize * 1.6),
+        fontSize: fsize, lineHeight: 1.4,
+        fontFamily: 'inherit',          // Phase 5 improves this
+        background: 'white',
+        border: '2px solid #2563EB',
+        borderRadius: 3, padding: '1px 3px',
+        resize: 'none', outline: 'none',
+        zIndex: 100,
+      }}
+    />
+  );
+}`,
+        pitfall: 'Do NOT use contentEditable. It mangles IME (international keyboard) input and makes value extraction unreliable. A plain <textarea> is what Apryse themselves replaced their contentEditable with.',
+      },
+      {
+        tag: 'fe', name: 'Toolbar strip (font size A+/A-)',
+        file: 'frontend/src/components/PDFEditorPage.jsx',
+        desc: 'When a block is selected, show a minimal floating toolbar above it: font-size up, font-size down, a "Done" button, and a "Cancel" button. These modify a local fontSizeOverride that gets committed with the edit. The toolbar position is the item screen rect x, y - 36.',
+        code: `// Inside PDFEditorPage render:
+{selectedIdx !== null && (
+  <div style={{
+    position: 'absolute',
+    left: screenRect.x,
+    top: Math.max(0, screenRect.y - 36),
+    display: 'flex', gap: 4, zIndex: 101,
+    background: 'white', border: '0.5px solid #CBD5E1',
+    borderRadius: 6, padding: '3px 6px',
+  }}>
+    <button onClick={() => setFontAdj(v => v - 1)}>A-</button>
+    <button onClick={() => setFontAdj(v => v + 1)}>A+</button>
+    <button onClick={commitEdit} style={{color:'#2563EB'}}>Done</button>
+    <button onClick={cancelEdit}>✕</button>
+  </div>
+)}`,
+      },
+      {
+        tag: 'fe', name: 'Grab handles (corner resize)',
+        file: 'frontend/src/components/TextOverlay.jsx',
+        desc: 'Four 8×8 square handles at the corners of the selected box. Implement onMouseDown → document.onMouseMove → document.onMouseUp drag logic. Clamp minimum width/height to 20px. On release, update the item bounding box in the edit store so the backend burns text into the right rectangle.',
+        pitfall: 'You do NOT need to actually change the PDF dimensions — just the screen rect used for the textarea and the export rectangle. The backend will use whatever bounding box you store, not the original one.',
+      },
+    ],
+    constraints: [
+      { icon: '⚠', text: 'On mobile (the primary use case given the WPS video), the keyboard opening pushes the viewport up. Use window.visualViewport.onresize to reposition the editor after the keyboard appears.' },
+      { icon: '⚠', text: 'react-pdf re-renders the page on scale changes. Your overlays must re-compute positions in a useEffect that depends on the rendered page dimensions, not just on mount.' },
+    ]
+  },
+  {
+    id: 'p3',
+    label: 'Phase 3',
+    title: 'Change tracking & session state',
+    time: '~0.5 days',
+    scope: 'Frontend only',
+    color: 'dot-amber',
+    summary: 'Accumulate edits in a structured store so nothing is lost when the user navigates between pages. Your existing persistent view architecture (views stay mounted) means you can keep this in a module-level ref or a lightweight Zustand store without any persistence complexity.',
+    flow: ['Edit committed', 'Append to edits[]', 'User navigates page', 'View stays mounted', 'Edits survive', 'Export triggers → send edits[]'],
+    tasks: [
+      {
+        tag: 'fs', name: 'editStore data structure',
+        file: 'frontend/src/stores/pdfEditStore.js  (NEW)',
+        desc: 'A simple module-level Map keyed by fileId → edits[]. Each edit object stores everything the backend needs to perform the redact+replace operation. Use a React context or a zustand store — whichever pattern the rest of your app uses.',
+        code: `// pdfEditStore.js — edit record schema
+const edit = {
+  pageNum:      1,          // 1-indexed, matches PyMuPDF page indexing
+  origStr:      "Define asthma clearly.",
+  newStr:       "Define asthma clearly. cfg",
+  rect: {                   // in PDF units (not screen pixels)
+    x:  72.4,
+    y:  540.1,
+    w:  212.0,
+    h:  14.2,
+  },
+  origFontSize: 11.0,       // from PDF item.transform[0]
+  fontSizeAdj:  0,          // delta from A+/A- buttons
+  fontName:     "ABCDEF+TimesNewRoman",  // for Phase 5 matching
+};`,
+      },
+      {
+        tag: 'fe', name: 'Visual edit indicators',
+        file: 'frontend/src/components/TextOverlay.jsx',
+        desc: 'Any text block that has a committed edit should render with a pale blue background fill (rgba(37, 99, 235, 0.08)) and a solid blue left border (3px) instead of the dashed grey default. This gives the user a persistent visual audit trail of what has been changed — matching the WPS pattern.',
+      },
+      {
+        tag: 'fe', name: 'Undo/redo stack',
+        file: 'frontend/src/stores/pdfEditStore.js',
+        desc: 'Before every commit, push the previous state to an undoStack[]. On Ctrl+Z, pop from undoStack and push current to redoStack. Cap the undo stack at 50 entries to avoid memory bloat. Wire to keyboard events in PDFEditorPage.',
+        pitfall: 'The undo stack must be per-file, not global. If the user has two PDFs open in tabs, their undo stacks must be independent.',
+      },
+    ],
+    constraints: [
+      { icon: '⚠', text: 'If the user zooms the PDF (scale changes), all stored rects are in PDF units so they remain valid — only screen coordinates need recomputing. Never store screen coordinates in the edit store.' },
+      { icon: '⚠', text: 'Your existing persistent view architecture keeps views mounted when navigating. However, if the component DOES unmount (e.g. user refreshes), edits are lost. For Phase 1, this is acceptable. A Phase 2 enhancement could persist to localStorage.' },
+    ]
+  },
+  {
+    id: 'p4',
+    label: 'Phase 4',
+    title: 'Backend burn — PyMuPDF redact + redraw',
+    time: '~1 day',
+    scope: 'Backend (FastAPI + PyMuPDF)',
+    color: 'dot-coral',
+    summary: 'A new FastAPI endpoint receives the original PDF file + the edits[] array. For each edit, it uses PyMuPDF\'s add_redact_annot() to erase the original text region, then insert_textbox() to write the new text in the same position. Returns a download-ready PDF.',
+    flow: ['POST /api/pdf/apply-edits', 'Receive file + edits JSON', 'Open with PyMuPDF', 'For each edit: redact → rewrite', 'apply_redactions()', 'Return modified PDF bytes'],
+    tasks: [
+      {
+        tag: 'be', name: 'New endpoint: POST /api/pdf/apply-edits',
+        file: 'backend/converter/pdf_edit.py  (NEW)',
+        desc: 'Receives multipart form data: the original PDF file + a JSON body of edits[]. Returns the modified PDF as an application/pdf stream. Register this router in backend/main.py.',
+        code: `# pdf_edit.py
+import fitz  # PyMuPDF
+from fastapi import UploadFile, Form
+import json, io
+
+async def apply_edits(file: UploadFile, edits: str = Form(...)):
+    data   = await file.read()
+    edits  = json.loads(edits)
+    doc    = fitz.open(stream=data, filetype="pdf")
+
+    fitz.TOOLS.set_small_glyph_heights(True)  # critical — prevents oversized redact rects
+
+    for edit in edits:
+        page  = doc[edit["pageNum"] - 1]       # 0-indexed in PyMuPDF
+        r     = fitz.Rect(
+                  edit["rect"]["x"],
+                  edit["rect"]["y"],
+                  edit["rect"]["x"] + edit["rect"]["w"],
+                  edit["rect"]["y"] + edit["rect"]["h"],
+                )
+        fontsize = edit["origFontSize"] + edit.get("fontSizeAdj", 0)
+
+        page.add_redact_annot(
+            r,
+            text=edit["newStr"],
+            fontname="helv",          # Phase 5 improves this
+            fontsize=fontsize,
+            fill=(1, 1, 1),           # white erase
+            text_color=(0, 0, 0),
+        )
+        page.apply_redactions()
+
+    buf = io.BytesIO()
+    doc.save(buf, garbage=4, deflate=True)
+    buf.seek(0)
+    return StreamingResponse(buf, media_type="application/pdf",
+        headers={"Content-Disposition": "attachment; filename=edited.pdf"})`,
+        pitfall: 'CRITICAL: call fitz.TOOLS.set_small_glyph_heights(True) BEFORE any page.search_for() or add_redact_annot() call. Without this, PyMuPDF uses the font\'s ascender+descender for the redact rectangle height, which is often larger than the visual text box — causing it to erase content on adjacent lines.',
+      },
+      {
+        tag: 'be', name: 'Reading order fix (text reflow)',
+        file: 'backend/converter/pdf_edit.py',
+        desc: 'As confirmed by the PyMuPDF maintainers in their GitHub discussion, new text appended via add_redact_annot() lands at the END of the page content stream — so copy-pasted text has wrong reading order. For academic documents (where accessibility matters), an optional reflow pass using page.get_text("rawdict") before and after lets you rebuild a correct structure tree.',
+        pitfall: 'The reading order issue does NOT affect visual appearance — the PDF looks correct. It only affects screen readers, copy-paste order, and search result ordering. If your users only care about visual output (likely for academic writing), you can defer this fix. Flag it clearly in UI: "Edited text may not copy-paste in document order."',
+      },
+      {
+        tag: 'fe', name: 'Export button wiring',
+        file: 'frontend/src/components/PDFEditorPage.jsx',
+        desc: 'On "Export / Save", construct a FormData with the original PDF blob + JSON.stringify(editStore.getEdits(fileId)). POST to /api/pdf/apply-edits. On success, trigger a browser download via URL.createObjectURL(blob). Show a loading spinner — this call will take 1-3 seconds for large PDFs.',
+        code: `async function handleExport() {
+  const fd = new FormData();
+  fd.append('file', originalPdfBlob, 'document.pdf');
+  fd.append('edits', JSON.stringify(editStore.getEdits(fileId)));
+
+  const res = await fetch('/api/pdf/apply-edits', { method:'POST', body: fd });
+  const blob = await res.blob();
+  const url  = URL.createObjectURL(blob);
+  const a    = document.createElement('a');
+  a.href = url; a.download = 'edited.pdf'; a.click();
+  URL.revokeObjectURL(url);
+}`,
+      },
+    ],
+    constraints: [
+      { icon: '⚠', text: 'apply_redactions() is destructive and irreversible on the fitz.Document object. Always operate on a copy: doc = fitz.open(stream=original_bytes) — never open the file path and mutate it in place.' },
+      { icon: '⚠', text: 'PyMuPDF\'s add_redact_annot with text= only supports PDF Base 14 fonts (Helvetica, Times, Courier, etc.) and CJK fonts. Custom embedded fonts from the original PDF CANNOT be used here — that is Phase 5\'s purpose.' },
+      { icon: '⚠', text: 'For large PDFs (50+ pages), the endpoint may time out on Uvicorn\'s default 30s timeout. Add ?timeout=120 to the fetch, and configure uvicorn --timeout-keep-alive=120.' },
+    ]
+  },
+  {
+    id: 'p5',
+    label: 'Phase 5',
+    title: 'Font matching & polish',
+    time: '~1 day',
+    scope: 'Full stack',
+    color: 'dot-purple',
+    summary: 'The highest-effort, highest-fidelity phase. Detect the original font from the PDF\'s embedded subset, extract it, and use it for replacement text. Fall back gracefully to Helvetica when glyphs are missing. Add the grab-handle resize UX and mobile keyboard repositioning.',
+    flow: ['Extract fontName from edit', 'Query PyMuPDF font table', 'Font subset includes glyph?', 'Yes → use original font', 'No → fallback to Helvetica', 'Apply with correct metrics'],
+    tasks: [
+      {
+        tag: 'be', name: 'Font extraction utility',
+        file: 'backend/converter/font_utils.py  (NEW)',
+        desc: 'PyMuPDF exposes page.get_fonts() which returns a list of (xref, ext, type, basefont, name, enc, referencer). Use doc.extract_font(xref) to get the raw font bytes. Write them to a temp file, then pass the path to page.insert_text(fontfile=...) for exact-match rendering.',
+        code: `# font_utils.py
+def extract_font_for_edit(doc, page, font_name):
+    """Try to extract the embedded font matching font_name.
+    Returns (font_bytes, is_subset) or (None, False) if not found."""
+    for xref, ext, ftype, basefont, name, enc, _ in page.get_fonts():
+        if font_name in (name, basefont):
+            font_data = doc.extract_font(xref)
+            if font_data and font_data[3]:    # font_data[3] = raw bytes
+                return font_data[3], True
+    return None, False
+
+def get_usable_font(doc, page, edit):
+    """Return (fontname_str, fontfile_bytes_or_None) for use in redact."""
+    fb, is_sub = extract_font_for_edit(doc, page, edit["fontName"])
+    if fb:
+        # Verify the new text's glyphs are in the subset
+        # (simplified: trust the font if it's not a subset prefix ABCDEF+)
+        if not edit["fontName"][:6].isupper() or not edit["fontName"][6]=='+':
+            return None, fb   # full font — safe to use
+    return "helv", None       # fallback to Helvetica`,
+        pitfall: 'Subset fonts have a 6-char random prefix like "ABCDEF+TimesNewRoman". This means the embedded font ONLY contains glyphs that appeared in the original document. If the user types a character not in the original (e.g. the original used only ASCII and the user types an em-dash), the glyph will be a blank box. Detect this and fall back to Helvetica for that edit only.',
+      },
+      {
+        tag: 'be', name: 'Glyph availability check',
+        file: 'backend/converter/font_utils.py',
+        desc: 'Before using the extracted font for replacement, verify every character in newStr exists in the font\'s cmap. Use fonttools (pip install fonttools) to parse the extracted font bytes and check cmap coverage. If any character is missing, return ("helv", None) instead.',
+        code: `from fonttools import ttLib
+import io
+
+def all_glyphs_present(font_bytes, text):
+    try:
+        tt = ttLib.TTFont(io.BytesIO(font_bytes))
+        cmap = tt.getBestCmap()
+        if not cmap:
+            return False
+        return all(ord(ch) in cmap for ch in text)
+    except Exception:
+        return False`,
+      },
+      {
+        tag: 'fe', name: 'Font mismatch warning in UI',
+        file: 'frontend/src/components/InlineEditor.jsx',
+        desc: 'When the backend returns a header X-Font-Fallback: true in the export response, show a non-blocking toast: "Some edits use Helvetica (original font\'s glyph set too narrow to include your new characters)." This is the same thing WPS does silently — we do it transparently.',
+      },
+      {
+        tag: 'fe', name: 'Mobile keyboard repositioning',
+        file: 'frontend/src/components/InlineEditor.jsx',
+        desc: 'On mobile, the virtual keyboard shrinks the visible viewport. Use the VisualViewport API to recompute the InlineEditor\'s top position after the keyboard opens, ensuring the active editor stays visible above the keyboard.',
+        code: `useEffect(() => {
+  const vv = window.visualViewport;
+  if (!vv) return;
+  const reposition = () => {
+    const keyboardHeight = window.innerHeight - vv.height;
+    setKeyboardOffset(keyboardHeight);
+  };
+  vv.addEventListener('resize', reposition);
+  return () => vv.removeEventListener('resize', reposition);
+}, []);`,
+      },
+    ],
+    constraints: [
+      { icon: '⚠', text: 'fonttools adds ~4MB to your backend dependencies. Only import it in the font_utils module so it doesn\'t slow cold starts on the main FastAPI process.' },
+      { icon: '⚠', text: 'Some PDFs use Type3 fonts (glyphs drawn as paths, not characters). PyMuPDF cannot extract these in a form usable for text insertion. Always fall back to Helvetica for Type3 fonts.' },
+      { icon: '⚠', text: 'The VisualViewport API is not available on all older Android browsers. Gate it: if (!window.visualViewport) return — the editor will still work, just won\'t reposition on keyboard open.' },
+    ]
+  },
+];
+
+function renderTasks(tasks) {
+  return tasks.map((t, i) => {
+    const id = `task-${Math.random().toString(36).slice(2)}`;
+    const tagCls = { fe:'tag-fe', be:'tag-be', fs:'tag-fs', warn:'tag-warn' }[t.tag] || 'tag-fe';
+    const tagLabel = { fe:'Frontend', be:'Backend', fs:'Full-stack', warn:'Watch out' }[t.tag] || t.tag;
+    let inner = `<div class="task-header">
+      <span class="task-tag ${tagCls}">${tagLabel}</span>
+      <span class="task-name">${t.name}</span>
+      <span class="task-chevron">›</span>
+    </div>
+    <div class="task-file">${t.file}</div>
+    <div class="task-desc">
+      <div style="margin-bottom:6px;line-height:1.6;">${t.desc}</div>`;
+    if (t.code) {
+      inner += `<div class="code-block">${t.code.replace(/</g,'&lt;').replace(/>/g,'&gt;')}</div>`;
+    }
+    if (t.pitfall) {
+      inner += `<div class="pitfall-block"><b>Pitfall:</b> ${t.pitfall}</div>`;
+    }
+    inner += `</div>`;
+    return `<div class="task" id="${id}" onclick="toggleTask('${id}')">${inner}</div>`;
+  }).join('');
+}
+
+function renderFlow(flow) {
+  return '<div class="flow-strip">' + flow.map((f,i) =>
+    `<div class="flow-node" style="font-size:11px;padding:6px 10px;">${f}</div>` +
+    (i < flow.length-1 ? '<div class="flow-arr">›</div>' : '')
+  ).join('') + '</div>';
+}
+
+function renderConstraints(cs) {
+  return '<div class="constraint-list">' + cs.map(c =>
+    `<div class="constraint"><span class="constraint-icon">${c.icon}</span><span>${c.text}</span></div>`
+  ).join('') + '</div>';
+}
+
+const nav = document.getElementById('nav');
+const panels = document.getElementById('panels');
+
+phases.forEach((p, idx) => {
+  const btn = document.createElement('button');
+  btn.className = 'phase-btn' + (idx===0 ? ' active' : '');
+  btn.textContent = p.label + ' · ' + p.title.split(' ').slice(0,3).join(' ');
+  btn.onclick = () => {
+    document.querySelectorAll('.phase-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.phase-panel').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById(p.id).classList.add('active');
+  };
+  nav.appendChild(btn);
+
+  const panel = document.createElement('div');
+  panel.className = 'phase-panel' + (idx===0 ? ' active' : '');
+  panel.id = p.id;
+  panel.innerHTML = `
+    <div class="phase-header">
+      <div class="phase-label">${p.label}</div>
+      <div class="phase-title">${p.title}</div>
+      <div class="phase-meta">
+        <span><span class="dot ${p.color}"></span>${p.time}</span>
+        <span>${p.scope}</span>
+      </div>
+    </div>
+    <div style="font-size:14px;color:var(--color-text-secondary);line-height:1.65;margin-bottom:1rem;">${p.summary}</div>
+    <div class="section-title">Data flow</div>
+    ${renderFlow(p.flow)}
+    <div class="section-title">Tasks</div>
+    <div class="task-grid">${renderTasks(p.tasks)}</div>
+    <div class="section-title">Known pitfalls</div>
+    ${renderConstraints(p.constraints)}
+    <hr class="divider">
+    <button class="send-btn" onclick="sendPrompt('Show me the full code for Phase ${idx+1}: ${p.title}')">
+      Generate the full code for this phase ↗
+    </button>
+  `;
+  panels.appendChild(panel);
+});
+
+function toggleTask(id) {
+  const el = document.getElementById(id);
+  el.classList.toggle('open');
+}
+</script>
