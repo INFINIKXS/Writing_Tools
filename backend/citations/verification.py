@@ -16,8 +16,9 @@ def verify_matches_with_string_search(in_text_citations, references):
 
     def extract_first_author(text):
         """Extract the first author's bare surname from a citation or reference string."""
-        core = text.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip()
-        match = re.search(r'^([A-Za-z\'\-]+)', core)
+        core = text.split(' et al.')[0].split(' and ')[0].strip()
+        core = re.sub(r'^[\(\[\s]+', '', core)
+        match = re.search(r'^(?:\d+(?:\]|\)|\.)?\s*)?((?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{1,4})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+)', core)
         if match:
             surname = match.group(1).strip()
             surname = re.sub(r'\s+[A-Z]{1,3}$', '', surname).strip()
