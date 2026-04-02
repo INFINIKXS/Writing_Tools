@@ -61,6 +61,10 @@ async def verify_citations(file: UploadFile = File(...)):
             yield f"data: {json.dumps({'stage': 'error', 'message': 'No text could be extracted from the file.'})}\n\n"
             return
 
+        # Compress wide spacing/justified text formatting from PDF extraction 
+        # (This collapses multiple contiguous spaces to 1, preserving newlines)
+        full_text = re.sub(r' {2,}', ' ', full_text)
+
         word_count = len(full_text.split())
         yield f"data: {json.dumps({'stage': 'extracted', 'message': f'Extracted {word_count:,} words from document'})}\n\n"
         await asyncio.sleep(0.1)
