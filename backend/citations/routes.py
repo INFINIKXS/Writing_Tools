@@ -14,7 +14,7 @@ from core.config import KEY_MANAGER_AVAILABLE, get_api_key_manager
 from core.gemini import get_client, MAX_RETRIES, RETRY_BASE_DELAY
 from utils.text_extraction import extract_pdf_text, extract_docx_text, extract_doc_text
 from utils.text_utils import count_references_and_citations
-from citations.extraction import extract_reference_section, extract_citations_regex
+from citations.extraction import extract_reference_section, extract_citations_regex, detect_document_consistency_issues
 from citations.deduplication import deduplicate_references
 from citations.verification import verify_matches_with_string_search, cross_validate, extract_verbatim_references, detect_irregularities_deterministically
 from citations.formatting import apply_italic_formatting
@@ -242,6 +242,9 @@ Output in strict JSON format only:
                 python_citations,
                 analysis.get("references", [])
             )
+
+            # Document-level consistency warnings (and/& mixing, et al. comma inconsistency, etc.)
+            analysis["consistency_warnings"] = detect_document_consistency_issues(python_citations)
 
             num_cit = analysis.get("num_unique_citations", 0)
             num_ref = analysis.get("num_references", 0)

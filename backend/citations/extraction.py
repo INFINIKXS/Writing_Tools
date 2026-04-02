@@ -139,7 +139,117 @@ def check_formatting_irregularities(citation_text: str) -> list:
     # Check comma before parenthesis in narrative: "Name, (2020)"
     if re.search(r',\s*\(', citation_text):
         warnings.append("Extra comma before the opening parenthesis.")
+
+    # Check missing comma after "et al." before year in parenthetical: (Author et al. 2019)
+    if citation_text.startswith('(') and re.search(r'et\s+al\.\s+\d{4}', citation_text):
+        warnings.append('Missing comma after "et al." before the year — should be "et al., 2020".')
         
+    return warnings
+
+
+def detect_document_consistency_issues(citations_list: list) -> list:
+    """
+    Analyze all extracted citations for document-wide consistency issues.
+    Detects mixed usage of connectors (and/&), et al. comma placement, etc.
+    Returns a list of warning dicts with type, details, and grouped examples.
+    """
+    warnings = []
+
+    # ── Track usage patterns ──
+    # Parenthetical two-author: and vs & (only compare within same form)
+    par_and = []    # Parenthetical using "and": (Smith and Jones, 2020)
+    par_amp = []    # Parenthetical using "&":   (Smith & Jones, 2020)
+    # Narrative two-author: "and" is always correct; "&" is wrong
+    nar_amp = []    # Narrative using "&" (incorrect): Smith & Jones (2020)
+
+    etal_comma = []      # "et al.," (comma after period, inside parenthetical)
+    etal_no_comma = []   # "et al." (no comma, inside parenthetical)
+    etal_missing_period = []  # "et al" without period
+
+    for cit in citations_list:
+        text = cit.get("text", "")
+        cit_type = cit.get("type", "")
+
+        # ── and vs & (separated by citation form) ──
+        if cit_type == 'PAR_TWO':
+            if re.search(r'\band\b', text, re.IGNORECASE):
+                par_and.append(text)
+            elif '&' in text:
+                par_amp.append(text)
+        elif cit_type == 'NAR_TWO':
+            # In narrative, "and" is always correct — only flag "&"
+            if '&' in text:
+                nar_amp.append(text)
+
+        # ── et al. comma consistency (parenthetical only) ──
+        if cit_type in ('PAR_ETAL',) and 'et al' in text.lower():
+            if re.search(r'et\s+al\.,', text):
+                etal_comma.append(text)
+            elif re.search(r'et\s+al\.\s', text):
+                etal_no_comma.append(text)
+
+        # ── et al without period ──
+        if re.search(r'et\s+al(?!\.)', text):
+            etal_missing_period.append(text)
+
+    # ── Flag inconsistencies ──
+
+    # Parenthetical-only and/& mixing: (A and B, 2020) vs (C & D, 2021)
+    if par_and and par_amp:
+        warnings.append({
+            'type': 'INCONSISTENT_CONNECTOR',
+            'details': (
+                f'Mixed use of "and" ({len(par_and)} citation{"s" if len(par_and) != 1 else ""}) '
+                f'and "&" ({len(par_amp)} citation{"s" if len(par_amp) != 1 else ""}) '
+                f'in parenthetical two-author citations. Use one form consistently.'
+            ),
+            'groups': [
+                {'label': 'Uses "and"', 'count': len(par_and), 'examples': par_and[:3]},
+                {'label': 'Uses "&"', 'count': len(par_amp), 'examples': par_amp[:3]},
+            ],
+        })
+
+    # Narrative citations using "&" instead of "and"
+    if nar_amp:
+        warnings.append({
+            'type': 'INCORRECT_NARRATIVE_AMPERSAND',
+            'details': (
+                f'{len(nar_amp)} narrative citation{"s" if len(nar_amp) != 1 else ""} '
+                f'use{"s" if len(nar_amp) == 1 else ""} "&" instead of "and". '
+                f'In narrative (in-text) citations, "and" is the correct connector.'
+            ),
+            'groups': [
+                {'label': 'Should use "and"', 'count': len(nar_amp), 'examples': nar_amp[:3]},
+            ],
+        })
+
+    if etal_comma and etal_no_comma:
+        warnings.append({
+            'type': 'INCONSISTENT_ET_AL_COMMA',
+            'details': (
+                f'Mixed use of "et al.," ({len(etal_comma)} citation{"s" if len(etal_comma) != 1 else ""}) '
+                f'and "et al." without comma ({len(etal_no_comma)} citation{"s" if len(etal_no_comma) != 1 else ""}) '
+                f'inside parenthetical citations. The comma placement after "et al." should be consistent.'
+            ),
+            'groups': [
+                {'label': 'Has comma: "et al.,"', 'count': len(etal_comma), 'examples': etal_comma[:3]},
+                {'label': 'No comma: "et al."', 'count': len(etal_no_comma), 'examples': etal_no_comma[:3]},
+            ],
+        })
+
+    if etal_missing_period:
+        warnings.append({
+            'type': 'MISSING_ET_AL_PERIOD',
+            'details': (
+                f'"et al" appears without its period in {len(etal_missing_period)} '
+                f'citation{"s" if len(etal_missing_period) != 1 else ""}. '
+                f'It should always be written as "et al." (with a period).'
+            ),
+            'groups': [
+                {'label': 'Missing period', 'count': len(etal_missing_period), 'examples': etal_missing_period[:3]},
+            ],
+        })
+
     return warnings
 
 

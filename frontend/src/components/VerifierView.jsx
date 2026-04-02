@@ -408,6 +408,43 @@ export default function VerifierView() {
                         </div>
                     )}
 
+                    {results.consistency_warnings?.length > 0 && (
+                        <div className="glass-card overflow-hidden border border-cyan-500/20 mb-3">
+                            <div className="bg-cyan-500/5 border-b border-cyan-500/10 px-5 py-3 flex items-center gap-2">
+                                <AlertCircle size={16} className="text-cyan-400" />
+                                <h3 className="text-sm font-bold text-cyan-200">Document Consistency Issues ({results.consistency_warnings.length})</h3>
+                                <span className="ml-auto text-[9px] uppercase tracking-widest text-cyan-400/60 bg-cyan-500/10 px-2 py-0.5 rounded-full">Document-Wide</span>
+                            </div>
+                            <div className="p-4 max-h-[400px] overflow-y-auto space-y-4">
+                                {results.consistency_warnings.map((warning, i) => (
+                                    <div key={i} className="bg-white/[0.02] p-4 rounded-xl border border-white/5 border-l-4 border-l-cyan-500/30">
+                                        <span className="inline-block text-[9px] font-bold uppercase tracking-widest text-cyan-400 bg-cyan-500/10 border border-cyan-500/20 px-2 py-0.5 rounded mb-3">
+                                            {warning.type?.replace(/_/g, ' ')}
+                                        </span>
+                                        <p className="text-sm text-neutral-300 mb-3">{warning.details}</p>
+                                        {warning.groups?.length > 0 && (
+                                            <div className={`grid gap-3 ${warning.groups.length > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
+                                                {warning.groups.map((group, j) => (
+                                                    <div key={j} className="bg-white/3 p-3 rounded-lg border border-white/5">
+                                                        <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500 mb-2">
+                                                            {group.label} <span className="text-cyan-400/70">({group.count})</span>
+                                                        </div>
+                                                        {group.examples?.map((ex, k) => (
+                                                            <div key={k} className="font-mono text-xs text-neutral-300 bg-white/[0.03] px-2 py-1.5 rounded mb-1 border border-white/5">{ex}</div>
+                                                        ))}
+                                                        {group.count > 3 && (
+                                                            <div className="text-[10px] text-neutral-600 mt-1">...and {group.count - 3} more</div>
+                                                        )}
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {results.string_verification?.confirmed_matches?.length > 0 && (() => {
                         const detectedStyle = results.detected_style || 'apa';
                         const isVancouver = detectedStyle === 'vancouver';
