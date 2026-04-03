@@ -1,156 +1,166 @@
 import fitz
+import io
+import json
+import logging
 from fastapi import APIRouter, UploadFile, Form, File
 from fastapi.responses import StreamingResponse
-import json
-import io
-from .font_utils import get_usable_font
+from .font_utils import get_font_for_edit
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Module-level: prevents PyMuPDF from using max ascender/descender heights,
 # which cause redaction boxes to bleed into adjacent lines.
 fitz.TOOLS.set_small_glyph_heights(True)
 
-# Get Helvetica metrics once — reuse for all edits
-_helv = fitz.Font("helv")
-HELV_ASCENDER  = _helv.ascender   # ~0.7179  (above baseline)
-HELV_DESCENDER = _helv.descender  # ~-0.2821 (below baseline)
 
 @router.post("/apply-edits")
-async def apply_edits(file: UploadFile = File(...), edits: str = Form(...)):
-    data = await file.read()
+async def apply_edits(
+    file:  UploadFile = File(...),
+    edits: str        = Form(...),
+):
+    data       = await file.read()
     edits_list = json.loads(edits)
-    
-    # Open from bytes so we don't overwrite any local disk file
+
     doc = fitz.open(stream=data, filetype="pdf")
 
+    # Accumulate warnings to return to the frontend
+    warnings = []
 
     for edit in edits_list:
-        # 1-indexed to 0-indexed translation
-        page = doc[edit["pageNum"] - 1]       
-        
-        # Coordinates arrived from frontend already in MuPDF space (via Util.transform at scale=1)
-        x0 = edit["rect"]["x"]
-        y0 = edit["rect"]["y"]
-        x1 = x0 + edit["rect"]["w"]
-        y1 = y0 + edit["rect"]["h"]
-        
-        # Initial fontsize from frontend — overridden below by span data if available
-        frontend_fontsize = edit["origFontSize"] + edit.get("fontSizeAdj", 0)
+        page     = doc[edit["pageNum"] - 1]
+        new_text = edit.get("newStr", "")
 
-        # ── THE BULLETPROOF SPAN LOOKUP ──
-        # Ask PyMuPDF for the exact metrics of the target span *before* choosing
-        # the font — so we can pass authoritative bold/italic flags to get_usable_font.
-        true_origin_x = None
-        true_origin_y = None
-        true_bbox     = None
-        true_fontsize = None
-        true_is_bold  = None   # from span["flags"] bit 4
-        true_is_italic = None  # from span["flags"] bit 1
-        original_color = (0, 0, 0)
-        try:
-            search_rect = fitz.Rect(x0 - 2, y0 - 2, x1 + 2, y1 + 2)
-            text_dict = page.get_text("dict", clip=search_rect)
-            orig_str = edit.get("origStr", "").strip()
-            best_span = None
+        # ── Coordinates (all in MuPDF space via Util.transform at scale=1) ──
+        x0       = edit["rect"]["x"]
+        y0       = edit["rect"]["y"]
+        x1       = x0 + edit["rect"]["w"]
+        y1       = y0 + edit["rect"]["h"]
+        origin_y = edit.get("origin_y", y1 - 2)
+        fontsize = edit.get("origFontSize", 11) + edit.get("fontSizeAdj", 0)
+        fontsize = max(4.0, fontsize)  # MuPDF minimum
 
-            for block in text_dict.get("blocks", []):
-                for line in block.get("lines", []):
-                    for span in line.get("spans", []):
-                        span_text = span.get("text", "").strip()
-                        if span_text == orig_str:
-                            best_span = span
-                            break
-                        if best_span is None and orig_str in span_text:
-                            best_span = span
-                    if best_span and best_span.get("text", "").strip() == orig_str:
-                        break
-                if best_span and best_span.get("text", "").strip() == orig_str:
-                    break
+        # ── Font resolution ──────────────────────────────────────────────────
+        font_result = get_font_for_edit(doc, page, edit)
 
-            if best_span:
-                flags = best_span.get("flags", 0)
-                true_origin_x  = best_span["origin"][0]
-                true_origin_y  = best_span["origin"][1]
-                true_bbox      = best_span["bbox"]
-                true_fontsize  = best_span["size"]
-                true_is_bold   = bool(flags & 16)   # bit 4 = bold
-                true_is_italic = bool(flags & 2)    # bit 1 = italic
-                hex_color = best_span.get("color", 0)
-                original_color = (
-                    ((hex_color >> 16) & 255) / 255.0,
-                    ((hex_color >> 8)  & 255) / 255.0,
-                    (hex_color         & 255) / 255.0,
-                )
-        except Exception as e:
-            print(f"Span lookup failed: {e}")
+        if font_result.fallback_used:
+            warning_entry = {
+                "pageNum":  edit["pageNum"],
+                "origStr":  edit.get("origStr", ""),
+                "reason":   font_result.fallback_reason,
+            }
+            if font_result.missing_glyphs:
+                warning_entry["missingGlyphs"] = font_result.missing_glyphs
+            warnings.append(warning_entry)
+            logger.warning(
+                f"Page {edit['pageNum']}: font fallback used. "
+                f"Reason: {font_result.fallback_reason}"
+            )
 
-        # Build an enriched edit that layers PyMuPDF-derived bold/italic on top of
-        # the frontend values.  If the user explicitly chose a custom font family,
-        # their UI toggle choices take precedence; otherwise use span flags.
-        user_chose_custom = bool(
-            edit.get("customFontFamily") and edit.get("customFontFamily") != "Original"
-        )
-        enriched_edit = {
-            **edit,
-            "isBold":   edit.get("isBold", False)   if user_chose_custom else (true_is_bold   if true_is_bold   is not None else edit.get("isBold",   False)),
-            "isItalic": edit.get("isItalic", False) if user_chose_custom else (true_is_italic if true_is_italic is not None else edit.get("isItalic", False)),
-        }
+        # Register the font with this page so insert_text can find it
+        if font_result.font_buffer:
+            page.insert_font(
+                fontname=font_result.fontname,
+                fontbuffer=font_result.font_buffer,
+            )
+        # (Base-14 and pymupdf-fonts codes need no pre-registration)
 
-        # Attempt typography match using the fully-enriched edit
-        final_fontname, font_bytes = get_usable_font(doc, page, enriched_edit)
-        if font_bytes:
-            page.insert_font(fontname=final_fontname, fontbuffer=font_bytes)
+        # ── Determine insert color ───────────────────────────────────────────
+        insert_color = _resolve_color(page, edit, x0, y0, x1, y1)
 
-        # Honour an explicit color chosen in the editor; otherwise use sampled PDF color
-        explicit_color = edit.get("color")
-        if explicit_color and explicit_color.startswith("#") and len(explicit_color) == 7:
-            r_ch = int(explicit_color[1:3], 16) / 255.0
-            g_ch = int(explicit_color[3:5], 16) / 255.0
-            b_ch = int(explicit_color[5:7], 16) / 255.0
-            insert_color = (r_ch, g_ch, b_ch)
-        else:
-            insert_color = original_color
+        # ── Erase the original text ──────────────────────────────────────────
+        # draw_rect paints at the graphics layer — covers fill text, stroke text,
+        # and vector drawings unconditionally. This handles bold text rendered
+        # with stroke+fill mode (render mode 2) which add_redact_annot misses.
+        ascender_h  = edit.get("ascender_h",  fontsize * 0.8)
+        descender_h = edit.get("descender_h", fontsize * 0.2)
 
-        # Ensure the page content stream is in a balanced state before drawing
+        erase_y0 = origin_y - ascender_h
+        erase_y1 = origin_y + descender_h
+
+        # Ensure page content stream is balanced before drawing
         if not page.is_wrapped:
             page.wrap_contents()
 
-        # Final insertion coordinates — span data when available, frontend fallback otherwise
-        origin_x = true_origin_x if true_origin_x is not None else x0
-        origin_y = true_origin_y if true_origin_y is not None else edit.get("origin_y", y1 - 2)
-        fontsize  = (true_fontsize if true_fontsize is not None else edit["origFontSize"]) + edit.get("fontSizeAdj", 0)
-
-        # ── Erase rect: use span bbox (pixel-tight) or ratio fallback ──
-        if true_bbox:
-            erase_rect = fitz.Rect(
-                true_bbox[0] - 1,
-                true_bbox[1],
-                true_bbox[2] + 1,
-                true_bbox[3],
-            )
-        else:
-            safe_ascender  = fontsize * 0.75
-            safe_descender = fontsize * 0.25
-            erase_rect = fitz.Rect(x0 - 1, origin_y - safe_ascender, x1 + 1, origin_y + safe_descender)
+        erase_rect = fitz.Rect(x0 - 1, erase_y0 - 1, x1 + 1, erase_y1 + 1)
         page.draw_rect(erase_rect, color=(1, 1, 1), fill=(1, 1, 1))
 
-        # Insert new text
+        # ── Insert new text at the baseline ─────────────────────────────────
         page.insert_text(
-            fitz.Point(origin_x, origin_y),
-            edit["newStr"],
-            fontname=final_fontname,
+            fitz.Point(x0, origin_y),
+            new_text,
+            fontname=font_result.fontname,
             fontsize=fontsize,
             color=insert_color,
         )
 
+    # ── Subset embedded fonts to keep file size reasonable ──────────────────
+    # Only subsets newly embedded fonts; original subset fonts are untouched.
+    try:
+        doc.subset_fonts()
+    except Exception as e:
+        logger.warning(f"subset_fonts() failed (non-fatal): {e}")
 
+    # ── Serialise ────────────────────────────────────────────────────────────
     buf = io.BytesIO()
     doc.save(buf, garbage=4, deflate=True)
     buf.seek(0)
-    
+
+    # Encode warnings as a response header so the frontend can read them
+    # without having to parse a multipart body.
+    # Max header size is ~8 KB; warnings are short strings so this is safe.
+    import urllib.parse
+    warnings_header = urllib.parse.quote(json.dumps(warnings)) if warnings else ""
+
     return StreamingResponse(
-        buf, 
+        buf,
         media_type="application/pdf",
-        headers={"Content-Disposition": "attachment; filename=edited.pdf", "Access-Control-Expose-Headers": "Content-Disposition"}
+        headers={
+            "Content-Disposition":        "attachment; filename=edited.pdf",
+            "Access-Control-Expose-Headers": "Content-Disposition, X-Font-Warnings",
+            "X-Font-Warnings":            warnings_header,
+        },
     )
+
+
+# ── Helper: resolve the text color to use ────────────────────────────────────
+
+def _resolve_color(
+    page:  fitz.Page,
+    edit:  dict,
+    x0: float, y0: float, x1: float, y1: float,
+) -> tuple:
+    """
+    Priority:
+      1. Explicit hex color chosen by the user in the editor (#rrggbb).
+      2. Color sampled from the original PDF span at the edit's bbox.
+      3. Black (0, 0, 0).
+    """
+    explicit = edit.get("color", "")
+    if explicit and explicit.startswith("#") and len(explicit) == 7:
+        try:
+            return (
+                int(explicit[1:3], 16) / 255.0,
+                int(explicit[3:5], 16) / 255.0,
+                int(explicit[5:7], 16) / 255.0,
+            )
+        except ValueError:
+            pass
+
+    # Sample from the PDF's own text data
+    try:
+        clip     = fitz.Rect(x0, y0, x1, y1)
+        text_dict = page.get_text("dict", clip=clip)
+        for block in text_dict.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    srgb = span.get("color", 0)
+                    return (
+                        ((srgb >> 16) & 255) / 255.0,
+                        ((srgb >>  8) & 255) / 255.0,
+                        ( srgb        & 255) / 255.0,
+                    )
+    except Exception:
+        pass
+
+    return (0.0, 0.0, 0.0)  # default black

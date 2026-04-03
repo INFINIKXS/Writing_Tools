@@ -45,6 +45,8 @@ export default function PDFEditorPage() {
     }
   };
 
+  const [fontWarnings, setFontWarnings] = useState([]);
+
   /**
    * Called after every inline edit commit.
    * Immediately sends the original file + ALL accumulated edits to the backend
@@ -64,6 +66,20 @@ export default function PDFEditorPage() {
 
       const res = await fetch('http://localhost:8000/api/pdf/apply-edits', { method: 'POST', body: fd });
       if (!res.ok) throw new Error(`Live bake failed: ${res.status}`);
+      
+      const warningsHeader = res.headers.get('X-Font-Warnings');
+      if (warningsHeader) {
+        try {
+          const parsedWarnings = JSON.parse(decodeURIComponent(warningsHeader));
+          if (parsedWarnings && parsedWarnings.length > 0) {
+            setFontWarnings(parsedWarnings);
+            // Auto dismiss toast after 8s
+            setTimeout(() => setFontWarnings([]), 8000);
+          }
+        } catch (e) {
+          console.error("Failed to parse font warnings", e);
+        }
+      }
 
       const blob = await res.blob();
 
@@ -242,6 +258,36 @@ export default function PDFEditorPage() {
            onLivePreview={handleLivePreview}
          />
       </div>
+
+      {/* Font Fallback Warnings Toast */}
+      {fontWarnings.length > 0 && (
+        <div className="absolute bottom-6 right-8 z-[300] flex flex-col gap-3 max-w-md w-full">
+          {fontWarnings.map((warn, idx) => (
+            <div key={idx} className="bg-amber-50 border-l-4 border-amber-500 shadow-xl rounded-r-lg p-4 animate-in slide-in-from-bottom-5 fade-in duration-300">
+              <div className="flex justify-between items-start gap-3">
+                <div className="flex-1">
+                  <h3 className="text-amber-800 font-semibold text-sm">Font Fallback Used (Page {warn.pageNum})</h3>
+                  <p className="text-amber-700 text-xs mt-1.5 leading-relaxed">{warn.reason}</p>
+                  {warn.missingGlyphs && warn.missingGlyphs.length > 0 && (
+                     <p className="text-amber-600 font-mono text-[10px] mt-2 bg-amber-100/50 p-1 rounded">
+                       Missing: {warn.missingGlyphs.join(", ")}
+                     </p>
+                  )}
+                </div>
+                <button 
+                  onClick={() => setFontWarnings(prev => prev.filter((_, i) => i !== idx))}
+                  className="text-amber-400 hover:text-amber-700 transition-colors shrink-0"
+                >
+                  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
     </div>
   );
 }
