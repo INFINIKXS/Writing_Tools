@@ -1,7 +1,11 @@
 import fitz
+import io
+import re
 import logging
 from dataclasses import dataclass, field
 from typing import Optional
+from fontTools.ttLib import TTFont
+from fontTools.ttLib.tables._c_m_a_p import cmap_format_4
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +65,10 @@ def get_font_for_edit(doc: fitz.Document, page: fitz.Page, edit: dict) -> FontRe
     extracted = _extract_matching_font(doc, page, font_name)
 
     if extracted is not None:
-        font_bytes, matched_basefont = extracted
+        font_bytes, matched_basefont, xref = extracted
+        
+        # ── Step 1.5: Inject OS Cmap for subsets ────────────────────────────
+        font_bytes = _inject_cmap(font_bytes, doc, xref)
 
         # ── Step 2: Validate — can MuPDF parse these bytes? ─────────────────
         try:
@@ -139,19 +146,21 @@ def _extract_matching_font(
     target = font_name.split("+")[-1].lower().replace(" ", "").replace("-", "")
 
     for entry in page.get_fonts(full=True):
-        # entry = (xref, ext, type, basefont, name, encoding, [referencer])
+        # entry = (xref, ext, type, basefont, name, encoding, ...)
         xref      = entry[0]
         ext       = entry[1]   # "ttf", "cff", "cid", "n/a", etc.
         basefont  = entry[3]
+        refname   = entry[4] if len(entry) > 4 else ""
 
         # Skip fonts with no extractable binary
         if ext == "n/a":
             continue
 
         candidate = basefont.split("+")[-1].lower().replace(" ", "").replace("-", "")
+        refname_candidate = refname.lower().replace(" ", "").replace("-", "")
 
-        # Require at least a partial match (e.g. "timesnewroman" in "timesnewromanpsmt")
-        if not (target in candidate or candidate in target):
+        # Require at least a partial match on basefont OR an exact match on refname
+        if not (target in candidate or candidate in target or target == refname_candidate):
             continue
 
         try:
@@ -161,7 +170,7 @@ def _extract_matching_font(
             font_bytes = font_data[-1]
             if not font_bytes or len(font_bytes) < 64:
                 continue
-            return (font_bytes, basefont)
+            return (font_bytes, basefont, xref)
         except Exception as e:
             logger.debug(f"extract_font({xref}) failed: {e}")
             continue
@@ -273,3 +282,79 @@ def _fallback(
         fallback_reason=full_reason,
         missing_glyphs=[],
     )
+
+
+def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int) -> bytes:
+    """
+    Subverts PyMuPDF's failure to natively render Identity-H subsets by wrapping the
+    raw extracted font block in fontTools, parsing the PDF's /ToUnicode byte stream,
+    and explicitly injecting a WinAnsi cmap subtable into the header.
+    """
+    try:
+        font_dict = doc.xref_object(xref)
+        if "/ToUnicode" not in font_dict:
+            return font_bytes
+            
+        parts = font_dict.split("/ToUnicode")
+        if len(parts) < 2:
+            return font_bytes
+            
+        tu_xref = int(parts[1].split()[0])
+        cmap_data = doc.xref_stream(tu_xref).decode(errors="ignore")
+        
+        uni_to_cid = {}
+        for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', cmap_data):
+            cid = int(m.group(1), 16)
+            uni = int(m.group(2), 16)
+            uni_to_cid[uni] = cid
+            
+        for m in re.finditer(r'<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>', cmap_data):
+            start_cid = int(m.group(1), 16)
+            end_cid = int(m.group(2), 16)
+            start_uni = int(m.group(3), 16)
+            for offset in range(end_cid - start_cid + 1):
+                uni_to_cid[start_uni + offset] = start_cid + offset
+
+        if not uni_to_cid:
+            return font_bytes
+
+        tt = TTFont(io.BytesIO(font_bytes))
+        
+        # Build mapping from unicode to actual glyph name stored in the TTF
+        glyph_order = tt.getGlyphOrder()
+        new_cmap = {}
+        for uni, cid in uni_to_cid.items():
+            if cid < len(glyph_order):
+                new_cmap[uni] = glyph_order[cid]
+            else:
+                gname = f"cid{cid:05d}"
+                if gname in glyph_order:
+                    new_cmap[uni] = gname
+                    
+        if not new_cmap:
+            return font_bytes
+
+        cmap_table = tt.get('cmap')
+        if not cmap_table:
+            tt['cmap'] = tt.getTableClass('cmap')()
+            tt['cmap'].tableVersion = 0
+            tt['cmap'].tables = []
+            
+        new_subtable = cmap_format_4(4)
+        new_subtable.platformID = 3
+        new_subtable.platEncID = 1
+        new_subtable.language = 0
+        new_subtable.cmap = new_cmap
+        
+        cmap_table = tt['cmap']
+        cmap_table.tables = [t for t in cmap_table.tables if not (t.platformID == 3 and t.platEncID == 1)]
+        cmap_table.tables.append(new_subtable)
+        
+        out = io.BytesIO()
+        tt.save(out)
+        logger.info(f"Successfully injected ToUnicode CMap matrix into {len(new_cmap)} subsets.")
+        return out.getvalue()
+        
+    except Exception as e:
+        logger.warning(f"CMap injection failed (falling back to raw subset bounds): {e}")
+        return font_bytes

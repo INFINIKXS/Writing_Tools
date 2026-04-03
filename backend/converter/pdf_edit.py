@@ -41,6 +41,9 @@ async def apply_edits(
         fontsize = max(4.0, fontsize)  # MuPDF minimum
 
         # ── Font resolution ──────────────────────────────────────────────────
+        # PDF.js on the frontend generates synthetic names (like "g_d0_f9") for fonts.
+        # We must map this back to the genuine PyMuPDF BaseFont by sampling the spatial coordinates.
+        edit["fontName"] = _resolve_font_name(page, edit, x0, y0, x1, y1)
         font_result = get_font_for_edit(doc, page, edit)
 
         if font_result.fallback_used:
@@ -86,13 +89,43 @@ async def apply_edits(
         page.draw_rect(erase_rect, color=(1, 1, 1), fill=(1, 1, 1))
 
         # ── Insert new text at the baseline ─────────────────────────────────
-        page.insert_text(
-            fitz.Point(x0, origin_y),
-            new_text,
-            fontname=font_result.fontname,
-            fontsize=fontsize,
-            color=insert_color,
-        )
+        # Subset fonts notoriously exclude the Space (U+0020) glyph, relying instead
+        # on positional kerning (TJ arrays) in the PDF. We measure the space width
+        # to ensure it exists; if missing, we manually advance the cursor between words.
+        try:
+            if font_result.font_buffer:
+                measure_font = fitz.Font(fontbuffer=font_result.font_buffer)
+            else:
+                measure_font = fitz.Font(fontname=font_result.fontname)
+            space_width = measure_font.text_length(" ", fontsize=fontsize)
+        except Exception:
+            space_width = 0.0
+
+        if space_width < fontsize * 0.1:
+            fallback_space = fontsize * 0.25  # Standard 1/4 em space
+            cursor_x = x0
+            for word in new_text.split(" "):
+                if word:
+                    page.insert_text(
+                        fitz.Point(cursor_x, origin_y),
+                        word,
+                        fontname=font_result.fontname,
+                        fontsize=fontsize,
+                        color=insert_color,
+                    )
+                    try:
+                        cursor_x += measure_font.text_length(word, fontsize=fontsize)
+                    except Exception:
+                        cursor_x += len(word) * (fontsize * 0.5)
+                cursor_x += fallback_space
+        else:
+            page.insert_text(
+                fitz.Point(x0, origin_y),
+                new_text,
+                fontname=font_result.fontname,
+                fontsize=fontsize,
+                color=insert_color,
+            )
 
     # ── Subset embedded fonts to keep file size reasonable ──────────────────
     # Only subsets newly embedded fonts; original subset fonts are untouched.
@@ -164,3 +197,35 @@ def _resolve_color(
         pass
 
     return (0.0, 0.0, 0.0)  # default black
+
+# ── Helper: resolve the true font name via spatial lookup ────────────────────
+
+def _resolve_font_name(
+    page:  fitz.Page,
+    edit:  dict,
+    x0: float, y0: float, x1: float, y1: float,
+) -> str:
+    """
+    If the frontend sends a synthetic PDF.js font ID (like "g_d0_f9"), we query
+    PyMuPDF's spatial text dictionary at the edit coordinates *before* erasure
+    to extract the actual document root BaseFont name (like "DejaVuSans").
+    """
+    original_font = edit.get("fontName", "")
+    
+    # Check if it looks like a generated ID, or just always try to sample if possible
+    # We will try sampling for everything to be safe. PDF.js usually uses "g_d...", "F1", etc.
+    try:
+        # We add a slight margin just in case the client tight-cropped the bbox
+        clip = fitz.Rect(x0 - 1, y0, x1 + 1, y1)
+        text_dict = page.get_text("dict", clip=clip)
+        for block in text_dict.get("blocks", []):
+            for line in block.get("lines", []):
+                for span in line.get("spans", []):
+                    found_font = span.get("font")
+                    if found_font:
+                        # Return the true underlying font name immediately
+                        return found_font
+    except Exception:
+        pass
+        
+    return original_font
