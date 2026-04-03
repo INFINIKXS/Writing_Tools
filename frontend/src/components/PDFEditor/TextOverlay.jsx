@@ -54,7 +54,7 @@ function ScaledTextSpan({ text, origText, fontFamily, fontSize, fontWeight, font
   );
 }
 
-export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, edits = [], pageNum }) {
+export function TextOverlay({ items, scale, selectedIdx, onSelect, edits = [] }) {
   if (!items || items.length === 0) return null;
 
   return (
@@ -62,14 +62,11 @@ export function TextOverlay({ items, pageHeight, scale, selectedIdx, onSelect, e
       {items.map((item, i) => {
         if (!item.str || item.str.trim() === '') return null;
 
-        const r = pdfToScreen(item, pageHeight, scale);
-
-        const screenBaselineY = (pageHeight - item.y) * scale;
-        const fontPx = item.fontSize * scale;
+        const r = pdfToScreen(item, scale);
         
-        // Typical typographic bounds: ~0.8em above baseline, ~0.25em below baseline
-        const boxTop = screenBaselineY - (fontPx * 0.85);
-        const boxHeight = fontPx * 1.2;
+        // Exact top left bounds via MuPDF combined matrix transform
+        const boxTop = r.y;
+        const boxHeight = r.h;
 
         const hasEdit = edits.find(e => e.nodeIndex === i);
 

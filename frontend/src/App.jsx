@@ -51,9 +51,9 @@ function App() {
     <div className="flex h-screen">
 
       {/* ─── Icon Sidebar ─── */}
-      <aside className="hidden md:flex flex-col items-center w-[88px] py-6 px-2 m-3 mr-0 glass-card-static shrink-0">
+      <aside className="hidden md:flex flex-col items-center w-[88px] py-4 px-2 m-3 mr-0 glass-card-static shrink-0 overflow-y-auto overflow-x-hidden hidden-scrollbar">
         {/* Logo */}
-        <div className="mb-8">
+        <div className="mb-5">
           <div className="w-12 h-12 rounded-xl flex items-center justify-center">
             <Logo size={36} />
           </div>

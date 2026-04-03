@@ -1,4 +1,4 @@
-import React, { useState, useCallback } from 'react';
+import React, { useState, useCallback, useRef, useMemo } from 'react';
 import Toolbar from '../components/PDFEditor/Toolbar';
 import PDFViewer from '../components/PDFEditor/Viewer';
 import { applyTextAnnotations } from '../utils/pdfModifier';
@@ -14,6 +14,20 @@ export default function PDFEditorPage() {
   const [isWandActive, setIsWandActive] = useState(false);
   const [defaultStyle, setDefaultStyle] = useState({ font: 'Helvetica', size: 16 });
 
+  // Live preview: blob URL of the most recently baked PDF from the backend.
+  // When set, the viewer displays this instead of the raw upload.
+  const [livePreviewUrl, setLivePreviewUrl] = useState(null);
+  const [isLiveBaking, setIsLiveBaking] = useState(false);
+  const prevLiveUrlRef = useRef(null);
+
+  // Stable file reference — only changes when livePreviewUrl or currentFile actually changes.
+  // Without useMemo, { url: livePreviewUrl } creates a new object every render,
+  // making react-pdf think the file changed and killing the pdf.js workers unnecessarily.
+  const viewerFile = useMemo(
+    () => livePreviewUrl ? { url: livePreviewUrl } : currentFile,
+    [livePreviewUrl, currentFile]
+  );
+
   const handleUpload = (file) => {
     if (!file) return;
     setCurrentFile(file);
@@ -23,7 +37,58 @@ export default function PDFEditorPage() {
     };
     reader.readAsArrayBuffer(file);
     setAnnotations([]);
+    // Clear any live preview from a previous document
+    setLivePreviewUrl(null);
+    if (prevLiveUrlRef.current) {
+      URL.revokeObjectURL(prevLiveUrlRef.current);
+      prevLiveUrlRef.current = null;
+    }
   };
+
+  /**
+   * Called after every inline edit commit.
+   * Immediately sends the original file + ALL accumulated edits to the backend
+   * and reloads the viewer with the freshly baked PDF blob.
+   */
+  const handleLivePreview = useCallback(async () => {
+    if (!currentFile) return;
+    const inlineEdits = pdfEditStore.getEdits(activeFileId);
+    if (inlineEdits.length === 0) return;
+
+    setIsLiveBaking(true);
+    try {
+      const fd = new FormData();
+      // Always bake from the ORIGINAL upload so edits don't compound each other
+      fd.append('file', currentFile, 'document.pdf');
+      fd.append('edits', JSON.stringify(inlineEdits));
+
+      const res = await fetch('http://localhost:8000/api/pdf/apply-edits', { method: 'POST', body: fd });
+      if (!res.ok) throw new Error(`Live bake failed: ${res.status}`);
+
+      const blob = await res.blob();
+
+      // ── Make the baked PDF the new editing baseline ──
+      // Converting the blob to a File + ArrayBuffer means the next bake sends
+      // this already-baked version as the source, naturally compounding edits.
+      // Clearing the store removes CSS overlays that would otherwise double-render
+      // on top of the already-baked canvas content.
+      const bakedFile = new File([blob], currentFile.name || 'document.pdf', { type: 'application/pdf' });
+      const bakedBytes = await blob.arrayBuffer();
+
+      pdfEditStore.clear(activeFileId);   // edits are now baked-in, overlays no longer needed
+      setCurrentFile(bakedFile);           // triggers viewer to load the baked PDF
+      setFileBytes(bakedBytes);
+
+      // No blob URL needed — currentFile IS the baked PDF now
+      if (prevLiveUrlRef.current) URL.revokeObjectURL(prevLiveUrlRef.current);
+      prevLiveUrlRef.current = null;
+      setLivePreviewUrl(null);
+    } catch (err) {
+      console.error('Live preview error:', err);
+    } finally {
+      setIsLiveBaking(false);
+    }
+  }, [currentFile, fileBytes]);
 
   const handleAddText = () => {
     const newId = Date.now().toString() + Math.random().toString().slice(2, 6);
@@ -155,15 +220,26 @@ export default function PDFEditorPage() {
         isWandActive={isWandActive}
         onSave={handleSave}
       />
+      {/* Live baking indicator */}
+      {isLiveBaking && (
+        <div className="absolute top-16 left-1/2 -translate-x-1/2 z-[200] flex items-center gap-2 bg-white/90 border border-blue-200 shadow-md rounded-full px-4 py-1.5 text-xs text-blue-600 font-semibold backdrop-blur-sm">
+          <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8z"/>
+          </svg>
+          Baking preview…
+        </div>
+      )}
       <div className="flex-1 overflow-hidden p-6 relative">
          <PDFViewer 
-           file={currentFile} 
+           file={viewerFile} 
            scale={scale} 
            annotations={annotations}
            onUpdateAnnotation={updateAnnotation}
            onDeleteAnnotation={deleteAnnotation}
            onCanvasClick={handleCanvasClick}
            isWandActive={isWandActive}
+           onLivePreview={handleLivePreview}
          />
       </div>
     </div>

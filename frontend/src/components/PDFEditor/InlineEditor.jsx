@@ -11,32 +11,43 @@ const rgbToHex = (colorStr) => {
 
 const FONTS = ['Original', 'Arial', 'Times New Roman', 'Courier', 'Verdana', 'Georgia'];
 
-export function InlineEditor({ item, pageHeight, scale, onCommit, onCancel }) {
-  const [val, setVal] = useState(item.str);
+export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) {
+  const [val, setVal] = useState(existingEdit ? existingEdit.newStr : item.str);
   
   // Existing formatting
-  const [fontSizeAdj, setFontSizeAdj] = useState(0);
+  const [fontSizeAdj, setFontSizeAdj] = useState(existingEdit ? existingEdit.fontSizeAdj : 0);
   
   // New rich formatting
-  const [color, setColor] = useState(() => rgbToHex(item.color));
-  const [fontFamily, setFontFamily] = useState('Original');
+  const [color, setColor] = useState(() => existingEdit && existingEdit.color ? existingEdit.color : rgbToHex(item.color));
+  const [fontFamily, setFontFamily] = useState(existingEdit && existingEdit.customFontFamily ? existingEdit.customFontFamily : 'Original');
   const [isBold, setIsBold] = useState(() => {
+    if (existingEdit) return existingEdit.isBold;
     return item.renderedFontWeight === 'bold' || parseInt(item.renderedFontWeight) >= 600;
   });
-  const [isItalic, setIsItalic] = useState(() => item.renderedFontStyle === 'italic');
+  const [isItalic, setIsItalic] = useState(() => {
+    if (existingEdit) return existingEdit.isItalic;
+    return item.renderedFontStyle === 'italic';
+  });
   
   const [keyboardOffset, setKeyboardOffset] = useState(0);
   
-  const r = pdfToScreen(item, pageHeight, scale);
+  const r = pdfToScreen(item, scale);
   const fsize = Math.max(8, Math.round(item.fontSize * scale) + fontSizeAdj);
 
-  const textareaRef = useRef(null);
+  const spanRef = useRef(null);
 
   // Auto focus and place cursor at end
   useEffect(() => {
-    if (textareaRef.current) {
-      textareaRef.current.focus();
-      textareaRef.current.setSelectionRange(val.length, val.length);
+    if (spanRef.current) {
+      spanRef.current.focus();
+      try {
+        const range = document.createRange();
+        const sel = window.getSelection();
+        range.selectNodeContents(spanRef.current);
+        range.collapse(false);
+        sel.removeAllRanges();
+        sel.addRange(range);
+      } catch (e) {}
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -120,10 +131,11 @@ export function InlineEditor({ item, pageHeight, scale, onCommit, onCancel }) {
         </div>
       </div>
       
-      <textarea 
-        ref={textareaRef}
-        value={val}
-        onChange={e => setVal(e.target.value)}
+      <span
+        ref={spanRef}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={e => setVal(e.currentTarget.textContent)}
         onKeyDown={e => { 
           e.stopPropagation();
           if(e.key === 'Escape') onCancel();
@@ -140,28 +152,34 @@ export function InlineEditor({ item, pageHeight, scale, onCommit, onCancel }) {
         onMouseUp={e => e.stopPropagation()}
         className="shadow-xl"
         style={{
-          position: 'absolute', 
-          left: r.x - 2, 
-          // Match the precise typographic positioning from TextOverlay
-          top: ((pageHeight - item.y) * scale - (fsize * 0.85)) - keyboardOffset,
-          width: Math.max(r.w + 4, 150),
-          height: Math.max(fsize * 1.2, fsize * 1.6),
-          fontSize: fsize, 
-          lineHeight: 1.4,
-          fontFamily: currentFontFamily,
+          position: 'absolute',
+          top: item.top !== undefined ? item.top : r.y,
+          left: item.left !== undefined ? item.left : r.x,
+          transform: item.transform ? (keyboardOffset ? `translateY(${-keyboardOffset}px) ${item.transform}` : item.transform) : `translateY(${-keyboardOffset}px)`,
+          transformOrigin: '0% 0%',
+          fontFamily: fontFamily !== 'Original' ? currentFontFamily : (item.renderedFontFamily || 'sans-serif'),
+          fontSize: `${(item.renderedFontSize || fsize) + fontSizeAdj}px`,
           fontWeight: isBold ? 'bold' : 'normal',
           fontStyle: isItalic ? 'italic' : 'normal',
-          background: 'white',
-          border: '2px solid #2563EB',
-          borderRadius: 3, 
-          padding: '1px 3px',
-          resize: 'both', 
+          color: color,
+          whiteSpace: 'pre',
           outline: 'none',
+          background: 'transparent',
+          minWidth: '1ch',
+          display: 'block',
+          cursor: 'text',
           zIndex: 100,
-          whiteSpace: 'pre-wrap',
-          color: color
+
+          // -- The Box Model Fixes --
+          lineHeight: item.lineHeight || 'normal', // Use pdf.js's native line-height
+          textDecoration: 'underline',           
+          textDecorationStyle: 'dashed',         
+          textDecorationColor: '#3b82f6',        
+          textUnderlineOffset: '4px',            
         }}
-      />
+      >
+        {existingEdit ? existingEdit.newStr : item.str}
+      </span>
     </>
   );
 }

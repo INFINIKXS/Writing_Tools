@@ -43,7 +43,18 @@ export const pdfEditStore = {
       undoStacks.get(fileId).shift();
     }
 
-    store.get(fileId).push(edit);
+    const editsList = store.get(fileId);
+    const existingIdx = editsList.findIndex(e => e.pageNum === edit.pageNum && e.nodeIndex === edit.nodeIndex);
+    
+    if (existingIdx !== -1) {
+      // Preserve tracking coordinates (dx, dy) across multiple edit commits
+      const preservedDx = editsList[existingIdx].pdfDx;
+      const preservedDy = editsList[existingIdx].pdfDy;
+      editsList[existingIdx] = { ...edit, pdfDx: preservedDx || 0, pdfDy: preservedDy || 0 };
+    } else {
+      editsList.push(edit);
+    }
+    
     emit();
   },
 
