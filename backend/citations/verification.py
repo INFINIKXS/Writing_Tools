@@ -325,6 +325,8 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'|[A-Z]\.?\s*,?\s*\('
         r'|[A-Z]\.?\s*,'
         r'|\(\d{4}\)'
+        # Org-name references: "Department of Health. (2016)." or "World Health Organization. (2020)."
+        r'|(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\.?\s*\(\d{4}'
         r')',
     )
 
@@ -359,7 +361,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         
         is_org_name = org_name_pattern.match(stripped) and not is_continuation
         if is_org_name:
-            is_org_name = bool(has_year.search(stripped[:80]))
+            is_org_name = bool(has_year.search(stripped[:150]))
         
         is_new_ref = (ref_start_pattern.match(stripped) or is_org_name) and not is_continuation
         
@@ -412,9 +414,23 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     def extract_author_year(text):
         author = None
         year = None
-        author_match = re.match(r'^[^a-z]*?([A-Z][a-zA-Zà-öø-ÿ\'\-]+)', text.strip())
-        if author_match:
-            author = author_match.group(1).lower()
+        text_stripped = text.strip()
+        # Try multi-word org name first: "Department of Health" or "World Health Organization"
+        org_match = re.match(
+            r'^((?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)*[A-Z][a-zA-Zà-öø-ÿ\'\-]+)'
+            r'(?:\s*[.,]|\s*\()',
+            text_stripped
+        )
+        if org_match:
+            candidate = org_match.group(1).strip()
+            # Only use as org name if it contains multiple words (otherwise it's a surname)
+            if ' ' in candidate:
+                author = candidate.lower()
+        # Fallback: single surname
+        if not author:
+            author_match = re.match(r'^[^a-z]*?([A-Z][a-zA-Zà-öø-ÿ\'\-]+)', text_stripped)
+            if author_match:
+                author = author_match.group(1).lower()
         year_match = re.search(r'\b(19|20)\d{2}\b', text)
         if year_match:
             year = year_match.group(0)

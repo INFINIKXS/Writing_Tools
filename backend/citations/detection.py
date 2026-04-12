@@ -88,13 +88,13 @@ def detect_style_from_references(reference_list):
 
     # ── HARVARD ───────────────────────────────────────────────────────────
     # Author format: "Surname, I." — comma before initial, dot after (shared with APA)
+    # Detected early but scored ONLY if a uniquely-Harvard signal fires (see below).
     h1 = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z]\.', ref_block)
-    if h1:
-        scores['harvard'] += 4 * min(len(h1) / total_refs, 1)
-        evidence['harvard'].append(f'Harvard/APA author format "Surname, I." ({len(h1)} times)')
 
     # Title in single quotes: 'Title of article', — STRONGEST Harvard signal, unique to Harvard
-    h2 = re.findall(r"'[A-Z][^']{10,}'", ref_block)
+    # Tightened: opening ' must follow whitespace/paren, closing ' must precede punctuation.
+    # This prevents O'Connor-style apostrophe surnames from false-matching.
+    h2 = re.findall(r"(?<=[\s(])'[A-Z][^']{10,}'(?=[.,;:\s])", ref_block)
     if h2:
         scores['harvard'] += 15 * min(len(h2) / total_refs, 1)
         evidence['harvard'].append(f'Harvard single-quoted title ({len(h2)} entries)')
@@ -105,7 +105,7 @@ def detect_style_from_references(reference_list):
         scores['harvard'] += 12 * min(len(h3) / total_refs, 1)
         evidence['harvard'].append(f'Harvard year+title pattern "(YYYY) \'Title\'" ({len(h3)} entries)')
 
-    # "pp." page format: pp. 83-95
+    # "pp." page format: pp. 83-95  (also used by APA for book chapters — NOT uniquely Harvard)
     h4 = re.findall(r'\bpp\.\s*\d+[–\-]\d+', ref_block)
     if h4:
         scores['harvard'] += 8 * min(len(h4) / total_refs, 1)
@@ -123,8 +123,18 @@ def detect_style_from_references(reference_list):
         scores['harvard'] += 6 * min(len(h6) / total_refs, 1)
         evidence['harvard'].append(f'Harvard "(Accessed:" phrase ({len(h6)} entries)')
 
+    # h1 (shared author format) only contributes if at least one uniquely-Harvard signal fired.
+    # Without this gate, pure APA documents leak ~20% Harvard confidence since APA uses
+    # the identical "Surname, I." author format.
+    has_unique_harvard = bool(h2 or h3 or h5 or h6)
+    if h1 and has_unique_harvard:
+        scores['harvard'] += 4 * min(len(h1) / total_refs, 1)
+        evidence['harvard'].append(f'Harvard/APA author format "Surname, I." ({len(h1)} times)')
+
     # ── HARVARD SHARED OVERRIDE ──
-    if not (h2 or h3 or h5 or h6):
+    # Zero out if no uniquely-Harvard signals fired (h2/h3/h5/h6).
+    # h1 and h4 are shared with APA and not sufficient on their own.
+    if not has_unique_harvard:
         scores['harvard'] = 0
         evidence['harvard'] = []
 
@@ -221,17 +231,24 @@ def classify_single_reference(ref_text):
         scores['apa'] += 8
 
     # ── Harvard signals ──
-    if re.search(r'\b[A-Z][a-z]+,\s+[A-Z]\.', text):
+    _h1 = bool(re.search(r'\b[A-Z][a-z]+,\s+[A-Z]\.', text))
+    _h2 = bool(re.search(r"(?<=[\s(])'[A-Z][^']{10,}'(?=[.,;:\s])", text))
+    _h3 = bool(re.search(r"\(\d{4}[a-z]?\)\s+'", text))
+    _h4 = bool(re.search(r'\bpp\.\s*\d+[–\-]\d+', text))
+    _h5 = bool(re.search(r'\bAvailable\s+at:', text, re.IGNORECASE))
+    _h6 = bool(re.search(r'\(Accessed:', text, re.IGNORECASE))
+    _has_unique_harvard = _h2 or _h3 or _h5 or _h6
+    if _h1 and _has_unique_harvard:
         scores['harvard'] += 4
-    if re.search(r"'[A-Z][^']{10,}'", text):
+    if _h2:
         scores['harvard'] += 15
-    if re.search(r"\(\d{4}[a-z]?\)\s+'", text):
+    if _h3:
         scores['harvard'] += 12
-    if re.search(r'\bpp\.\s*\d+[–\-]\d+', text):
+    if _h4:
         scores['harvard'] += 8
-    if re.search(r'\bAvailable\s+at:', text, re.IGNORECASE):
+    if _h5:
         scores['harvard'] += 7
-    if re.search(r'\(Accessed:', text, re.IGNORECASE):
+    if _h6:
         scores['harvard'] += 6
 
     # ── MLA signals ──

@@ -17,7 +17,7 @@ _SPREFIX = (
     r"delle|della|degli|de|di|da|du|le|la|lo|li|al|el|af|av|ap|op|ul|mc)"
     r"(?:\s+(?:der|den|de|het|la|las|los|le|di))?\s+)?"
 )
-_SNAME = _SPREFIX + r"(?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])[a-z\u00E0-\u00F6\u00F8-\u00FF]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])?[a-z\u00E0-\u00F6\u00F8-\u00FF]+)*"
+_SNAME = _SPREFIX + r"(?:(?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])['\u2019])?(?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])[a-z\u00E0-\u00F6\u00F8-\u00FF]+(?:['\u2019\-\u2013\u2014](?-i:[A-Z\u00C0-\u00D6\u00D8-\u00DD])?[a-z\u00E0-\u00F6\u00F8-\u00FF]+)*"
 # Year or n.d. or "no date"
 _YEAR = r"(?:\d{4}[a-z]?|n\.d\.|no date)"
 # Multi-word corporate author

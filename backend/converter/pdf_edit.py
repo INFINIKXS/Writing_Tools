@@ -13,6 +13,16 @@ router = APIRouter()
 # which cause redaction boxes to bleed into adjacent lines.
 fitz.TOOLS.set_small_glyph_heights(True)
 
+LIGATURE_SUB = [
+    ("ffl", "\uFB04"), ("ffi", "\uFB03"), ("ff", "\uFB00"),
+    ("fi",  "\uFB01"), ("fl",  "\uFB02"), ("st", "\uFB06"),
+]
+def _substitute_ligatures(text: str) -> str:
+    """Replaces component strings with Unicode ligatures for heavily compressed subsets."""
+    for seq, lig in LIGATURE_SUB:
+        text = text.replace(seq, lig)
+    return text
+
 
 @router.post("/apply-edits")
 async def apply_edits(
@@ -30,6 +40,9 @@ async def apply_edits(
     for edit in edits_list:
         page     = doc[edit["pageNum"] - 1]
         new_text = edit.get("newStr", "")
+        # Enforce sanitization of HTML non-breaking spaces injected by contenteditable
+        new_text = new_text.replace("\u00A0", " ").replace("&nbsp;", " ")
+        new_text = _substitute_ligatures(new_text)
 
         # ── Coordinates (all in MuPDF space via Util.transform at scale=1) ──
         x0       = edit["rect"]["x"]
@@ -95,13 +108,19 @@ async def apply_edits(
         try:
             if font_result.font_buffer:
                 measure_font = fitz.Font(fontbuffer=font_result.font_buffer)
+                has_space = measure_font.has_glyph(32)
             else:
                 measure_font = fitz.Font(fontname=font_result.fontname)
+                has_space = measure_font.has_glyph(32)
             space_width = measure_font.text_length(" ", fontsize=fontsize)
         except Exception:
             space_width = 0.0
+            has_space = False
 
-        if space_width < fontsize * 0.1:
+        # Subset fonts notoriously exclude or break the Space (U+0020) glyph.
+        # We MUST force algorithmic word spacing if we injected a custom buffer,
+        # or if the space width mathematically resolves poorly.
+        if not has_space or space_width < fontsize * 0.1:
             fallback_space = fontsize * 0.25  # Standard 1/4 em space
             cursor_x = x0
             for word in new_text.split(" "):
