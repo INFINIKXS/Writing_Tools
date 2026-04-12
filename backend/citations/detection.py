@@ -29,7 +29,9 @@ def detect_style_from_references(reference_list):
         evidence['vancouver'].append(f'{len(v1)}/{total_refs} entries start with a number')
 
     # Author format: "Smith J," or "Smith JA," — surname then initials, NO comma before initials
-    v2 = re.findall(r'\b[A-Z][a-z]+\s+[A-Z]{1,3},', ref_block)
+    # Anchored to the start of the reference (after optional numbering) to avoid matching
+    # publisher locations like "Washington DC," in the middle of a string.
+    v2 = re.findall(r'^(?:\[\d+\]\s*|\d+\.\s*)?(?:(?:[A-Z][A-Za-z\'-]+)\s+[A-Z]{1,3},\s*)+', ref_block, re.MULTILINE)
     if v2:
         scores['vancouver'] += 8 * min(len(v2) / total_refs, 1)
         evidence['vancouver'].append(f'Author format "Surname Initials," found ({len(v2)} times)')
@@ -47,9 +49,10 @@ def detect_style_from_references(reference_list):
         evidence['vancouver'].append(f'{len(v4)} DOI entries found')
 
     # ── VANCOUVER SHARED OVERRIDE ──
-    # DOIs are shared by all styles. If no deeply Vancouver-specific
-    # markers are found (numbered lists, "Surname JA", or Vancouver journal structure), zero out score.
-    if not (v1 or v2 or v3):
+    # DOIs (v4) and numbered lists (v1) can be used by other styles (e.g. numbered APA).
+    # If there are no strictly Vancouver markers (author format v2, or journal format v3),
+    # then this is not Vancouver.
+    if not (v2 or v3):
         scores['vancouver'] = 0
         evidence['vancouver'] = []
 
@@ -213,13 +216,20 @@ def classify_single_reference(ref_text):
     text = ref_text.strip()
 
     # ── Vancouver signals ──
-    if re.match(r'^\[?\d+\]?\.?\s', text):
-        scores['vancouver'] += 10
-    van_authors = re.findall(r'\b[A-Z][a-z]+\s+[A-Z]{1,3},', text)
-    if van_authors:
-        scores['vancouver'] += 8
-    if re.search(r'\.\s*\d{4}\s*;\s*\d+\s*(?:\(\d+\))?\s*:\s*\d+', text):
-        scores['vancouver'] += 9
+    _v1 = bool(re.match(r'^\[?\d+\]?\.?\s', text))
+    # Anchored to the start of the reference to prevent matching locations (e.g., "Washington DC,")
+    _v2 = bool(re.search(r'^(?:\[\d+\]\s*|\d+\.\s*)?(?:(?:[A-Z][A-Za-z\'-]+)\s+[A-Z]{1,3},\s*)+', text))
+    _v3 = bool(re.search(r'\.\s*\d{4}\s*;\s*\d+\s*(?:\(\d+\))?\s*:\s*\d+', text))
+    
+    # If there are no strictly Vancouver markers (author format v2, or journal format v3),
+    # then this is not Vancouver. Numbered lists (v1) alone can be used by other styles (e.g. numbered APA).
+    if _v2 or _v3:
+        if _v1:
+            scores['vancouver'] += 10
+        if _v2:
+            scores['vancouver'] += 8
+        if _v3:
+            scores['vancouver'] += 9
 
     # ── APA signals ──
     apa_authors = re.findall(r'\b[A-Z][a-z]+,\s+[A-Z]\.\s*(?:[A-Z]\.\s*)?(?:,|&|\()', text)
