@@ -133,6 +133,62 @@ def _get_space_width(page: fitz.Page, x0: float, origin_y: float, fontsize: floa
     return fontsize * 0.25  # last resort
 
 
+# ── Helper: build per-character advance width table from rawdict ──────────────
+
+def _build_advance_table(rawdict_chars: list, fontsize: float) -> dict:
+    """
+    Build a per-character advance width table from rawdict character positions.
+
+    Computes the advance width of each character from the origin.x difference
+    between consecutive characters. This is the GROUND TRUTH — it reflects
+    exactly how the PDF engine laid out the text, including all kerning,
+    tracking, word spacing, and justification adjustments.
+
+    Returns: {char: advance_in_pt} — advance widths in absolute points
+    at the given fontsize. Values are the median of all observations for
+    each character (robust against justification outliers).
+    """
+    if not rawdict_chars or fontsize <= 0:
+        return {}
+
+    # Collect all observed advances per character
+    char_advances: dict[str, list[float]] = {}
+
+    for i in range(len(rawdict_chars)):
+        ch = rawdict_chars[i].get("c", "")
+        if not ch:
+            continue
+
+        if i + 1 < len(rawdict_chars):
+            # Normal case: advance = next origin - this origin
+            this_x = rawdict_chars[i]["origin"][0]
+            next_x = rawdict_chars[i + 1]["origin"][0]
+            adv = next_x - this_x
+        else:
+            # Last character: use bbox width as fallback
+            bbox = rawdict_chars[i].get("bbox", (0, 0, 0, 0))
+            origin_x = rawdict_chars[i]["origin"][0]
+            adv = bbox[2] - origin_x
+
+        if adv > 0:
+            char_advances.setdefault(ch, []).append(adv)
+
+    # Use median of observations for each character
+    result = {}
+    for ch, advs in char_advances.items():
+        sorted_advs = sorted(advs)
+        result[ch] = sorted_advs[len(sorted_advs) // 2]
+
+    # Log summary
+    space_adv = result.get(" ", 0)
+    letter_advs = [v for k, v in result.items() if k != " "]
+    avg_letter = sum(letter_advs) / len(letter_advs) if letter_advs else fontsize * 0.5
+    logger.info(
+        f"_build_advance_table: {len(result)} chars, "
+        f"space={space_adv:.2f}pt, avg_letter={avg_letter:.2f}pt"
+    )
+    return result
+
 # ── Helper: find the minimal change range between two strings ────────────────
 
 def _find_change_range(orig: str, new: str):
@@ -318,50 +374,88 @@ async def apply_edits(
 
                     # Insert only the replacement substring
                     if changed_new:
-                        insert_pt = fitz.Point(erase_x0, change_origin_y)
+                        # ── Build advance table from rawdict (ground truth) ──
+                        # Each character's advance width is computed from the
+                        # origin.x difference between consecutive rawdict chars.
+                        # This reflects the ACTUAL PDF rendering, including all
+                        # kerning, tracking, Tc/Tw operators, and justification.
+                        # Zero dependency on broken font hmtx metrics.
+                        advance_table = _build_advance_table(rawdict_chars, fontsize)
 
-                        # Morph to fit the replacement into the original space
-                        morph = None
-                        if measure_font and erase_w > 0:
-                            try:
-                                new_w = measure_font.text_length(changed_new, fontsize=fontsize)
-                                if new_w > 0:
-                                    scale_x = erase_w / new_w
-                                    if 0.5 <= scale_x <= 2.0:
-                                        morph = (insert_pt, fitz.Matrix(scale_x, 1))
-                                        logger.info(f"minimal-diff morph scale_x={scale_x:.3f}")
-                                    else:
-                                        logger.info(f"minimal-diff morph {scale_x:.3f} outside [0.5, 2.0]")
-                            except Exception:
-                                pass
-
-                        # Word-by-word insertion for subset fonts without space glyph
-                        if " " in changed_new and (not has_space or space_width < fontsize * 0.1):
-                            space_w = _get_space_width(page, erase_x0, change_origin_y, fontsize)
-                            cursor_x = erase_x0
-                            for word in changed_new.split(" "):
-                                if word:
-                                    page.insert_text(
-                                        fitz.Point(cursor_x, change_origin_y),
-                                        word,
-                                        fontname=font_result.fontname,
-                                        fontsize=fontsize,
-                                        color=insert_color,
-                                    )
-                                    try:
-                                        cursor_x += measure_font.text_length(word, fontsize=fontsize)
-                                    except Exception:
-                                        cursor_x += len(word) * (fontsize * 0.5)
-                                cursor_x += space_w
-                        else:
-                            page.insert_text(
-                                insert_pt,
-                                changed_new,
-                                fontname=font_result.fontname,
-                                fontsize=fontsize,
-                                color=insert_color,
-                                morph=morph,
+                        # Compute fallback advance for unseen characters
+                        letter_advs = [v for k, v in advance_table.items() if k != " "]
+                        avg_letter_adv = (
+                            sum(letter_advs) / len(letter_advs)
+                            if letter_advs
+                            else fontsize * 0.5
+                        )
+                        # Space: prefer rawdict → texttrace → font → fallback
+                        space_adv = advance_table.get(" ", None)
+                        if space_adv is None or space_adv < fontsize * 0.05:
+                            space_adv = _get_space_width(
+                                page, erase_x0, change_origin_y, fontsize
                             )
+
+                        change_at_end = (raw_end >= len(rawdict_chars) - 1)
+
+                        # For end-of-span changes, extend erase rect to cover
+                        # the replacement text width (estimated from advance table).
+                        if change_at_end:
+                            est_new_w = 0
+                            for ch in changed_new:
+                                if ch == " ":
+                                    est_new_w += space_adv
+                                else:
+                                    est_new_w += advance_table.get(ch, avg_letter_adv)
+                            if est_new_w > erase_w:
+                                extra_rect = fitz.Rect(
+                                    erase_x1, erase_y0 - 1,
+                                    erase_x0 + est_new_w + 2, erase_y1 + 1
+                                )
+                                page.draw_rect(extra_rect, color=(1, 1, 1), fill=(1, 1, 1))
+                                logger.info(
+                                    f"End-of-span: extended erase by "
+                                    f"{est_new_w - erase_w:.1f}pt"
+                                )
+
+                        # ── Per-character insertion using advance table ──
+                        # Each character is placed at a position derived from
+                        # rawdict ground-truth advance widths. Glyphs render
+                        # at their natural shape (no morph). For characters
+                        # not seen in the original span, we fall back to the
+                        # CFF-synced font metrics (Layer 1 fix) or average.
+                        cursor_x = erase_x0
+
+                        for ch in changed_new:
+                            if ch == " ":
+                                cursor_x += space_adv
+                            else:
+                                page.insert_text(
+                                    fitz.Point(cursor_x, change_origin_y),
+                                    ch,
+                                    fontname=font_result.fontname,
+                                    fontsize=fontsize,
+                                    color=insert_color,
+                                )
+                                # Advance: rawdict table → font metrics → average
+                                if ch in advance_table:
+                                    cursor_x += advance_table[ch]
+                                elif measure_font:
+                                    try:
+                                        cursor_x += measure_font.text_length(
+                                            ch, fontsize=fontsize
+                                        )
+                                    except Exception:
+                                        cursor_x += avg_letter_adv
+                                else:
+                                    cursor_x += avg_letter_adv
+
+                        logger.info(
+                            f"Per-char insert: {len(changed_new)} chars, "
+                            f"advance_table={len(advance_table)} entries, "
+                            f"space={space_adv:.2f}pt, avg_letter={avg_letter_adv:.2f}pt, "
+                            f"final_x={cursor_x:.1f}"
+                        )
 
                     used_minimal_diff = True
             else:

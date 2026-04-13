@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 from fontTools.ttLib import TTFont
 from fontTools.ttLib.tables._c_m_a_p import CmapSubtable
+from fontTools.pens.recordingPen import RecordingPen
 
 logger = logging.getLogger(__name__)
 
@@ -739,13 +740,58 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
             else:
                 logger.info(f"  DIAG: U+{ucp:04X} '{label}' → NOT MAPPED")
             
-        # 3. Patch hmtx zero-widths
-        if "hmtx" in tt and "glyf" in tt:
+        # 3. Sync hmtx advance widths to CFF charstring widths.
+        # CFF-flavoured OTF fonts store widths in TWO places: the hmtx table
+        # and the CFF charstrings. After OTF wrapping, these can diverge
+        # (typically by the FontMatrix scale factor). PDF renderers use CFF
+        # charstring widths, but MuPDF's insert_text uses hmtx. The fix:
+        # draw each charstring, read its decoded .width, and overwrite hmtx.
+        if "CFF " in tt and "hmtx" in tt:
+            hmtx = tt["hmtx"].metrics
+            try:
+                cff_top = tt["CFF "].cff.topDictIndex[0]
+                char_strings = cff_top.CharStrings
+                # Check FontMatrix for non-standard scaling
+                font_matrix = getattr(cff_top, 'FontMatrix', [0.001, 0, 0, 0.001, 0, 0])
+                scale_x = font_matrix[0] * 1000  # Convert to UPM-relative
+
+                fixed_count = 0
+                for gname in list(char_strings.keys()):
+                    if gname not in hmtx:
+                        continue
+                    try:
+                        cs = char_strings[gname]
+                        pen = RecordingPen()
+                        cs.draw(pen)  # populates cs.width from charstring
+                        cff_width = cs.width
+                        hmtx_width, lsb = hmtx[gname]
+
+                        # Apply FontMatrix scaling if non-standard
+                        if abs(scale_x - 1.0) > 0.001:
+                            scaled_width = round(cff_width * scale_x)
+                        else:
+                            scaled_width = cff_width
+
+                        if hmtx_width != scaled_width and scaled_width > 0:
+                            hmtx[gname] = (scaled_width, lsb)
+                            fixed_count += 1
+                    except Exception:
+                        pass
+
+                if fixed_count > 0:
+                    logger.info(f"CFF hmtx sync: fixed {fixed_count} advance widths (FontMatrix scale={scale_x:.3f})")
+                else:
+                    logger.info("CFF hmtx sync: all widths already consistent")
+            except Exception as e:
+                logger.warning(f"CFF hmtx sync failed (non-fatal): {e}")
+
+        elif "hmtx" in tt and "glyf" in tt:
+            # TTF fallback: patch zero-width glyphs with average advance
             hmtx = tt["hmtx"].metrics
             glyf = tt["glyf"]
             valid_advances = [adv for gn, (adv, _) in hmtx.items() if adv > 0 and gn != ".notdef"]
             avg_advance = sum(valid_advances) // len(valid_advances) if valid_advances else 500
-            
+
             for gname in glyph_order:
                 if gname not in hmtx: continue
                 advance, lsb = hmtx[gname]

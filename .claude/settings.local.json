@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:blog.loslab.com)",
+      "WebFetch(domain:pymupdf.readthedocs.io)",
+      "WebFetch(domain:www.pdfdancer.com)",
+      "Bash(xargs grep:*)",
+      "Bash(cat backend/*.log)",
+      "Bash(ls backend/*.log)",
+      "Bash(ls *.log)"
+    ]
+  }
+}
