@@ -510,6 +510,11 @@ def _parse_tounicode(doc: fitz.Document, font_xref: int) -> tuple[dict, dict]:
             try:
                 start = int(m.group(1), 16)
                 end = int(m.group(2), 16)
+                # Guard: skip absurdly large ranges (Identity-H full-Unicode mappings).
+                # A legitimate bfrange for a subset font is at most 256 entries.
+                # Ranges like 0x0000-0x10FFEE produce 1.1M entries and overwhelm the map.
+                if end - start > 256:
+                    continue
                 base_chars = _decode_unicode_hex(m.group(3))
                 for offset in range(end - start + 1):
                     cid = start + offset
@@ -602,6 +607,27 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
         logger.info(f"TTFont loaded. n_glyphs={n_glyphs}")
         
         cid_to_gid = cidtogid_map if cidtogid_map else {}
+
+        # Build lookup from font's own existing cmap before we replace it.
+        # This provides a reliable GID mapping for fonts where neither the
+        # CIDToGIDMap nor trace recovery cover all codepoints.
+        # Note: bare CFF fonts wrapped in OTF containers may not have a cmap
+        # table yet — that's the whole reason _inject_cmap() exists.
+        font_cmap_gids = {}
+        existing_cmap = None
+        if 'cmap' in tt:
+            try:
+                existing_cmap = tt.getBestCmap()
+            except Exception as e:
+                logger.debug(f"getBestCmap() failed: {e}")
+        if existing_cmap:
+            glyph_name_to_idx = {name: i for i, name in enumerate(glyph_order)}
+            for cp, gname in existing_cmap.items():
+                if gname in glyph_name_to_idx:
+                    font_cmap_gids[cp] = glyph_name_to_idx[gname]
+            logger.info(f"Built font_cmap_gids with {len(font_cmap_gids)} entries from existing cmap")
+        else:
+            logger.info("No existing cmap in font — font_cmap_gids is empty")
         
         # BUG 3 FIX: Initialize unicode_to_gid BEFORE the try block so it
         # always exists, regardless of whether trace recovery succeeds.
@@ -617,10 +643,21 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
                 for span in page.get_texttrace():
                     span_font = span.get("font", "").split("+")[-1].lower().replace(" ", "").replace("-", "")
                     if target_short in span_font or span_font in target_short:
-                        for ch in span.get("chars", []):
+                        chars_list = span.get("chars", [])
+                        for idx, ch in enumerate(chars_list):
                             if len(ch) == 4:
                                 ucp, gid, _, _ = ch
                                 if ucp > 0 and gid > 0 and ucp != 0xFFFD:
+                                    # Skip ligature first-components: if the NEXT char
+                                    # has gid == -1, that means THIS char is the first
+                                    # component of a ligature (e.g. 'f' in 'fi').
+                                    # The gid we'd record is the ligature glyph's GID,
+                                    # which has a double-width advance — wrong for
+                                    # standalone 'f'. Skip it.
+                                    if idx + 1 < len(chars_list):
+                                        next_ch = chars_list[idx + 1]
+                                        if len(next_ch) == 4 and next_ch[1] == -1:
+                                            continue  # skip ligature first-component
                                     unicode_to_gid[ucp] = gid
                                     
                 trace_has_data = len(unicode_to_gid) > 0
@@ -642,10 +679,22 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
         # 1. Map single chars
         for cid, uchar in single_map.items():
             ucp = ord(uchar)
-            # Reverted Bug 2 fix: if the trace missed a character, we MUST fallback
-            # to Identity (cid == gid) because skipping it makes it disappear entirely.
-            # The trace data in `unicode_to_gid` will still override where necessary.
-            gid = cid_to_gid.get(cid, cid)
+            # Priority chain for CID→GID resolution:
+            #   1. Explicit CIDToGIDMap from the PDF (most authoritative)
+            #   2. Trace recovery data (direct UCP→GID from MuPDF rendering)
+            #   3. Font's own existing cmap table (built above before overwrite)
+            #   4. Identity fallback (cid == gid) — true last resort
+            # The old code used unconditional identity fallback which is only
+            # correct for Identity-H fonts and causes wrong glyph widths
+            # (and therefore character scatter) for all other CIDFonts.
+            if cid in cid_to_gid:
+                gid = cid_to_gid[cid]
+            elif ucp in unicode_to_gid:
+                gid = unicode_to_gid[ucp]
+            elif ucp in font_cmap_gids:
+                gid = font_cmap_gids[ucp]
+            else:
+                gid = cid  # true last resort identity fallback
             if 0 < gid < n_glyphs:
                 unicode_to_glyph[ucp] = glyph_order[gid]
                 
@@ -728,8 +777,22 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
         
         out = io.BytesIO()
         tt.save(out)
+        out_bytes = out.getvalue()
+
+        # Post-serialization validation: ensure fontTools didn't silently
+        # drop the cmap table during save (happens with some non-compliant fonts).
+        try:
+            verify_tt = TTFont(io.BytesIO(out_bytes))
+            verify_cmap = verify_tt.getBestCmap()
+            if not verify_cmap:
+                logger.warning("CMAP WAS DROPPED during fontTools serialization! Returning original font_bytes.")
+                return font_bytes
+            logger.info(f"Post-serialization cmap validated: {len(verify_cmap)} entries")
+        except Exception as e:
+            logger.warning(f"Post-serialization cmap validation failed: {e} — continuing anyway")
+
         logger.info(f"==== INJECT_CMAP SUCCESS. Injected ToUnicode CMap matrix + hmtx patch into {len(unicode_to_glyph)} subsets. ====")
-        return out.getvalue()
+        return out_bytes
         
     except Exception as e:
         logger.error(f"==== INJECT_CMAP FAILED: {e} ====", exc_info=True)
