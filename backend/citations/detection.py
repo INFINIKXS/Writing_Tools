@@ -28,13 +28,19 @@ def detect_style_from_references(reference_list):
         scores['vancouver'] += 10 * (len(v1) / total_refs)
         evidence['vancouver'].append(f'{len(v1)}/{total_refs} entries start with a number')
 
-    # Author format: "Smith J," or "Smith JA," — surname then initials, NO comma before initials
-    # Anchored to the start of the reference (after optional numbering) to avoid matching
-    # publisher locations like "Washington DC," in the middle of a string.
-    v2 = re.findall(r'^(?:\[\d+\]\s*|\d+\.\s*)?(?:(?:[A-Z][A-Za-z\'-]+)\s+[A-Z]{1,3},\s*)+', ref_block, re.MULTILINE)
+    # Author format: "Smith JA, Doe B." — requires at least 2 authors where the last one
+    # ends with a period (not a comma). This eliminates false positives from publisher
+    # locations like "Washington DC, Publisher" or "London UK, Sage" which match the
+    # simpler "Surname IA," pattern but never end with "Surname IA."
+    v2 = re.findall(
+        r'^(?:\[\d+\]\s*|\d+\.\s*)?'
+        r'(?:[A-Z][A-Za-z\'\u2019-]+\s+[A-Z]{1,3},\s*)+'
+        r'[A-Z][A-Za-z\'\u2019-]+\s+[A-Z]{1,3}\.',
+        ref_block, re.MULTILINE
+    )
     if v2:
         scores['vancouver'] += 8 * min(len(v2) / total_refs, 1)
-        evidence['vancouver'].append(f'Author format "Surname Initials," found ({len(v2)} times)')
+        evidence['vancouver'].append(f'Author format "Surname IA, Surname IB." found ({len(v2)} times)')
 
     # Journal format: "Journal Name. YYYY;Vol(Issue):Pages"
     v3 = re.findall(r'\.\s*\d{4}\s*;\s*\d+\s*(?:\(\d+\))?\s*:\s*\d+', ref_block)
@@ -42,11 +48,9 @@ def detect_style_from_references(reference_list):
         scores['vancouver'] += 9 * min(len(v3) / total_refs, 1)
         evidence['vancouver'].append(f'Vancouver journal format "YYYY;Vol(Issue):Pages" ({len(v3)} entries)')
 
-    # doi at end without "doi:" label or with lowercase "doi:"
-    v4 = re.findall(r'\bdoi:\s*10\.\d{4}', ref_block, re.IGNORECASE)
-    if v4:
-        scores['vancouver'] += 3 * min(len(v4) / total_refs, 1)
-        evidence['vancouver'].append(f'{len(v4)} DOI entries found')
+    # DOIs are universal and often use "doi:" across styles in older generators.
+    # Removed v4 (DOI scoring) from Vancouver to prevent it inflating the score 
+    # if a single Vancouver author typo unlocks the shared override.
 
     # ── VANCOUVER SHARED OVERRIDE ──
     # DOIs (v4) and numbered lists (v1) can be used by other styles (e.g. numbered APA).
@@ -217,8 +221,13 @@ def classify_single_reference(ref_text):
 
     # ── Vancouver signals ──
     _v1 = bool(re.match(r'^\[?\d+\]?\.?\s', text))
-    # Anchored to the start of the reference to prevent matching locations (e.g., "Washington DC,")
-    _v2 = bool(re.search(r'^(?:\[\d+\]\s*|\d+\.\s*)?(?:(?:[A-Z][A-Za-z\'-]+)\s+[A-Z]{1,3},\s*)+', text))
+    # Requires at least 2 authors: "Surname IA, Surname IB." (last author ends with period)
+    _v2 = bool(re.search(
+        r'^(?:\[\d+\]\s*|\d+\.\s*)?'
+        r'(?:[A-Z][A-Za-z\'\u2019-]+\s+[A-Z]{1,3},\s*)+'
+        r'[A-Z][A-Za-z\'\u2019-]+\s+[A-Z]{1,3}\.',
+        text
+    ))
     _v3 = bool(re.search(r'\.\s*\d{4}\s*;\s*\d+\s*(?:\(\d+\))?\s*:\s*\d+', text))
     
     # If there are no strictly Vancouver markers (author format v2, or journal format v3),

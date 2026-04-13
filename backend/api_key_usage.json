@@ -1,19 +1,19 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-04-12",
+  "last_reset_date": "2026-04-13",
   "current_index": 0,
-  "total_requests_today": 11,
+  "total_requests_today": 2,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
       "model_usage": {
-        "gemini-3-flash-preview": 11
+        "gemini-3-flash-preview": 2
       },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 11,
+      "quota_used": 2,
       "exhausted": false
     },
     {

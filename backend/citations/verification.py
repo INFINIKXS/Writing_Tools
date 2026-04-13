@@ -17,7 +17,8 @@ def verify_matches_with_string_search(in_text_citations, references):
     def extract_first_author(text):
         """Extract the first author's bare surname from a citation or reference string."""
         core = text.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip()
-        match = re.search(r'^([A-Za-z\'\-]+)', core)
+        # Include curly apostrophe \u2019
+        match = re.search(r'^([A-Za-z\'\-\u2019]+)', core)
         if match:
             surname = match.group(1).strip()
             surname = re.sub(r'\s+[A-Z]{1,3}$', '', surname).strip()
@@ -38,9 +39,10 @@ def verify_matches_with_string_search(in_text_citations, references):
         if not ref_surname:
             continue
         ref_year = extract_year(ref)
-        key = (ref_surname.lower(), ref_year)
+        normalized_surname = ref_surname.lower().replace('\u2019', "'")
+        key = (normalized_surname, ref_year)
         ref_compound_index.setdefault(key, []).append(ref)
-        ref_surname_index.setdefault(ref_surname.lower(), []).append(ref)
+        ref_surname_index.setdefault(normalized_surname, []).append(ref)
 
     # Report duplicate surnames
     for surname_lower, refs in ref_surname_index.items():
@@ -56,14 +58,15 @@ def verify_matches_with_string_search(in_text_citations, references):
             continue
 
         cit_year = extract_year(cit)
+        normalized_cit_surname = cit_surname.lower().replace('\u2019', "'")
 
         # 1. Try compound key (surname + year)
-        compound_key = (cit_surname.lower(), cit_year)
+        compound_key = (normalized_cit_surname, cit_year)
         candidates = ref_compound_index.get(compound_key, [])
 
         # 2. If no year in citation, fall back to surname-only match
         if not candidates:
-            candidates = ref_surname_index.get(cit_surname.lower(), [])
+            candidates = ref_surname_index.get(normalized_cit_surname, [])
 
         if candidates:
             best_ref = candidates[0]
@@ -224,7 +227,9 @@ def detect_irregularities_deterministically(citations_list: list, references: li
                     # This is a multi-author ref, not a two-author ref — skip
                     continue
                     
-            r_words = [w for w in re.sub(r'[^A-Za-z\s]', '', ref_author_part).split() if len(w) > 2 and w.lower() not in ('and')]
+            # Strip possessive 's from reference author exactly as we do for the citation author
+            ref_author_clean = re.sub(r"['\u2019]s\b", '', ref_author_part, flags=re.IGNORECASE)
+            r_words = [w for w in re.sub(r'[^A-Za-z\s]', '', ref_author_clean).split() if len(w) > 2 and w.lower() not in ('and')]
             
             # Simple word overlap scoring
             matches = 0
@@ -283,21 +288,30 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     Returns a dict mapping AI reference -> verbatim source text with confidence.
     """
     # ─── PRE-STEP: Clean Invisible Garbage (Docs/PDFs) ───
-    full_text = full_text.replace('\u00a0', ' ')      # non-breaking space
-    full_text = full_text.replace('\u202f', ' ')      # narrow no-break space
-    full_text = full_text.replace('\u2006', ' ')      # thin space
-    full_text = full_text.replace('\u2009', ' ')      # thin space
-    full_text = full_text.replace('\u200b', '')       # zero-width space
-    full_text = full_text.replace('\u200c', '')       # zero-width non-joiner
-    full_text = full_text.replace('\u200d', '')       # zero-width joiner
-    full_text = full_text.replace('\u2018', "'")      # left single quote
-    full_text = full_text.replace('\u2019', "'")      # right single quote
-    full_text = full_text.replace('\u201c', '"')      # left double quote
-    full_text = full_text.replace('\u201d', '"')      # right double quote
-    full_text = full_text.replace('\u2013', '-')      # en-dash -> hyphen
-    full_text = full_text.replace('\u2014', '-')      # em-dash -> hyphen
-    full_text = full_text.replace('\ufb01', 'fi')     # fi ligature
-    full_text = full_text.replace('\ufb02', 'fl')     # fl ligature
+    def _normalize_text(t):
+        """Normalize Unicode characters for consistent comparison."""
+        t = t.replace('\u00a0', ' ')      # non-breaking space
+        t = t.replace('\u202f', ' ')      # narrow no-break space
+        t = t.replace('\u2006', ' ')      # thin space
+        t = t.replace('\u2009', ' ')      # thin space
+        t = t.replace('\u200b', '')       # zero-width space
+        t = t.replace('\u200c', '')       # zero-width non-joiner
+        t = t.replace('\u200d', '')       # zero-width joiner
+        t = t.replace('\u2018', "'")      # left single quote
+        t = t.replace('\u2019', "'")      # right single quote
+        t = t.replace('\u201c', '"')      # left double quote
+        t = t.replace('\u201d', '"')      # right double quote
+        t = t.replace('\u2013', '-')      # en-dash -> hyphen
+        t = t.replace('\u2014', '-')      # em-dash -> hyphen
+        t = t.replace('\ufb01', 'fi')     # fi ligature
+        t = t.replace('\ufb02', 'fl')     # fl ligature
+        return t
+
+    full_text = _normalize_text(full_text)
+    # Keep original AI references for use as dictionary keys (must match frontend lookups),
+    # but create normalized copies for internal comparison against normalized full_text.
+    original_ai_references = list(ai_references)
+    ai_references_norm = [_normalize_text(r) for r in ai_references]
 
     # ─── STEP 1: Isolate the reference section ───
     ref_section = full_text
@@ -439,7 +453,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     verbatim_map = {}
     used_candidates = {}
     
-    for ai_ref in ai_references:
+    for orig_ref, ai_ref in zip(original_ai_references, ai_references_norm):
         best_score = 0
         best_match = ai_ref
         ai_author, ai_year = extract_author_year(ai_ref)
@@ -454,7 +468,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             
             cand_author, cand_year = extract_author_year(candidate)
             
-            author_ok = (not ai_author) or (not cand_author) or (ai_author == cand_author)
+            author_ok = (not ai_author) or (not cand_author) or (ai_author in cand_author) or (cand_author in ai_author)
             year_ok = (not ai_year) or (not cand_year) or (ai_year == cand_year)
             
             if not author_ok or not year_ok:
@@ -487,7 +501,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             conflicting_ref = [k for k, v in used_candidates.items() if v == best_match]
             conflict = f"Warning: This verbatim text was also matched by: {conflicting_ref[0][:50]}..."
         
-        used_candidates[ai_ref] = best_match
+        used_candidates[orig_ref] = best_match
         
         result = {
             "verbatim": best_match,
@@ -496,6 +510,8 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         if conflict:
             result["conflict"] = conflict
         
-        verbatim_map[ai_ref] = result
+        # Use original (un-normalized) reference string as key so the frontend
+        # can look it up with the same key it received from the AI analysis.
+        verbatim_map[orig_ref] = result
     
     return verbatim_map
