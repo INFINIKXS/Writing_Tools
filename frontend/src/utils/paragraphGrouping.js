@@ -95,6 +95,13 @@ function _detectColumnBoundaries(items, pageWidth) {
   const bodyItems = items.filter(it => (it.pdfW || 0) < pageWidth * 0.6);
   if (bodyItems.length < 2) return [];
 
+  // ─── Key fix: Use ABSOLUTE threshold, not percentage ───────────────
+  // Real column gutters: 11–25pt across all major journal formats
+  //   IEEE standard: 11.3pt, IEEE conference: 18pt, BMJ: ~20pt
+  // Word spaces within justified text: 3–6pt
+  // Safe threshold: 8pt catches all gutters, avoids word spaces
+  const MIN_GAP_WIDTH = 8; // absolute points, not percentage
+
   // Build 1pt-resolution x-coverage array
   const coverageLen = Math.ceil(pageWidth) + 1;
   const coverage = new Uint8Array(coverageLen);
@@ -105,11 +112,6 @@ function _detectColumnBoundaries(items, pageWidth) {
     for (let x = x0; x <= x1; x++) coverage[x] = 1;
   }
 
-  // Find contiguous zero-coverage gaps ≥ 5% of page width
-  const minGapWidth = pageWidth * 0.05;
-  const separators = [];
-  let gapStart = -1;
-
   // Skip the margins: start scanning from the leftmost coverage and stop
   // at the rightmost, so page margins don't produce false column splits.
   let scanLeft = 0;
@@ -117,16 +119,71 @@ function _detectColumnBoundaries(items, pageWidth) {
   while (scanLeft < coverageLen && coverage[scanLeft] === 0) scanLeft++;
   while (scanRight > 0 && coverage[scanRight] === 0) scanRight--;
 
+  // Find contiguous zero-coverage gaps ≥ MIN_GAP_WIDTH
+  const candidates = [];
+  let gapStart = -1;
+
   for (let x = scanLeft; x <= scanRight + 1; x++) {
     const val = x <= scanRight ? coverage[x] : 1; // sentinel at end
     if (val === 0 && gapStart === -1) {
       gapStart = x;
     } else if (val === 1 && gapStart !== -1) {
       const gapWidth = x - gapStart;
-      if (gapWidth >= minGapWidth) {
-        separators.push(gapStart + gapWidth / 2); // midpoint of gap
+      if (gapWidth >= MIN_GAP_WIDTH) {
+        candidates.push({
+          midpoint: gapStart + gapWidth / 2,
+          width: gapWidth,
+          x0: gapStart,
+          x1: x,
+        });
       }
       gapStart = -1;
+    }
+  }
+
+  if (candidates.length === 0) return [];
+
+  // ─── Validation: confirm gaps are vertically continuous ────────────
+  // A real column gutter spans the majority of the page height.
+  // A word-space gap only appears on a few lines.
+  // Split the page into vertical bands and check each candidate gap
+  // persists across at least 40% of the bands that have text.
+  const allYs = bodyItems.map(i => i.pdfY_top);
+  const minY = Math.min(...allYs);
+  const maxY = Math.max(...bodyItems.map(i => i.pdfY_top + (i.pdfH || 0)));
+  const pageHeight = maxY - minY;
+  const NUM_BANDS = 10;
+  const bandHeight = pageHeight / NUM_BANDS;
+
+  const separators = [];
+  for (const gap of candidates) {
+    let bandsWithGap = 0;
+    let bandsWithText = 0;
+
+    for (let band = 0; band < NUM_BANDS; band++) {
+      const bandTop = minY + band * bandHeight;
+      const bandBottom = bandTop + bandHeight;
+
+      // Items in this vertical band
+      const bandItems = bodyItems.filter(it =>
+        it.pdfY_top >= bandTop && it.pdfY_top < bandBottom
+      );
+      if (bandItems.length === 0) continue;
+      bandsWithText++;
+
+      // Check if any item in this band covers the gap region
+      const gapCovered = bandItems.some(it => {
+        const itemLeft = it.pdfX;
+        const itemRight = it.pdfX + (it.pdfW || 0);
+        return itemLeft < gap.x1 && itemRight > gap.x0;
+      });
+
+      if (!gapCovered) bandsWithGap++;
+    }
+
+    // Gap must persist across ≥40% of text-bearing bands
+    if (bandsWithText > 0 && bandsWithGap / bandsWithText >= 0.4) {
+      separators.push(gap.midpoint);
     }
   }
 
