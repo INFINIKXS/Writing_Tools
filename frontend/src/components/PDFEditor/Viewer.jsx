@@ -6,6 +6,7 @@ import { TextOverlay } from './TextOverlay';
 import { InlineEditor } from './InlineEditor';
 import { useSyncExternalStore } from 'react';
 import { pdfEditStore, activeFileId } from '../../stores/pdfEditStore';
+import { groupItemsIntoParagraphs } from '../../utils/paragraphGrouping';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -169,17 +170,18 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
   const [numPages, setNumPages] = useState(null);
 
   const [pageMetadata, setPageMetadata] = useState({});
-  const [selectedTextIdx, setSelectedTextIdx] = useState(null);
+  const [selectedBlockIdx, setSelectedBlockIdx] = useState(null);
   const [activePageNum, setActivePageNum] = useState(null);
 
   // Refs to page container divs — needed for DOM color sampling and span measurement
   const pageContainerRefs = useRef({});
 
   // FIX: Use a ref (not state) to track which pages have been extracted.
-  // State-based guards suffer from stale closures inside onLoadSuccess callbacks —
-  // the callback captures the pageMetadata value from the render it was created in,
-  // not the current value. A ref is always current regardless of render timing.
   const pageItemsExtracted = useRef({});
+  
+  // FIX: Provide a synchronized ref of the current file prop to guard async closures
+  const fileRef = useRef(file);
+  useEffect(() => { fileRef.current = file; }, [file]);
 
   const edits = useSyncExternalStore(pdfEditStore.subscribe, () => pdfEditStore.getEdits(activeFileId));
 
@@ -335,6 +337,16 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
     return () => window.removeEventListener('keydown', handleGlobalKey);
   }, []);
 
+  // ─── Reset extraction cache when file changes ─────────────────────────────
+  // When the backend bakes edits into a new PDF and replaces the 'file' prop,
+  // we must clear our extraction cache so the new baked text layers are loaded.
+  useEffect(() => {
+    setPageMetadata({});
+    pageItemsExtracted.current = {};
+    setSelectedBlockIdx(null);
+    setActivePageNum(null);
+  }, [file]);
+
   // ─── Document load ────────────────────────────────────────────────────────
   function onDocumentLoadSuccess({ numPages }) {
     setNumPages(numPages);
@@ -409,8 +421,14 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
                   height: page.originalHeight || page.view[3],
                 };
 
+                const capturedFile = file;
+
                 try {
                   const textContent = await page.getTextContent();
+                  
+                  // Guard against stale closures: if the file prop changed while
+                  // we were awaiting getTextContent, discard this extraction.
+                  if (fileRef.current !== capturedFile) return;
 
                   // Always use scale=1 viewport so coordinates are in raw PDF points.
                   // Util.transform with this viewport flips Y from PDF bottom-left
@@ -467,9 +485,13 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
                       };
                     });
 
+                  // Compute paragraph blocks from the flat items array
+                  const pageW = page.view?.[2] || 612;
+                  const blocks = groupItemsIntoParagraphs(items, pageW);
+
                   setPageMetadata(prev => ({
                     ...prev,
-                    [index + 1]: { size: newSize, items }
+                    [index + 1]: { size: newSize, items, blocks }
                     // _colorsApplied is intentionally absent here so the useEffect runs
                   }));
                 } catch (err) {
@@ -490,55 +512,53 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
             />
 
             {/* Text hit-testing overlay and inline editor */}
-            {pageMetadata[index + 1]?.items && pageMetadata[index + 1]?.size && (
+            {pageMetadata[index + 1]?.blocks && pageMetadata[index + 1]?.size && (
               <>
                 <TextOverlay
-                  items={pageMetadata[index + 1].items}
+                  blocks={pageMetadata[index + 1].blocks}
                   scale={scale}
-                  selectedIdx={activePageNum === index + 1 ? selectedTextIdx : null}
+                  selectedIdx={activePageNum === index + 1 ? selectedBlockIdx : null}
                   edits={edits.filter(e => e.pageNum === index + 1)}
                   onSelect={(idx) => {
-                    setSelectedTextIdx(idx);
+                    setSelectedBlockIdx(idx);
                     setActivePageNum(index + 1);
                   }}
                 />
 
-                {activePageNum === index + 1 && selectedTextIdx !== null && pageMetadata[index + 1].items[selectedTextIdx] && (
-                  <InlineEditor
-                    item={pageMetadata[index + 1].items[selectedTextIdx]}
-                    scale={scale}
-                    existingEdit={edits.find(e => e.pageNum === index + 1 && e.nodeIndex === selectedTextIdx)}
-                    onCommit={(newVal, formatOptions) => {
-                      const origItem = pageMetadata[index + 1].items[selectedTextIdx];
+                {activePageNum === index + 1 && selectedBlockIdx !== null && pageMetadata[index + 1].blocks[selectedBlockIdx] && (() => {
+                  const block = pageMetadata[index + 1].blocks[selectedBlockIdx];
+                  const existingEdit = edits.find(e => e.pageNum === index + 1 && e.editType === 'block' && e.blockIndex === selectedBlockIdx);
+                  return (
+                    <InlineEditor
+                      key={existingEdit?.newStr ?? block.text}
+                      block={block}
+                      scale={scale}
+                      existingEdit={existingEdit}
+                      onCommit={(newVal, formatOptions) => {
                       pdfEditStore.commitEdit(activeFileId, {
+                        editType: 'block',
                         pageNum: index + 1,
-                        origStr: origItem.str,
+                        origStr: block.text,
                         newStr: newVal,
-                        origin_y: origItem.pdfY_base,
-                        ascender_h: origItem.ascender_h,
-                        descender_h: origItem.descender_h,
-                        rect: {
-                          x: origItem.pdfX,
-                          y: origItem.pdfY_top,
-                          w: origItem.pdfW,
-                          h: origItem.pdfH
-                        },
-                        origFontSize: origItem.fontSize,
+                        blockRect: block.bbox,
+                        lineHeight: block.lineHeight,
+                        origFontSize: block.fontSize,
                         fontSizeAdj: formatOptions.fontSizeAdj,
-                        fontName: origItem.fontName,
+                        fontName: block.fontName,
                         color: formatOptions.color,
                         customFontFamily: formatOptions.fontFamily,
                         isBold: formatOptions.isBold,
                         isItalic: formatOptions.isItalic,
-                        nodeIndex: selectedTextIdx
+                        blockIndex: selectedBlockIdx
                       });
-                      setSelectedTextIdx(null);
+                      setSelectedBlockIdx(null);
                       // Trigger live backend bake after the store has been updated
                       if (onLivePreview) setTimeout(onLivePreview, 0);
                     }}
-                    onCancel={() => setSelectedTextIdx(null)}
+                    onCancel={() => setSelectedBlockIdx(null)}
                   />
-                )}
+                  );
+                })()}
               </>
             )}
 

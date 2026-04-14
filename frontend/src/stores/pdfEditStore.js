@@ -44,7 +44,16 @@ export const pdfEditStore = {
     }
 
     const editsList = store.get(fileId);
-    const existingIdx = editsList.findIndex(e => e.pageNum === edit.pageNum && e.nodeIndex === edit.nodeIndex);
+
+    // Match by explicit editType + appropriate index
+    const existingIdx = editsList.findIndex(e => {
+      if (e.pageNum !== edit.pageNum) return false;
+      // Block edits match by blockIndex, span edits by nodeIndex
+      if (edit.editType === 'block') {
+        return e.editType === 'block' && e.blockIndex === edit.blockIndex;
+      }
+      return e.editType !== 'block' && e.nodeIndex === edit.nodeIndex;
+    });
     
     if (existingIdx !== -1) {
       // Preserve tracking coordinates (dx, dy) across multiple edit commits
@@ -58,7 +67,7 @@ export const pdfEditStore = {
     emit();
   },
 
-  updateEdit(fileId = activeFileId, pageNum, nodeIndex, partialEdit) {
+  updateEdit(fileId = activeFileId, pageNum, editIndex, partialEdit, editType = 'block') {
     if (!store.has(fileId)) return;
     
     // Save state for undo/redo
@@ -74,7 +83,13 @@ export const pdfEditStore = {
     }
 
     const edits = store.get(fileId);
-    const targetIdx = edits.findIndex(e => e.pageNum === pageNum && e.nodeIndex === nodeIndex);
+    const targetIdx = edits.findIndex(e => {
+      if (e.pageNum !== pageNum) return false;
+      if (editType === 'block') {
+        return e.editType === 'block' && e.blockIndex === editIndex;
+      }
+      return e.editType !== 'block' && e.nodeIndex === editIndex;
+    });
     if (targetIdx !== -1) {
       edits[targetIdx] = { ...edits[targetIdx], ...partialEdit };
       emit();

@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 
 export function DraggableItem({
-  item,
+  block,
   index,
   selectedIdx,
   hasEdit,
@@ -79,14 +79,15 @@ export function DraggableItem({
         position: 'absolute',
         left: r.x,
         top: boxTop,
-        width: hasEdit && hasEdit.newStr !== item.str ? 'max-content' : r.w,
+        width: hasEdit && hasEdit.newStr !== (block?.text || '') ? 'max-content' : r.w,
         minWidth: r.w,
         height: boxHeight,
+        minHeight: boxHeight,
         cursor: isDragging ? 'grabbing' : (hasEdit ? 'grab' : 'text'),
         pointerEvents: 'all',
         backgroundColor: hasEdit || selectedIdx === index ? 'white' : 'transparent',
         display: 'flex',
-        alignItems: 'baseline',
+        alignItems: 'flex-start',
         transform: `translate(${xOffset}px, ${yOffset}px)`,
         userSelect: 'none', // Prevent text selection highlight during drag
       }}
@@ -97,7 +98,7 @@ export function DraggableItem({
             ? 'hover:bg-blue-50/30'
             : 'border-[1px] border-dashed border-transparent hover:border-blue-500 hover:bg-blue-500/5'
       }`}
-      title={hasEdit ? `Edited: ${hasEdit.newStr}` : item.str}
+      title={hasEdit ? `Edited block` : (block?.text ? block.text.substring(0, 60) + '...' : '')}
     >
       {children}
     </div>

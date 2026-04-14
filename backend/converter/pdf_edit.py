@@ -224,6 +224,165 @@ def _find_change_range(orig: str, new: str):
     return prefix_len, orig_end, new_end
 
 
+# ── Helper: map PDF fontName to PyMuPDF Base-14 alias ────────────────────────
+
+BASE14_MAP = {
+    "times": "tiro", "timesnewroman": "tiro", "timesnewromanps": "tiro",
+    "helvetica": "helv", "arial": "helv", "arialmt": "helv",
+    "courier": "cour", "couriernew": "cour",
+    "symbol": "symb", "zapfdingbats": "zadb",
+}
+
+def _resolve_base14(font_name: str) -> str:
+    """Map a PDF fontName to the closest PyMuPDF Base-14 alias.
+    
+    PDF subset fonts can't be re-used for new text (they only contain
+    glyphs that were originally used). Base-14 fonts are always available
+    and cover the full Latin character set.
+    """
+    if not font_name:
+        return "tiro"  # default: serif for academic PDFs
+    clean = font_name.replace("-", "").replace(" ", "").replace(",", "").lower()
+    for key, alias in BASE14_MAP.items():
+        if key in clean:
+            return alias
+    # Default: serif for academic PDFs
+    return "tiro"
+
+
+def _extract_fonts_for_htmlbox(
+    doc: fitz.Document,
+    page: fitz.Page,
+    font_name: str,
+) -> tuple:
+    """Extract ALL font variants (regular/bold/italic/bold-italic) of the
+    target font family from the PDF and prepare them for insert_htmlbox.
+
+    Returns (archive, css_string, font_alias) on success.
+    Returns (None, None, base14_alias) when extraction fails entirely.
+
+    Each variant gets its own @font-face rule with font-weight/font-style
+    discriminators, all under the shared family name 'origfont'. MuPDF's
+    Story engine automatically selects the correct variant based on <b>/<i>
+    tags in the HTML.
+    """
+    if not font_name:
+        return None, None, _resolve_base14(font_name)
+
+    # Strip subset prefix and weight/style suffixes to get the base family name
+    target = font_name.split("+")[-1].lower().replace(" ", "").replace("-", "")
+    for suffix in ("bolditalic", "bold", "italic", "it", "bo", "bi", "regular", "roman"):
+        target = target.replace(suffix, "")
+
+    entries = []  # list of (xref, basefont, font_bytes)
+    for entry in page.get_fonts(full=True):
+        xref   = entry[0]
+        ext    = entry[1]
+        basefont = entry[3]
+
+        if ext == "n/a":
+            continue
+
+        # Check if this font belongs to the same family
+        candidate = basefont.split("+")[-1].lower().replace(" ", "").replace("-", "")
+        family = candidate
+        for suffix in ("bolditalic", "bold", "italic", "it", "bo", "bi", "regular", "roman"):
+            family = family.replace(suffix, "")
+
+        if family != target:
+            continue
+
+        try:
+            font_data = doc.extract_font(xref)
+            buf = font_data[-1]
+            if not buf or len(buf) < 64:
+                continue
+            # Validate that MuPDF can parse these bytes
+            fitz.Font(fontbuffer=buf)
+            entries.append((xref, basefont, buf))
+        except Exception as e:
+            logger.debug(f"Font extraction for htmlbox failed (xref={xref}): {e}")
+            continue
+
+    if not entries:
+        alias = _resolve_base14(font_name)
+        logger.info(
+            f"No extractable font for '{font_name}', using Base-14 '{alias}'"
+        )
+        return None, None, alias
+
+    # Build Archive and CSS with one @font-face per variant
+    arch = fitz.Archive()
+    css_parts = []
+
+    for xref, basefont, buf in entries:
+        member_name = f"origfont_{xref}"
+        arch.add(buf, member_name)
+
+        bl = basefont.lower()
+        # Detect weight and style from font name
+        weight = "bold" if ("bold" in bl or bl.endswith("bo") or bl.endswith("bi")) else "normal"
+        style = "italic" if ("italic" in bl or bl.endswith("it") or bl.endswith("bi")) else "normal"
+
+        css_parts.append(
+            f'@font-face {{font-family: origfont; src: url({member_name}); '
+            f'font-weight: {weight}; font-style: {style};}}'
+        )
+        logger.info(
+            f"  Registered font variant '{basefont}' (xref={xref}) "
+            f"weight={weight} style={style}"
+        )
+
+    css = "\n".join(css_parts) + "\n* {font-family: origfont;}"
+    logger.info(
+        f"Extracted {len(entries)} font variant(s) for family '{font_name}' → Archive ready"
+    )
+    return arch, css, "origfont"
+
+
+# ── Helper: build HTML string for insert_htmlbox ─────────────────────────────
+
+def _build_block_html(
+    text: str,
+    font_alias: str,
+    fontsize: float,
+    color: tuple,
+    bold: bool = False,
+    italic: bool = False,
+    line_height_ratio: float = 1.2,
+) -> str:
+    """Build an HTML string for insert_htmlbox with font, size, color, bold/italic.
+    
+    insert_htmlbox supports <b>, <i>, <br/>, and inline CSS for font control.
+    This preserves newlines as <br/> and wraps in bold/italic tags if requested.
+    Uses text-align:justify to match academic PDF text layout.
+    """
+    hex_color = "#{:02x}{:02x}{:02x}".format(
+        int(color[0] * 255), int(color[1] * 255), int(color[2] * 255)
+    )
+
+    # Escape HTML entities in the text
+    import html as html_mod
+    safe_text = html_mod.escape(text)
+    # Preserve newlines as <br/>
+    safe_text = safe_text.replace("\n", "<br/>")
+
+    # Wrap in bold/italic if requested
+    if bold:
+        safe_text = f"<b>{safe_text}</b>"
+    if italic:
+        safe_text = f"<i>{safe_text}</i>"
+
+    html_string = (
+        f'<p style="font-family:{font_alias};font-size:{fontsize}pt;'
+        f'color:{hex_color};line-height:{line_height_ratio:.3f};'
+        f'text-align:justify;margin:0;padding:0;">'
+        f'{safe_text}'
+        f'</p>'
+    )
+    return html_string
+
+
 @router.post("/apply-edits")
 async def apply_edits(
     file:  UploadFile = File(...),
@@ -244,6 +403,122 @@ async def apply_edits(
         # Enforce sanitization of HTML non-breaking spaces injected by contenteditable
         new_text = new_text.replace("\u00A0", " ").replace("&nbsp;", " ")
         new_text = _expand_ligatures(new_text)
+
+        # ── BLOCK-LEVEL EDITING PATH ─────────────────────────────────────────
+        # Activated when the frontend sends editType='block'. Uses proper
+        # redaction for erasure, Base-14 font mapping, and insert_htmlbox
+        # for mixed bold/italic reflow within the paragraph bounding box.
+        if edit.get("editType") == "block":
+            block_rect_raw = edit.get("blockRect", {})
+            bx = block_rect_raw.get("x", 0)
+            by = block_rect_raw.get("y", 0)
+            bw = block_rect_raw.get("w", 100)
+            bh = block_rect_raw.get("h", 20)
+            block_rect = fitz.Rect(bx, by, bx + bw, by + bh)
+
+            fontsize = edit.get("origFontSize", 11) + edit.get("fontSizeAdj", 0)
+            fontsize = max(4.0, fontsize)
+
+            logger.info(
+                f"BLOCK EDIT page {edit['pageNum']}: rect={block_rect}, "
+                f"fontsize={fontsize}, text_len={len(new_text)}"
+            )
+
+            # Ensure page content stream is balanced before redacting
+            if not page.is_wrapped:
+                page.wrap_contents()
+
+            # Step 1: Erase via proper redaction (preserves images + line art)
+            page.add_redact_annot(block_rect)
+            page.apply_redactions(images=0, graphics=0)
+
+            # Step 2: Try to re-embed original font variants, fall back to Base-14
+            archive, font_css, font_alias = _extract_fonts_for_htmlbox(
+                doc, page, edit.get("fontName", "")
+            )
+
+            # Build **kwargs for insert_htmlbox — omit archive/css entirely
+            # when extraction fails (empty Archive + nonexistent @font-face
+            # causes undefined behavior in MuPDF's Story engine)
+            htmlbox_kwargs = {}
+            if archive is not None:
+                htmlbox_kwargs["archive"] = archive
+                htmlbox_kwargs["css"] = font_css
+
+            # Step 3: Resolve color
+            color_val = edit.get("color", "#000000")
+            if isinstance(color_val, str) and color_val.startswith("#"):
+                hex_c = color_val.lstrip("#")
+                if len(hex_c) == 6:
+                    insert_color = (
+                        int(hex_c[0:2], 16) / 255.0,
+                        int(hex_c[2:4], 16) / 255.0,
+                        int(hex_c[4:6], 16) / 255.0,
+                    )
+                else:
+                    insert_color = (0, 0, 0)
+            else:
+                insert_color = (0, 0, 0)
+
+            # Step 4: Compute actual line-height ratio from PDF measurements
+            pdf_line_height = edit.get("lineHeight", fontsize * 1.2)
+            line_height_ratio = pdf_line_height / fontsize if fontsize > 0 else 1.2
+            # Clamp to a sane range (0.8–3.0) to avoid rendering artifacts
+            line_height_ratio = max(0.8, min(3.0, line_height_ratio))
+
+            logger.info(
+                f"  lineHeight={pdf_line_height:.2f}pt, "
+                f"ratio={line_height_ratio:.3f}, font_alias={font_alias}, "
+                f"archive={'yes' if archive else 'no'}"
+            )
+
+            # Step 5: Build HTML and insert with reflow
+            is_bold = edit.get("isBold", False)
+            is_italic = edit.get("isItalic", False)
+            html_string = _build_block_html(
+                new_text, font_alias, fontsize, insert_color,
+                bold=is_bold, italic=is_italic,
+                line_height_ratio=line_height_ratio,
+            )
+
+            current_fontsize = fontsize
+            rc_raw = page.insert_htmlbox(block_rect, html_string, **htmlbox_kwargs)
+            # insert_htmlbox may return a tuple (rc, overflow) in newer PyMuPDF
+            rc = rc_raw[0] if isinstance(rc_raw, tuple) else rc_raw
+
+            # Overflow retry: shrink fontsize until it fits
+            while rc < 0 and current_fontsize > 4.0:
+                current_fontsize -= 0.5
+                html_string = _build_block_html(
+                    new_text, font_alias, current_fontsize, insert_color,
+                    bold=is_bold, italic=is_italic,
+                    line_height_ratio=line_height_ratio,
+                )
+                # Clear any partial insert from previous attempt
+                page.draw_rect(block_rect, color=(1, 1, 1), fill=(1, 1, 1))
+                rc_raw = page.insert_htmlbox(block_rect, html_string, **htmlbox_kwargs)
+                rc = rc_raw[0] if isinstance(rc_raw, tuple) else rc_raw
+
+            if rc < 0:
+                logger.warning(
+                    f"Block text overflow: couldn't fit in rect even at "
+                    f"{current_fontsize}pt (original {fontsize}pt)"
+                )
+                warnings.append({
+                    "pageNum": edit["pageNum"],
+                    "origStr": orig_text[:50],
+                    "reason": f"Text overflow at {current_fontsize}pt",
+                })
+            else:
+                logger.info(
+                    f"Block insert OK at {current_fontsize}pt "
+                    f"(original {fontsize}pt), rc={rc}"
+                )
+
+            continue  # Skip the span-level path below
+
+        # ── SPAN-LEVEL EDITING PATH (legacy) ─────────────────────────────────
+        # Existing minimal-diff and per-char reconstruction for span edits.
 
         # ── Coordinates (all in MuPDF space via Util.transform at scale=1) ──
         x0       = edit["rect"]["x"]
@@ -573,6 +848,14 @@ async def apply_edits(
                     fontsize=fontsize,
                     color=insert_color,
                 )
+
+    # ── Memory leak mitigation for Archive + insert_htmlbox ─────────────────
+    # MuPDF's Story engine can accumulate font data in its internal store.
+    # Shrink the store after all edits are complete to free cached resources.
+    try:
+        fitz.TOOLS.store_shrink(100)
+    except Exception:
+        pass
 
     # ── Subset embedded fonts to keep file size reasonable ──────────────────
     # Only subsets newly embedded fonts; original subset fonts are untouched.

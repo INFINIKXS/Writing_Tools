@@ -17,3 +17,17 @@ export function pdfToScreen(item, scale) {
     h: item.pdfH     * scale,
   };
 }
+
+/**
+ * Convert a paragraph block's bbox (in PDF points) to CSS pixels.
+ * The bbox has {x, y, w, h} already in MuPDF top-left-origin space.
+ */
+export function blockToScreen(block, scale) {
+  const b = block.bbox;
+  return {
+    x: b.x * scale,
+    y: b.y * scale,
+    w: b.w * scale,
+    h: b.h * scale,
+  };
+}

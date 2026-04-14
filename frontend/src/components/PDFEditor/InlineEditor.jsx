@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { pdfToScreen } from '../../utils/pdfCoords';
+import { blockToScreen } from '../../utils/pdfCoords';
 
 const rgbToHex = (colorStr) => {
   if (!colorStr) return '#000000';
@@ -11,39 +11,39 @@ const rgbToHex = (colorStr) => {
 
 const FONTS = ['Original', 'Arial', 'Times New Roman', 'Courier', 'Verdana', 'Georgia'];
 
-export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) {
-  const [val, setVal] = useState(existingEdit ? existingEdit.newStr : item.str);
+export function InlineEditor({ block, scale, existingEdit, onCommit, onCancel }) {
+  const [val, setVal] = useState(existingEdit ? existingEdit.newStr : block.text);
   
   // Existing formatting
   const [fontSizeAdj, setFontSizeAdj] = useState(existingEdit ? existingEdit.fontSizeAdj : 0);
   
   // New rich formatting
-  const [color, setColor] = useState(() => existingEdit && existingEdit.color ? existingEdit.color : rgbToHex(item.color));
+  const [color, setColor] = useState(() => existingEdit && existingEdit.color ? existingEdit.color : rgbToHex(block.color));
   const [fontFamily, setFontFamily] = useState(existingEdit && existingEdit.customFontFamily ? existingEdit.customFontFamily : 'Original');
   const [isBold, setIsBold] = useState(() => {
     if (existingEdit) return existingEdit.isBold;
-    return item.renderedFontWeight === 'bold' || parseInt(item.renderedFontWeight) >= 600;
+    return false;
   });
   const [isItalic, setIsItalic] = useState(() => {
     if (existingEdit) return existingEdit.isItalic;
-    return item.renderedFontStyle === 'italic';
+    return false;
   });
   
   const [keyboardOffset, setKeyboardOffset] = useState(0);
   
-  const r = pdfToScreen(item, scale);
-  const fsize = Math.max(8, Math.round(item.fontSize * scale) + fontSizeAdj);
+  const r = blockToScreen(block, scale);
+  const fsize = Math.max(8, Math.round(block.fontSize * scale) + fontSizeAdj);
 
-  const spanRef = useRef(null);
+  const editorRef = useRef(null);
 
   // Auto focus and place cursor at end
   useEffect(() => {
-    if (spanRef.current) {
-      spanRef.current.focus();
+    if (editorRef.current) {
+      editorRef.current.focus();
       try {
         const range = document.createRange();
         const sel = window.getSelection();
-        range.selectNodeContents(spanRef.current);
+        range.selectNodeContents(editorRef.current);
         range.collapse(false);
         sel.removeAllRanges();
         sel.addRange(range);
@@ -74,7 +74,7 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
     });
   };
 
-  const currentFontFamily = fontFamily === 'Original' ? `ForceSpace, "${item.fontName}", sans-serif` : fontFamily;
+  const currentFontFamily = fontFamily === 'Original' ? `"${block.fontName}", sans-serif` : fontFamily;
 
   return (
     <>
@@ -92,8 +92,8 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
         onMouseDown={e => e.stopPropagation()}
       >
         <div className="px-2 py-1 text-[10px] text-gray-500 bg-gray-50 rounded-t-md flex items-center justify-between gap-4">
-          <span>Orig: {item.fontName || 'Unknown'}</span>
-          <span>{Math.round(item.fontSize)}px</span>
+          <span>Orig: {block.fontName || 'Unknown'}</span>
+          <span>{Math.round(block.fontSize)}px</span>
         </div>
         <div className="flex gap-1 p-1 items-center">
           <select 
@@ -131,15 +131,17 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
         </div>
       </div>
       
-      <span
-        ref={spanRef}
+      {/* Block-level contentEditable div with fixed width for reflow */}
+      <div
+        ref={editorRef}
         contentEditable
         suppressContentEditableWarning
-        onInput={e => setVal(e.currentTarget.textContent)}
+        onInput={e => setVal(e.currentTarget.innerText)}
         onKeyDown={e => { 
           e.stopPropagation();
           if(e.key === 'Escape') onCancel();
-          if(e.key === 'Enter' && !e.shiftKey) {
+          // Ctrl+Enter or Cmd+Enter to commit (plain Enter inserts line break)
+          if(e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
             e.preventDefault();
             handleCommit();
           }
@@ -153,33 +155,34 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
         className="shadow-xl"
         style={{
           position: 'absolute',
-          top: item.top !== undefined ? item.top : r.y,
-          left: item.left !== undefined ? item.left : r.x,
-          transform: item.transform ? (keyboardOffset ? `translateY(${-keyboardOffset}px) ${item.transform}` : item.transform) : `translateY(${-keyboardOffset}px)`,
+          top: r.y,
+          left: r.x,
+          width: `${r.w}px`,
+          minHeight: `${r.h}px`,
+          transform: keyboardOffset ? `translateY(${-keyboardOffset}px)` : undefined,
           transformOrigin: '0% 0%',
-          fontFamily: fontFamily !== 'Original' ? currentFontFamily : (item.renderedFontFamily || 'sans-serif'),
-          fontSize: `${(item.renderedFontSize || fsize) + fontSizeAdj}px`,
+          fontFamily: currentFontFamily,
+          fontSize: `${fsize}px`,
           fontWeight: isBold ? 'bold' : 'normal',
           fontStyle: isItalic ? 'italic' : 'normal',
           color: color,
-          whiteSpace: 'pre',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-word',
           outline: 'none',
-          background: 'transparent',
-          minWidth: '1ch',
-          display: 'block',
+          background: 'rgba(255,255,255,0.95)',
           cursor: 'text',
           zIndex: 100,
-
-          // -- The Box Model Fixes --
-          lineHeight: item.lineHeight || 'normal', // Use pdf.js's native line-height
+          lineHeight: 1.2,
+          padding: '2px',
+          boxSizing: 'border-box',
           textDecoration: 'underline',           
           textDecorationStyle: 'dashed',         
           textDecorationColor: '#3b82f6',        
           textUnderlineOffset: '4px',            
         }}
       >
-        {existingEdit ? existingEdit.newStr : item.str}
-      </span>
+        {existingEdit ? existingEdit.newStr : block.text}
+      </div>
     </>
   );
 }
