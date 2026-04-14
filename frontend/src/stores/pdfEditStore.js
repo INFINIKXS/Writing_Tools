@@ -110,5 +110,19 @@ export const pdfEditStore = {
     undoStacks.delete(fileId);
     redoStacks.delete(fileId);
     emit();
+  },
+
+  // ─── clearEdits ────────────────────────────────────────────────────────────
+  // Called after a successful bake so the store no longer holds pre-bake
+  // origStr / nodeIndex mappings that are now stale (they've been consumed
+  // into the PDF bytes).  Keeping them would cause:
+  //   1. existingEdit matching wrong items after nodeIndex drift
+  //   2. origStr pointing to text that no longer exists in the baked PDF
+  //   3. Deleted words reappearing in the InlineEditor
+  clearEdits(fileId = activeFileId) {
+    store.set(fileId, []);
+    // Intentionally not clearing undoStacks/redoStacks per review feedback,
+    // so that undo workflow doesn't break if edits span multiple live bakes.
+    emit();
   }
 };

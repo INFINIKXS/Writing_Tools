@@ -168,6 +168,32 @@ function DraggableElement({ annotation, onUpdate, onDelete, scale }) {
 export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdateAnnotation, onDeleteAnnotation, onCanvasClick, isWandActive, onLivePreview }) {
   const [numPages, setNumPages] = useState(null);
 
+  // ─── Dual-document pattern (eliminates the white-flash on bake) ─────────────
+  // When a new `file` prop arrives we keep the previous document rendered as
+  // a fully-opaque backdrop while the new one loads invisibly underneath it.
+  // Once the new document fires onLoadSuccess we hide the backdrop.
+  // This means there is never a moment of blank canvas for the user.
+  const [previousFile, setPreviousFile] = useState(null);
+  const [isNewDocLoading, setIsNewDocLoading] = useState(false);
+  // Separate page count for the backdrop so it renders the right number of pages
+  const [previousNumPages, setPreviousNumPages] = useState(null);
+
+  const [fileGeneration, setFileGeneration] = useState(0);
+  const scrollContainerRef = useRef(null);
+
+  useEffect(() => {
+    // When the file prop changes (new bake arrived), start the loading transition.
+    // Guard against the very first load where previousFile is still null.
+    if (file && file !== previousFile) {
+      if (previousFile !== null) {
+        setIsNewDocLoading(true);
+      }
+    }
+  // previousFile is intentionally NOT in the dep array — we only want to fire
+  // when `file` changes, and we read previousFile as a live ref via the callback.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [file]);
+
   const [pageMetadata, setPageMetadata] = useState({});
   const [selectedTextIdx, setSelectedTextIdx] = useState(null);
   const [activePageNum, setActivePageNum] = useState(null);
@@ -335,13 +361,28 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
     return () => window.removeEventListener('keydown', handleGlobalKey);
   }, []);
 
-  // ─── Document load ────────────────────────────────────────────────────────
-  function onDocumentLoadSuccess({ numPages }) {
-    setNumPages(numPages);
-    // FIX: Reset both state and the extraction ref when a new file loads.
-    // Without this, uploading a second PDF reuses stale items from the first.
+  // ─── Document load ──────────────────────────────────────────────────────────
+  function onDocumentLoadSuccess({ numPages: n }) {
+    const savedScrollPos = scrollContainerRef.current ? scrollContainerRef.current.scrollTop : 0;
+
+    setNumPages(n);
+    
+    // ALL of these must happen in the SAME React batch:
     setPageMetadata({});
     pageItemsExtracted.current = {};
+    pdfEditStore.clearEdits(activeFileId);
+    setFileGeneration(prev => prev + 1);  // ← SYNCHRONOUS, not in setTimeout
+    
+    setPreviousNumPages(n);
+    setPreviousFile(file);
+    setIsNewDocLoading(false);
+
+    // Restore scroll after React commits the new DOM
+    requestAnimationFrame(() => {
+        if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = savedScrollPos;
+        }
+    });
   }
 
   if (!file) {
@@ -354,21 +395,64 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
 
   return (
     <div
-      className="flex flex-col items-center overflow-auto bg-gray-200 p-8 border rounded-xl shadow-inner h-full"
+      ref={scrollContainerRef}
+      className="flex flex-col items-center overflow-auto bg-gray-200 p-8 border rounded-xl shadow-inner h-full relative"
       onClick={() => {
         annotations.forEach(a => { if (a.isEditing) onUpdateAnnotation({ ...a, isEditing: false }) });
         setSelectedTextIdx(null);
       }}
     >
+      {/*
+        DUAL-DOCUMENT PATTERN
+        ────────────────────────────────────────────────────────────────
+        While a new baked PDF is loading we render the OLD document as a static
+        backdrop (position:absolute, z-index:0, opacity:1) so the user never
+        sees a blank white or black canvas.  The incoming Document is rendered
+        on top but invisible (opacity:0).  The instant onLoadSuccess fires we
+        flip isNewDocLoading=false, the backdrop disappears, and the new
+        document fades in.  Net result: zero flash.
+      */}
+      {isNewDocLoading && previousFile && (
+        <Document
+          file={previousFile}
+          className="flex flex-col gap-6"
+          style={{ position: 'absolute', top: 0, left: 0, right: 0, zIndex: 0, pointerEvents: 'none' }}
+          loading={null}
+        >
+          {Array.from(new Array(previousNumPages || numPages), (_, index) => (
+            <Page
+              key={`prev_page_${index + 1}`}
+              pageNumber={index + 1}
+              scale={scale}
+              renderTextLayer={false}
+              renderAnnotationLayer={false}
+              loading={null}
+            />
+          ))}
+        </Document>
+      )}
+
+      {/* The active / incoming document */}
       <Document
         file={file}
         onLoadSuccess={onDocumentLoadSuccess}
+        onLoadError={(error) => {
+          console.error('PDFViewer: document load error', error);
+          // Safety: always clear the loading overlay so the UI doesn't get stuck
+          setIsNewDocLoading(false);
+        }}
         className="flex flex-col gap-6"
+        style={{
+          opacity: isNewDocLoading ? 0 : 1,
+          transition: 'opacity 0.15s ease',
+          position: 'relative',
+          zIndex: 1,
+        }}
         loading={<div className="font-semibold text-blue-500 animate-pulse">Loading document...</div>}
       >
         {Array.from(new Array(numPages), (el, index) => (
           <div
-            key={`page_${index + 1}`}
+            key={`page_${fileGeneration}_${index + 1}`}
             ref={el => { pageContainerRefs.current[index + 1] = el; }}
             className={`relative bg-white shadow-2xl transition-shadow duration-300 ease-in-out ${isWandActive ? 'hover:shadow-indigo-200' : 'hover:shadow-cyan-100/50'}`}
             onPointerDown={(e) => {
@@ -503,12 +587,15 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
                   }}
                 />
 
-                {activePageNum === index + 1 && selectedTextIdx !== null && pageMetadata[index + 1].items[selectedTextIdx] && (
-                  <InlineEditor
-                    item={pageMetadata[index + 1].items[selectedTextIdx]}
-                    scale={scale}
-                    existingEdit={edits.find(e => e.pageNum === index + 1 && e.nodeIndex === selectedTextIdx)}
-                    onCommit={(newVal, formatOptions) => {
+                {activePageNum === index + 1 && selectedTextIdx !== null && pageMetadata[index + 1].items[selectedTextIdx] && (() => {
+                  const item = pageMetadata[index + 1].items[selectedTextIdx];
+                  return (
+                    <InlineEditor
+                      key={`${activePageNum}-${selectedTextIdx}-${item.str}`}
+                      item={item}
+                      scale={scale}
+                      existingEdit={edits.find(e => e.pageNum === index + 1 && e.nodeIndex === selectedTextIdx)}
+                      onCommit={(newVal, formatOptions) => {
                       const origItem = pageMetadata[index + 1].items[selectedTextIdx];
                       pdfEditStore.commitEdit(activeFileId, {
                         pageNum: index + 1,
@@ -538,7 +625,8 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
                     }}
                     onCancel={() => setSelectedTextIdx(null)}
                   />
-                )}
+                  );
+                })()}
               </>
             )}
 

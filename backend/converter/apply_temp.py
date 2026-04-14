@@ -1,244 +1,16 @@
-import fitz
-import io
-import json
-import logging
-from fastapi import APIRouter, UploadFile, Form, File
-from fastapi.responses import StreamingResponse
-from .font_utils import get_font_for_edit
+import re
+import os
 
-logger = logging.getLogger(__name__)
-router = APIRouter()
+pdf_edit_path = r"c:\Users\Paradox-Labs\Documents\Projects\Writing_Tools\backend\converter\pdf_edit.py"
 
-# Module-level: prevents PyMuPDF from using max ascender/descender heights,
-# which cause redaction boxes to bleed into adjacent lines.
-fitz.TOOLS.set_small_glyph_heights(True)
+with open(pdf_edit_path, "r", encoding="utf-8") as f:
+    content = f.read()
 
-# Expand Unicode ligature codepoints to their component characters.
-# rawdict always reports ligatures as separate chars (e.g. 'f','i' not 'fi'),
-# so we must normalize user text to match. The old _substitute_ligatures did
-# the OPPOSITE (converting 'fi' → U+FB01), creating false diffs.
-LIGATURE_EXPAND = {
-    "\uFB00": "ff", "\uFB01": "fi", "\uFB02": "fl",
-    "\uFB03": "ffi", "\uFB04": "ffl",
-    "\uFB05": "st", "\uFB06": "st",
-}
-def _expand_ligatures(text: str) -> str:
-    """Expands Unicode ligature codepoints to component characters."""
-    for lig, expanded in LIGATURE_EXPAND.items():
-        text = text.replace(lig, expanded)
-    return text
+# We want to replace everything from `    for edit in edits_list:` 
+# down to `    # ── Subset embedded fonts to keep file size reasonable ──`
+# Which is approximately line 240 to 577.
 
-
-# ── Helper: measure true rendered width from rawdict per-character bboxes ────
-
-def _measure_span_width(page: fitz.Page, x0: float, origin_y: float):
-    """
-    Measure the true rendered width of text at the given baseline origin.
-
-    Uses rawdict per-character bboxes for ground-truth measurement.
-    Matching is purely spatial — no text comparison — so it works correctly with:
-      - Subset fonts (unmapped glyphs rendered as U+FFFD)
-      - Ligatures (fi/fl/ffi stored as single glyphs)
-      - Multi-span lines (bold/italic segments within a word)
-
-    Returns: (width, matched_span_dict) or (None, None) on failure.
-    """
-    BASELINE_TOLERANCE = 2.0  # points
-
-    # Generous clip: 300pt wide to catch the full span even if x0 is at the start
-    clip = fitz.Rect(x0 - 5, origin_y - 15, x0 + 300, origin_y + 10)
-    try:
-        rd = page.get_text("rawdict", clip=clip)
-    except Exception:
-        return None, None
-
-    # Collect all spans on the same baseline
-    baseline_spans = []
-    for block in rd.get("blocks", []):
-        if block.get("type", 0) != 0:  # text blocks only
-            continue
-        for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                span_origin = span.get("origin", (0, 0))
-                # Same baseline? (within tolerance)
-                if abs(span_origin[1] - origin_y) <= BASELINE_TOLERANCE:
-                    baseline_spans.append(span)
-
-    if not baseline_spans:
-        return None, None
-
-    # Find the span whose origin x is closest to the target x0
-    best_span = min(baseline_spans, key=lambda s: abs(s["origin"][0] - x0))
-
-    # Measure width from per-character bboxes (rawdict always has "chars")
-    chars = best_span.get("chars", [])
-    if not chars:
-        # Fall back to span bbox if chars list is empty
-        sb = best_span.get("bbox", (0, 0, 0, 0))
-        return sb[2] - sb[0], best_span
-
-    # first char left edge to last char right edge = true rendered width
-    measured_w = chars[-1]["bbox"][2] - chars[0]["bbox"][0]
-
-    # Check for multi-span continuation: if there are adjacent spans
-    # on the same baseline that start immediately after this one ends,
-    # include them in the measurement (handles mid-word font changes)
-    last_x = chars[-1]["bbox"][2]
-    for other_span in baseline_spans:
-        if other_span is best_span:
-            continue
-        other_chars = other_span.get("chars", [])
-        if not other_chars:
-            continue
-        gap = other_chars[0]["bbox"][0] - last_x
-        # If gap < 1pt, these spans are contiguous (same word, different styling)
-        if 0 <= gap < 1.0:
-            measured_w += (other_chars[-1]["bbox"][2] - other_chars[0]["bbox"][0]) + gap
-            last_x = other_chars[-1]["bbox"][2]
-
-    logger.info(f"_measure_span_width: x0={x0:.1f} origin_y={origin_y:.1f} → width={measured_w:.2f}")
-    return measured_w, best_span
-
-
-# ── Helper: get per-font space width from get_texttrace() ────────────────────
-
-def _get_space_width(page: fitz.Page, x0: float, origin_y: float, fontsize: float) -> float:
-    """
-    Get the space width from get_texttrace() — far more accurate than fontsize * 0.25.
-
-    get_texttrace() derives spacewidth from the font where possible, which is
-    the maintainer-recommended replacement for the fixed 0.25em approximation.
-    Spatially matches by baseline coordinates.
-    Cross-validates against rawdict font size to compensate for the known trm bug.
-    """
-    BASELINE_TOL = 3.0
-    try:
-        for tspan in page.get_texttrace():
-            tbox = tspan.get("bbox", (0, 0, 0, 0))
-            # Check: does this trace span cover our x0 and share our baseline?
-            if tbox[0] - 5 <= x0 <= tbox[2] + 5:
-                # Baseline check: trace span bbox y-range should contain origin_y
-                if tbox[1] - BASELINE_TOL <= origin_y <= tbox[3] + BASELINE_TOL:
-                    sw = tspan.get("spacewidth")
-                    if sw and sw > 0:
-                        # Cross-validate font size (trm bug workaround)
-                        trace_size = tspan.get("size", fontsize)
-                        if trace_size > 0 and abs(trace_size - fontsize) > 1.0:
-                            sw = sw * (fontsize / trace_size)
-                        logger.info(f"_get_space_width: spacewidth={sw:.2f} from texttrace")
-                        return sw
-    except Exception as e:
-        logger.debug(f"_get_space_width: texttrace failed: {e}")
-    logger.info(f"_get_space_width: falling back to fontsize*0.25 = {fontsize * 0.25:.2f}")
-    return fontsize * 0.25  # last resort
-
-
-# ── Helper: build per-character advance width table from rawdict ──────────────
-
-def _build_advance_table(rawdict_chars: list, fontsize: float) -> dict:
-    """
-    Build a per-character advance width table from rawdict character positions.
-
-    Computes the advance width of each character from the origin.x difference
-    between consecutive characters. This is the GROUND TRUTH — it reflects
-    exactly how the PDF engine laid out the text, including all kerning,
-    tracking, word spacing, and justification adjustments.
-
-    Returns: {char: advance_in_pt} — advance widths in absolute points
-    at the given fontsize. Values are the median of all observations for
-    each character (robust against justification outliers).
-    """
-    if not rawdict_chars or fontsize <= 0:
-        return {}
-
-    # Collect all observed advances per character
-    char_advances: dict[str, list[float]] = {}
-
-    for i in range(len(rawdict_chars)):
-        ch = rawdict_chars[i].get("c", "")
-        if not ch:
-            continue
-
-        if i + 1 < len(rawdict_chars):
-            # Normal case: advance = next origin - this origin
-            this_x = rawdict_chars[i]["origin"][0]
-            next_x = rawdict_chars[i + 1]["origin"][0]
-            adv = next_x - this_x
-        else:
-            # Last character: use bbox width as fallback
-            bbox = rawdict_chars[i].get("bbox", (0, 0, 0, 0))
-            origin_x = rawdict_chars[i]["origin"][0]
-            adv = bbox[2] - origin_x
-
-        if adv > 0:
-            char_advances.setdefault(ch, []).append(adv)
-
-    # Use median of observations for each character
-    result = {}
-    for ch, advs in char_advances.items():
-        sorted_advs = sorted(advs)
-        result[ch] = sorted_advs[len(sorted_advs) // 2]
-
-    # Log summary
-    space_adv = result.get(" ", 0)
-    letter_advs = [v for k, v in result.items() if k != " "]
-    avg_letter = sum(letter_advs) / len(letter_advs) if letter_advs else fontsize * 0.5
-    logger.info(
-        f"_build_advance_table: {len(result)} chars, "
-        f"space={space_adv:.2f}pt, avg_letter={avg_letter:.2f}pt"
-    )
-    return result
-
-# ── Helper: find the minimal change range between two strings ────────────────
-
-def _find_change_range(orig: str, new: str):
-    """
-    Find the character range that differs between orig and new.
-
-    Returns (prefix_len, orig_end, new_end) where:
-      - orig[prefix_len:orig_end] is the changed region of the original
-      - new[prefix_len:new_end] is the replacement
-      - orig[:prefix_len] == new[:prefix_len]  (common prefix)
-      - orig[orig_end:] == new[new_end:]        (common suffix)
-    """
-    # Common prefix
-    prefix_len = 0
-    for i in range(min(len(orig), len(new))):
-        if orig[i] == new[i]:
-            prefix_len += 1
-        else:
-            break
-
-    # Common suffix (from the end, not overlapping with prefix)
-    suffix_len = 0
-    max_suffix = min(len(orig) - prefix_len, len(new) - prefix_len)
-    for i in range(1, max_suffix + 1):
-        if orig[-i] == new[-i]:
-            suffix_len += 1
-        else:
-            break
-
-    orig_end = len(orig) - suffix_len
-    new_end = len(new) - suffix_len
-
-    return prefix_len, orig_end, new_end
-
-
-@router.post("/apply-edits")
-async def apply_edits(
-    file:  UploadFile = File(...),
-    edits: str        = Form(...),
-):
-    data       = await file.read()
-    edits_list = json.loads(edits)
-
-    doc = fitz.open(stream=data, filetype="pdf")
-
-    # Accumulate warnings to return to the frontend
-    warnings = []
-
-    # Group edits by page
-    from collections import defaultdict
+new_logic = """    from collections import defaultdict
     edits_by_page = defaultdict(list)
     for edit in edits_list:
         edits_by_page[edit["pageNum"]].append(edit)
@@ -257,7 +29,7 @@ async def apply_edits(
             orig_text = edit.get("origStr", "")
             new_text = edit.get("newStr", "")
             # Enforce sanitization of HTML non-breaking spaces injected by contenteditable
-            new_text = new_text.replace("\u00A0", " ").replace("&nbsp;", " ")
+            new_text = new_text.replace("\\u00A0", " ").replace("&nbsp;", " ")
             new_text = _expand_ligatures(new_text)
 
             # ── Coordinates (all in MuPDF space via Util.transform at scale=1) ──
@@ -328,13 +100,8 @@ async def apply_edits(
 
             plan = {
                 "erase_rects": [],
-                "insert_chars": [],
-                "font_registrations": {}  # fontname -> font_buffer for re-registration after redaction
+                "insert_chars": []
             }
-
-            # Pre-record font registration for this edit
-            if font_result.font_buffer:
-                plan["font_registrations"][font_result.fontname] = font_result.font_buffer
 
             # ── MINIMAL-DIFF EDITING ─────────────────────────────────────────────
             rawdict_chars = matched_span.get("chars", []) if matched_span else []
@@ -537,18 +304,6 @@ async def apply_edits(
                 page.add_redact_annot(rect, fill=(1, 1, 1))
         page.apply_redactions(images=0, graphics=0)
 
-        # ── Phase 2.5: Re-register fonts after redaction ──
-        # apply_redactions() strips font resources from the page, so any
-        # previously registered embedded fonts become unavailable.
-        # Re-register every unique font we plan to use.
-        registered_fonts = set()
-        for plan in edit_plans:
-            for fontname, font_buffer in plan["font_registrations"].items():
-                if fontname not in registered_fonts:
-                    page.insert_font(fontname=fontname, fontbuffer=font_buffer)
-                    registered_fonts.add(fontname)
-                    logger.info(f"Re-registered font '{fontname}' after redaction")
-
         # ── Phase 3: Insert all new text ──
         for plan in edit_plans:
             for char_op in plan["insert_chars"]:
@@ -560,106 +315,19 @@ async def apply_edits(
                     color=char_op["color"],
                     morph=char_op["morph"]
                 )
+"""
 
-    # ── Subset embedded fonts to keep file size reasonable ──────────────────
-    # Only subsets newly embedded fonts; original subset fonts are untouched.
-    try:
-        doc.subset_fonts()
-    except Exception as e:
-        logger.warning(f"subset_fonts() failed (non-fatal): {e}")
+start_marker = "    for edit in edits_list:"
+end_marker = "    # ── Subset embedded fonts to keep file size reasonable ──────────────────"
 
-    # ── Serialise ────────────────────────────────────────────────────────────
-    buf = io.BytesIO()
-    doc.save(buf, garbage=4, deflate=True)
-    buf.seek(0)
+start_idx = content.find(start_marker)
+end_idx = content.find(end_marker)
 
-    # Encode warnings as a response header so the frontend can read them
-    # without having to parse a multipart body.
-    # Max header size is ~8 KB; warnings are short strings so this is safe.
-    import urllib.parse
-    warnings_header = urllib.parse.quote(json.dumps(warnings)) if warnings else ""
+if start_idx != -1 and end_idx != -1:
+    new_content = content[:start_idx] + new_logic + "\\n" + content[end_idx:]
+    with open(pdf_edit_path, "w", encoding="utf-8") as f:
+        f.write(new_content)
+    print("Successfully rewritten pdf_edit.py")
+else:
+    print("Marks not found!")
 
-    return StreamingResponse(
-        buf,
-        media_type="application/pdf",
-        headers={
-            "Content-Disposition":        "attachment; filename=edited.pdf",
-            "Access-Control-Expose-Headers": "Content-Disposition, X-Font-Warnings",
-            "X-Font-Warnings":            warnings_header,
-        },
-    )
-
-
-# ── Helper: resolve the text color to use ────────────────────────────────────
-
-def _resolve_color(
-    page:  fitz.Page,
-    edit:  dict,
-    x0: float, y0: float, x1: float, y1: float,
-) -> tuple:
-    """
-    Priority:
-      1. Explicit hex color chosen by the user in the editor (#rrggbb).
-      2. Color sampled from the original PDF span at the edit's bbox.
-      3. Black (0, 0, 0).
-    """
-    explicit = edit.get("color", "")
-    if explicit and explicit.startswith("#") and len(explicit) == 7:
-        try:
-            return (
-                int(explicit[1:3], 16) / 255.0,
-                int(explicit[3:5], 16) / 255.0,
-                int(explicit[5:7], 16) / 255.0,
-            )
-        except ValueError:
-            pass
-
-    # Sample from the PDF's own text data
-    try:
-        clip     = fitz.Rect(x0, y0, x1, y1)
-        text_dict = page.get_text("dict", clip=clip)
-        for block in text_dict.get("blocks", []):
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    srgb = span.get("color", 0)
-                    return (
-                        ((srgb >> 16) & 255) / 255.0,
-                        ((srgb >>  8) & 255) / 255.0,
-                        ( srgb        & 255) / 255.0,
-                    )
-    except Exception:
-        pass
-
-    return (0.0, 0.0, 0.0)  # default black
-
-# ── Helper: resolve the true font name via spatial lookup ────────────────────
-
-def _resolve_font_name(
-    page:  fitz.Page,
-    edit:  dict,
-    x0: float, y0: float, x1: float, y1: float,
-) -> str:
-    """
-    If the frontend sends a synthetic PDF.js font ID (like "g_d0_f9"), we query
-    PyMuPDF's spatial text dictionary at the edit coordinates *before* erasure
-    to extract the actual document root BaseFont name (like "DejaVuSans").
-    """
-    original_font = edit.get("fontName", "")
-    
-    # Check if it looks like a generated ID, or just always try to sample if possible
-    # We will try sampling for everything to be safe. PDF.js usually uses "g_d...", "F1", etc.
-    try:
-        # We add a slight margin just in case the client tight-cropped the bbox
-        clip = fitz.Rect(x0 - 1, y0, x1 + 1, y1)
-        text_dict = page.get_text("dict", clip=clip)
-        for block in text_dict.get("blocks", []):
-            for line in block.get("lines", []):
-                for span in line.get("spans", []):
-                    found_font = span.get("font")
-                    if found_font:
-                        # Return the true underlying font name immediately
-                        return found_font
-    except Exception:
-        pass
-        
-    return original_font

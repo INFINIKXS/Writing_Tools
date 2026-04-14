@@ -1,8 +1,47 @@
-import React, { useState, useCallback, useRef, useMemo } from 'react';
+import React, { useState, useCallback, useRef, useMemo, useEffect } from 'react';
 import Toolbar from '../components/PDFEditor/Toolbar';
 import PDFViewer from '../components/PDFEditor/Viewer';
 import { applyTextAnnotations } from '../utils/pdfModifier';
 import { pdfEditStore, activeFileId } from '../stores/pdfEditStore';
+
+// ─── Error Boundary ──────────────────────────────────────────────────────────
+// Catches any React render crash inside the PDF viewer and displays a
+// recoverable fallback instead of unmounting to the black body background.
+class PDFErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error, info) {
+    console.error('PDF render error caught by boundary:', error, info);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="flex items-center justify-center h-full text-slate-400">
+          <div className="text-center p-8">
+            <div className="text-5xl mb-4 opacity-30">⚠️</div>
+            <p className="text-lg font-semibold mb-2 text-slate-300">PDF failed to render</p>
+            <p className="text-sm text-slate-500 mb-6">An unexpected error occurred in the PDF viewer.</p>
+            <button
+              className="text-sm underline text-blue-400 hover:text-blue-300 transition-colors"
+              onClick={() => this.setState({ hasError: false })}
+            >
+              Try again
+            </button>
+          </div>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 export default function PDFEditorPage() {
   const [currentFile, setCurrentFile] = useState(null);
@@ -14,11 +53,25 @@ export default function PDFEditorPage() {
   const [isWandActive, setIsWandActive] = useState(false);
   const [defaultStyle, setDefaultStyle] = useState({ font: 'Helvetica', size: 16 });
 
-  // Live preview: blob URL of the most recently baked PDF from the backend.
-  // When set, the viewer displays this instead of the raw upload.
+  // Live preview: stable object URL of the most recently baked PDF.
+  // We store the URL in a ref so we can revoke the old one before creating a
+  // new one, preventing memory leaks.  We also keep it in state so the viewer
+  // re-renders when it changes.
   const [livePreviewUrl, setLivePreviewUrl] = useState(null);
   const [isLiveBaking, setIsLiveBaking] = useState(false);
+  // objectUrlRef tracks the *current* blob URL so we can revoke it on the
+  // next bake or on unmount.  prevLiveUrlRef is kept for the upload-clear path.
+  const objectUrlRef = useRef(null);
   const prevLiveUrlRef = useRef(null);
+
+  // Revoke any outstanding object URL when the component unmounts.
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+    };
+  }, []);
 
   // Stable file reference — only changes when livePreviewUrl or currentFile actually changes.
   // Without useMemo, { url: livePreviewUrl } creates a new object every render,
@@ -60,45 +113,60 @@ export default function PDFEditorPage() {
     setIsLiveBaking(true);
     try {
       const fd = new FormData();
-      // Always bake from the ORIGINAL upload so edits don't compound each other
-      fd.append('file', currentFile, 'document.pdf');
+      // Always bake from the ORIGINAL upload so edits don't compound each other.
+      // If currentFile is already a string URL (from a previous bake), we need
+      // to fetch it back into a Blob first before re-uploading.
+      let sourceFile;
+      if (typeof currentFile === 'string') {
+        // currentFile is an object URL from a previous bake — fetch it locally
+        const localRes = await fetch(currentFile);
+        const localBlob = await localRes.blob();
+        sourceFile = new File([localBlob], 'document.pdf', { type: 'application/pdf' });
+      } else {
+        sourceFile = currentFile;
+      }
+      fd.append('file', sourceFile, 'document.pdf');
       fd.append('edits', JSON.stringify(inlineEdits));
 
       const res = await fetch('http://localhost:8000/api/pdf/apply-edits', { method: 'POST', body: fd });
       if (!res.ok) throw new Error(`Live bake failed: ${res.status}`);
-      
+
       const warningsHeader = res.headers.get('X-Font-Warnings');
       if (warningsHeader) {
         try {
           const parsedWarnings = JSON.parse(decodeURIComponent(warningsHeader));
           if (parsedWarnings && parsedWarnings.length > 0) {
             setFontWarnings(parsedWarnings);
-            // Auto dismiss toast after 8s
+            // Auto-dismiss toast after 8 s
             setTimeout(() => setFontWarnings([]), 8000);
           }
         } catch (e) {
-          console.error("Failed to parse font warnings", e);
+          console.error('Failed to parse font warnings', e);
         }
       }
 
       const blob = await res.blob();
-
-      // ── Make the baked PDF the new editing baseline ──
-      // Converting the blob to a File + ArrayBuffer means the next bake sends
-      // this already-baked version as the source, naturally compounding edits.
-      // Clearing the store removes CSS overlays that would otherwise double-render
-      // on top of the already-baked canvas content.
-      const bakedFile = new File([blob], currentFile.name || 'document.pdf', { type: 'application/pdf' });
       const bakedBytes = await blob.arrayBuffer();
 
-      pdfEditStore.clear(activeFileId);   // edits are now baked-in, overlays no longer needed
-      setCurrentFile(bakedFile);           // triggers viewer to load the baked PDF
-      setFileBytes(bakedBytes);
+      // ── Stable URL strategy ──────────────────────────────────────────────
+      // Instead of wrapping the blob in a new File object (which creates a new
+      // reference, causing react-pdf to fully re-initialize the document),
+      // we pass a string object URL.  react-pdf compares string file props by
+      // value — the same URL string on a re-render does NOT trigger a reload,
+      // and a new string URL (different value) triggers a smooth transition.
+      //
+      // We revoke the *previous* URL right before creating the new one so that
+      // the old blob is freed from memory without any gap in display.
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+      }
+      const newUrl = URL.createObjectURL(blob);
+      objectUrlRef.current = newUrl;
 
-      // No blob URL needed — currentFile IS the baked PDF now
-      if (prevLiveUrlRef.current) URL.revokeObjectURL(prevLiveUrlRef.current);
-      prevLiveUrlRef.current = null;
-      setLivePreviewUrl(null);
+      pdfEditStore.clear(activeFileId); // edits are now baked-in; remove CSS overlays
+      setCurrentFile(newUrl);           // ✅ stable string ref — no full remount
+      setFileBytes(bakedBytes);
+      setLivePreviewUrl(null);          // clear any legacy preview URL
     } catch (err) {
       console.error('Live preview error:', err);
     } finally {
@@ -247,16 +315,18 @@ export default function PDFEditorPage() {
         </div>
       )}
       <div className="flex-1 overflow-hidden p-6 relative">
-         <PDFViewer 
-           file={viewerFile} 
-           scale={scale} 
-           annotations={annotations}
-           onUpdateAnnotation={updateAnnotation}
-           onDeleteAnnotation={deleteAnnotation}
-           onCanvasClick={handleCanvasClick}
-           isWandActive={isWandActive}
-           onLivePreview={handleLivePreview}
-         />
+        <PDFErrorBoundary>
+          <PDFViewer 
+            file={viewerFile} 
+            scale={scale} 
+            annotations={annotations}
+            onUpdateAnnotation={updateAnnotation}
+            onDeleteAnnotation={deleteAnnotation}
+            onCanvasClick={handleCanvasClick}
+            isWandActive={isWandActive}
+            onLivePreview={handleLivePreview}
+          />
+        </PDFErrorBoundary>
       </div>
 
       {/* Font Fallback Warnings Toast */}
