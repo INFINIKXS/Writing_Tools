@@ -400,20 +400,34 @@ async def apply_edits(
                                         f"{est_new_w - erase_w:.1f}pt"
                                     )
 
+                            # ── Word-grouped insertion ──
+                            # Group characters into words, insert each word as one
+                            # string.  Spaces are cursor advances between words.
+                            # This produces one BT/ET (one TextItem) per word
+                            # instead of per letter.
                             cursor_x = erase_x0
+                            current_word = ""
+                            word_start_x = cursor_x
 
                             for ch in changed_new:
                                 if ch == " ":
+                                    # Flush the current word as one insert
+                                    if current_word:
+                                        plan["insert_chars"].append({
+                                            "pos": fitz.Point(word_start_x, change_origin_y),
+                                            "text": current_word,
+                                            "fontname": font_result.fontname,
+                                            "fontsize": fontsize,
+                                            "color": insert_color,
+                                            "morph": None
+                                        })
+                                        current_word = ""
                                     cursor_x += space_adv
+                                    word_start_x = cursor_x
                                 else:
-                                    plan["insert_chars"].append({
-                                        "pos": fitz.Point(cursor_x, change_origin_y),
-                                        "text": ch,
-                                        "fontname": font_result.fontname,
-                                        "fontsize": fontsize,
-                                        "color": insert_color,
-                                        "morph": None
-                                    })
+                                    if not current_word:
+                                        word_start_x = cursor_x
+                                    current_word += ch
                                     if ch in advance_table:
                                         cursor_x += advance_table[ch]
                                     elif measure_font:
@@ -425,6 +439,17 @@ async def apply_edits(
                                             cursor_x += avg_letter_adv
                                     else:
                                         cursor_x += avg_letter_adv
+
+                            # Flush the last word
+                            if current_word:
+                                plan["insert_chars"].append({
+                                    "pos": fitz.Point(word_start_x, change_origin_y),
+                                    "text": current_word,
+                                    "fontname": font_result.fontname,
+                                    "fontsize": fontsize,
+                                    "color": insert_color,
+                                    "morph": None
+                                })
 
                         used_minimal_diff = True
                 else:
@@ -446,11 +471,17 @@ async def apply_edits(
                     prefix_len, raw_end, new_end = _find_change_range(raw_text_fb, new_text)
                     changed_new = new_text[prefix_len:new_end]
 
-                    for i in range(prefix_len):
-                        ch = rawdict_chars[i]
+                    # Insert prefix as one grouped string (one TextItem)
+                    if prefix_len > 0:
+                        prefix_text = "".join(
+                            rawdict_chars[i]["c"] for i in range(prefix_len)
+                        )
                         plan["insert_chars"].append({
-                            "pos": fitz.Point(ch["origin"][0], ch["origin"][1]),
-                            "text": ch["c"],
+                            "pos": fitz.Point(
+                                rawdict_chars[0]["origin"][0],
+                                rawdict_chars[0]["origin"][1],
+                            ),
+                            "text": prefix_text,
                             "fontname": font_result.fontname,
                             "fontsize": fontsize,
                             "color": insert_color,
@@ -508,11 +539,18 @@ async def apply_edits(
                                 "morph": morph
                             })
 
-                    for i in range(raw_end, len(rawdict_chars)):
-                        ch = rawdict_chars[i]
+                    # Insert suffix as one grouped string (one TextItem)
+                    if raw_end < len(rawdict_chars):
+                        suffix_text = "".join(
+                            rawdict_chars[i]["c"]
+                            for i in range(raw_end, len(rawdict_chars))
+                        )
                         plan["insert_chars"].append({
-                            "pos": fitz.Point(ch["origin"][0], ch["origin"][1]),
-                            "text": ch["c"],
+                            "pos": fitz.Point(
+                                rawdict_chars[raw_end]["origin"][0],
+                                rawdict_chars[raw_end]["origin"][1],
+                            ),
+                            "text": suffix_text,
                             "fontname": font_result.fontname,
                             "fontsize": fontsize,
                             "color": insert_color,
@@ -549,17 +587,56 @@ async def apply_edits(
                     registered_fonts.add(fontname)
                     logger.info(f"Re-registered font '{fontname}' after redaction")
 
-        # ── Phase 3: Insert all new text ──
+        # ── Phase 3: Insert all new text (grouped to minimize content stream objects) ──
+        # Each insert_text() call creates a separate BT/ET + Tj in the content
+        # stream.  PDF.js getTextContent() maps each BT/ET to one TextItem, so
+        # per-character insertion means one editing box per letter.  By coalescing
+        # consecutive single-char ops that share the same baseline, font, size,
+        # and color into a single insert_text() call, we get one TextItem per
+        # logical group (prefix, replacement, suffix).
         for plan in edit_plans:
-            for char_op in plan["insert_chars"]:
+            ops = plan["insert_chars"]
+            if not ops:
+                continue
+
+            i = 0
+            while i < len(ops):
+                op = ops[i]
+
+                # Multi-char text or morph — emit solo (already grouped or needs transform)
+                if len(op["text"]) > 1 or op["morph"] is not None:
+                    page.insert_text(
+                        op["pos"], op["text"],
+                        fontname=op["fontname"], fontsize=op["fontsize"],
+                        color=op["color"], morph=op["morph"],
+                    )
+                    i += 1
+                    continue
+
+                # Try to coalesce consecutive single-char ops on the same baseline
+                group_text = op["text"]
+                j = i + 1
+                while j < len(ops):
+                    nxt = ops[j]
+                    if (len(nxt["text"]) == 1
+                            and nxt["morph"] is None
+                            and nxt["fontname"] == op["fontname"]
+                            and abs(nxt["fontsize"] - op["fontsize"]) < 0.01
+                            and nxt["color"] == op["color"]
+                            and abs(nxt["pos"].y - op["pos"].y) < 0.5):
+                        group_text += nxt["text"]
+                        j += 1
+                    else:
+                        break
+
+                # Insert the entire group as one string at the first char's position
                 page.insert_text(
-                    char_op["pos"],
-                    char_op["text"],
-                    fontname=char_op["fontname"],
-                    fontsize=char_op["fontsize"],
-                    color=char_op["color"],
-                    morph=char_op["morph"]
+                    op["pos"], group_text,
+                    fontname=op["fontname"], fontsize=op["fontsize"],
+                    color=op["color"],
                 )
+                logger.info(f"Grouped {j - i} chars into single insert: '{group_text[:40]}...' " if len(group_text) > 40 else f"Grouped {j - i} char(s) into single insert: '{group_text}'")
+                i = j
 
     # ── Subset embedded fonts to keep file size reasonable ──────────────────
     # Only subsets newly embedded fonts; original subset fonts are untouched.

@@ -12,6 +12,74 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+/**
+ * Groups adjacent TextItems into single logical line-items.
+ *
+ * After redaction + re-insertion, a single original sentence-line becomes
+ * multiple TextItems because each insert_text() call creates a separate
+ * content stream object. PDF.js getTextContent() then returns one TextItem
+ * per content stream object instead of one per visual line.
+ *
+ * This post-processing step merges items that share the same baseline,
+ * same font, and are horizontally adjacent (gap < fontSize * 0.5).
+ *
+ * Adapted from the community algorithm in mozilla/pdf.js#10154:
+ *   - Group by Y (baseline), sort by X within each group
+ *   - Merge when (next.x - (current.x + current.width)) < delta
+ *
+ * Also informed by pdf-text-reader (npm) which inserts spaces when
+ * distance-between-text exceeds a font-proportional threshold.
+ */
+function groupAdjacentItems(items) {
+  if (!items || items.length < 2) return items;
+
+  const sorted = [...items].sort((a, b) => {
+    const yDiff = a.pdfY_top - b.pdfY_top;
+    if (Math.abs(yDiff) > (a.fontSize || 12) * 0.4) return yDiff;
+    return a.pdfX - b.pdfX;
+  });
+
+  const grouped = [];
+  let current = { ...sorted[0] };
+
+  for (let i = 1; i < sorted.length; i++) {
+    const next = sorted[i];
+    const fontSize = current.fontSize || 12;
+
+    // Same line? Y-top within ±40% of font size
+    const sameLine = Math.abs(next.pdfY_top - current.pdfY_top) <= fontSize * 0.4;
+
+    // Same font SIZE (within 0.5pt) — more reliable than name comparison
+    // because PDF.js assigns different internal font IDs to the original
+    // embedded font vs the re-registered font after redaction+reinsertion.
+    // The original unedited text might have fontName "g_d0_f5" while the
+    // re-inserted edited text has "g_d1_f0" — different IDs, same visual font.
+    const sameFontSize = Math.abs((next.fontSize || 12) - fontSize) < 0.5;
+
+    if (sameLine && sameFontSize) {
+      // Merge everything on the same line with the same font.
+      // Insert space if there's a visible gap between items.
+      const currentRight = current.pdfX + (current.pdfW || 0);
+      const gap = next.pdfX - currentRight;
+      const needsSpace = gap > fontSize * 0.12;
+
+      current = {
+        ...current,
+        str: current.str + (needsSpace ? ' ' : '') + next.str,
+        // Width spans from current's left edge to next's right edge
+        pdfW: (next.pdfX + (next.pdfW || 0)) - current.pdfX,
+        pdfH: Math.max(current.pdfH || 0, next.pdfH || 0),
+      };
+    } else {
+      grouped.push(current);
+      current = { ...next };
+    }
+  }
+  grouped.push(current);
+
+  return grouped;
+}
+
 // Drag component strictly bound to page coordinates
 function DraggableElement({ annotation, onUpdate, onDelete, scale }) {
   const [isDragging, setIsDragging] = useState(false);
@@ -551,9 +619,15 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
                       };
                     });
 
+                  // Group adjacent items into logical sentence-lines.
+                  // After redaction + reinsertion, text is fragmented into
+                  // one TextItem per word/letter.  Grouping merges them back
+                  // into line-level items for a natural editing experience.
+                  const groupedItems = groupAdjacentItems(items);
+
                   setPageMetadata(prev => ({
                     ...prev,
-                    [index + 1]: { size: newSize, items }
+                    [index + 1]: { size: newSize, items: groupedItems }
                     // _colorsApplied is intentionally absent here so the useEffect runs
                   }));
                 } catch (err) {
