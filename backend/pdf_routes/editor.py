@@ -127,210 +127,132 @@ async def encrypt_pdf(password: str, background_tasks: BackgroundTasks, file: Up
 
 def _get_column_boundaries(page):
     """
-    Detect column x-boundaries from character-level positions.
+    Detect columns by clustering the left-edge x-coordinates of text lines.
 
-    Three-pass algorithm:
-      1. Collect all characters with their baseline and font size
-      1b. Filter to dominant font size (excludes superscripts, headers that
-          corrupt the distribution)
-      2. Find the 90th percentile of within-line gaps (robust against outlier
-          gaps caused by cross-column characters sharing a baseline after
-          redaction + reinsertion)
-      3. Find the largest gap between all x-midpoints; if it's > 2× the p90
-          within-line gap AND > 10pt absolute, it's a column gutter.
+    Real two-column body text has a distinctive signature: most lines start
+    at one of exactly two x-coordinates (the left edge of each column).
+    Full-width text has lines that all start at roughly ONE x-coordinate.
+    This is a structural property and is robust against:
+      - Full-width boxes mixed into two-column pages
+      - Margin/sidebar text (doesn't contribute enough lines to form a peak)
+      - Page headers and footers
+      - Rotated text
+
+    Algorithm:
+      1. Get line-level bboxes from PyMuPDF (get_text("dict")).
+      2. Filter out single-line blocks and tiny lines.
+      3. Cluster line x0 values into buckets of width FONT_SIZE.
+      4. Find the two most popular buckets.
+      5. If the two top buckets are well-separated (>50pt apart) and
+         each has a substantial count, this is a two-column page.
     """
     try:
-        rd = page.get_text("rawdict")
+        data = page.get_text("dict")
     except Exception:
         return [[0, page.rect.width]]
 
-    # ── Pass 1: Collect characters with size ──
-    raw_chars = []
-    for block in rd.get("blocks", []):
+    # Collect line x0 (left edge) and x1 (right edge) for every line with
+    # substantial text content. Skip very short lines (captions, footers).
+    line_starts = []  # list of (x0, x1, width)
+    line_sizes = []   # font sizes seen
+
+    for block in data.get("blocks", []):
         if block.get("type", 0) != 0:
             continue
         for line in block.get("lines", []):
-            for span in line.get("spans", []):
-                span_size = span.get("size", 0)
-                for ch in span.get("chars", []):
-                    c = ch.get("c", "")
-                    if not c or c.isspace():
-                        continue
-                    bbox = ch.get("bbox", (0, 0, 0, 0))
-                    origin = ch.get("origin", (0, 0))
-                    x_mid = (bbox[0] + bbox[2]) / 2
-                    raw_chars.append((x_mid, bbox[0], bbox[2], origin[1], span_size))
+            bbox = line.get("bbox", (0, 0, 0, 0))
+            lw = bbox[2] - bbox[0]
+            if lw < 20:  # skip tiny stubs
+                continue
 
-    if len(raw_chars) < 10:
+            # Collect font size from the first span
+            spans = line.get("spans", [])
+            if spans:
+                line_sizes.append(spans[0].get("size", 10))
+
+            line_starts.append((bbox[0], bbox[2], lw))
+
+    if len(line_starts) < 5:
         return [[0, page.rect.width]]
 
-    # ── Pass 1b: Filter to dominant font size ──
-    from collections import Counter, defaultdict
-    size_counts = Counter(round(c[4] * 2) / 2 for c in raw_chars)
-    dominant_size = size_counts.most_common(1)[0][0]
+    # Determine dominant font size (for bucket width)
+    from collections import Counter
+    size_counts = Counter(round(s * 2) / 2 for s in line_sizes)
+    dominant_size = size_counts.most_common(1)[0][0] if size_counts else 10.0
+    bucket_width = max(dominant_size, 6.0)
 
-    size_filtered = [
-        (x_mid, x0, x1, y)
-        for x_mid, x0, x1, y, sz in raw_chars
+    # Filter to lines at dominant font size (removes caption-size text)
+    filtered_starts = [
+        (x0, x1, lw)
+        for (x0, x1, lw), sz in zip(line_starts, line_sizes)
         if abs(round(sz * 2) / 2 - dominant_size) <= 1.0
     ]
-    if len(size_filtered) < 10:
-        size_filtered = [(x_mid, x0, x1, y) for x_mid, x0, x1, y, sz in raw_chars]
+    if len(filtered_starts) < 5:
+        filtered_starts = line_starts
 
-    # ── Pass 1c: Filter out margin/sidebar text ──
-    # Rotated sidebars have each char on its own baseline — drop them.
-    MIN_CHARS_PER_BASELINE = 5
+    # Bucket the x0 values
+    bucket_counts = Counter()
+    for x0, x1, lw in filtered_starts:
+        bucket = round(x0 / bucket_width) * bucket_width
+        bucket_counts[bucket] += 1
 
-    baseline_counts = defaultdict(int)
-    for x_mid, x0, x1, y in size_filtered:
-        key = round(y * 2) / 2
-        baseline_counts[key] += 1
+    # Find the two most popular buckets
+    top = bucket_counts.most_common()
+    if len(top) < 2:
+        return [[filtered_starts[0][0], max(f[1] for f in filtered_starts)]]
 
-    sidebar_filtered = [
-        (x_mid, x0, x1, y)
-        for x_mid, x0, x1, y in size_filtered
-        if baseline_counts[round(y * 2) / 2] >= MIN_CHARS_PER_BASELINE
-    ]
+    b1_x, b1_count = top[0]
+    b2_x, b2_count = top[1]
+    total_lines = len(filtered_starts)
 
-    if len(sidebar_filtered) < 10:
-        sidebar_filtered = size_filtered
-
-    # ── Pass 1d: Filter out full-width baselines ──
-    # Full-width boxes (definition panels, headers, tables) have baselines
-    # whose characters span almost the entire page width — they bridge the
-    # gutter and hide it from detection. A real column-text baseline only
-    # spans about half the page width. We measure each baseline's x-span
-    # and exclude baselines that span more than FULL_WIDTH_THRESHOLD of
-    # the overall text x-range.
-    baseline_xranges = defaultdict(lambda: [float("inf"), float("-inf")])
-    for x_mid, x0, x1, y in sidebar_filtered:
-        key = round(y * 2) / 2
-        if x0 < baseline_xranges[key][0]:
-            baseline_xranges[key][0] = x0
-        if x1 > baseline_xranges[key][1]:
-            baseline_xranges[key][1] = x1
-
-    # Overall text x-range on this page (from sidebar-filtered chars)
-    if sidebar_filtered:
-        overall_x_min = min(c[1] for c in sidebar_filtered)
-        overall_x_max = max(c[2] for c in sidebar_filtered)
-        overall_width = overall_x_max - overall_x_min
-    else:
-        overall_width = page.rect.width
-
-    # A baseline is "full-width" if its x-span exceeds 70% of the overall
-    # text width. Column baselines span ~45-50% of the text width.
-    FULL_WIDTH_THRESHOLD = 0.70
-
-    all_chars = [
-        (x_mid, x0, x1, y)
-        for x_mid, x0, x1, y in sidebar_filtered
-        if (
-            baseline_xranges[round(y * 2) / 2][1]
-            - baseline_xranges[round(y * 2) / 2][0]
-        )
-        / overall_width
-        < FULL_WIDTH_THRESHOLD
-    ]
-
-    # Safety: if the full-width filter is too aggressive (removes everything),
-    # fall back to the sidebar-filtered set
-    if len(all_chars) < 10:
-        all_chars = sidebar_filtered
-
-    logger.info(
-        f"Column detection: dominant_size={dominant_size}pt, "
-        f"using {len(all_chars)}/{len(raw_chars)} chars "
-        f"(dropped {len(size_filtered) - len(sidebar_filtered)} sidebar, "
-        f"{len(sidebar_filtered) - len(all_chars)} full-width chars)"
+    # For a true two-column page, BOTH clusters should account for at least
+    # 15% of the dominant-size lines. If only one cluster dominates (>70%),
+    # it's single-column text.
+    min_cluster_share = 0.15
+    is_two_column = (
+        b1_count >= total_lines * min_cluster_share
+        and b2_count >= total_lines * min_cluster_share
+        and abs(b1_x - b2_x) > 50  # columns must be at least 50pt apart
     )
 
-    # ── Pass 2: 90th-percentile within-line gap ──
-    baseline_groups = defaultdict(list)
-    for x_mid, x0, x1, y in all_chars:
-        key = round(y * 2) / 2
-        baseline_groups[key].append((x0, x1))
+    # Overall x-range
+    text_x_min = min(f[0] for f in filtered_starts)
+    text_x_max = max(f[1] for f in filtered_starts)
 
-    all_within_line_gaps = []
-    for key, chars_on_line in baseline_groups.items():
-        if len(chars_on_line) < 2:
-            continue
-        sorted_chars = sorted(chars_on_line, key=lambda c: c[0])
-        for i in range(1, len(sorted_chars)):
-            gap = sorted_chars[i][0] - sorted_chars[i - 1][1]
-            if gap > 0:
-                all_within_line_gaps.append(gap)
+    if is_two_column:
+        left_start = min(b1_x, b2_x)
+        right_start = max(b1_x, b2_x)
 
-    if all_within_line_gaps:
-        all_within_line_gaps.sort()
-        p90_idx = int(len(all_within_line_gaps) * 0.90)
-        p90_idx = min(p90_idx, len(all_within_line_gaps) - 1)
-        max_within_line_gap = all_within_line_gaps[p90_idx]
-    else:
-        max_within_line_gap = 0
+        # Find the actual gap: max right-edge of left-column lines,
+        # vs min left-edge of right-column lines.
+        left_col_rights = [
+            x1 for x0, x1, lw in filtered_starts
+            if abs(round(x0 / bucket_width) * bucket_width - left_start) < bucket_width
+        ]
+        right_col_lefts = [
+            x0 for x0, x1, lw in filtered_starts
+            if abs(round(x0 / bucket_width) * bucket_width - right_start) < bucket_width
+        ]
 
-    # ── Pass 3: Find the best center-gutter candidate ──
-    # A true two-column gutter must satisfy:
-    #   (a) Be significantly wider than normal word spacing (2× p90)
-    #   (b) Sit in the CENTRAL region of the text area (25%-75% of x-range)
-    #   (c) Have substantial text on BOTH sides (at least 20% of chars per side)
-    # This is more robust than "just pick the largest gap" because headers,
-    # footers, and margin strips can create larger edge-gaps than the real gutter.
-    x_mids = sorted([c[0] for c in all_chars])
-    text_x_min = x_mids[0]
-    text_x_max = x_mids[-1]
-    text_width = text_x_max - text_x_min
+        if left_col_rights and right_col_lefts:
+            left_col_right_edge = max(left_col_rights)
+            right_col_left_edge = min(right_col_lefts)
+            split_x = (left_col_right_edge + right_col_left_edge) / 2
+        else:
+            split_x = (left_start + right_start) / 2
 
-    # Central zone: 25%-75% of the text's x-range
-    central_min = text_x_min + text_width * 0.25
-    central_max = text_x_min + text_width * 0.75
-
-    # Enumerate all gaps; pick the largest one that falls in the central zone
-    # AND has significant text on both sides.
-    best_gap = 0
-    best_gap_idx = -1
-    for i in range(1, len(x_mids)):
-        gap = x_mids[i] - x_mids[i - 1]
-        gap_mid = (x_mids[i - 1] + x_mids[i]) / 2
-
-        # Must be in central zone
-        if gap_mid < central_min or gap_mid > central_max:
-            continue
-
-        # Must have enough chars on both sides (at least 20% each)
-        left_count = i
-        right_count = len(x_mids) - i
-        min_side_count = len(x_mids) * 0.20
-        if left_count < min_side_count or right_count < min_side_count:
-            continue
-
-        if gap > best_gap:
-            best_gap = gap
-            best_gap_idx = i
-
-    is_gutter = (
-        best_gap > max_within_line_gap * 2
-        and best_gap > 10
-        and best_gap_idx > 0
-    )
-
-    if is_gutter:
-        split_x = (x_mids[best_gap_idx - 1] + x_mids[best_gap_idx]) / 2
-        left_col = [text_x_min, split_x]
-        right_col = [split_x, text_x_max]
         logger.info(
-            f"Column detection: gutter={best_gap:.1f}pt at x={split_x:.1f} "
-            f"(p90 within-line gap={max_within_line_gap:.1f}pt, "
-            f"ratio={best_gap/max_within_line_gap:.1f}x, "
-            f"central zone={central_min:.0f}-{central_max:.0f})"
+            f"Column detection: two columns "
+            f"(left starts at x≈{left_start:.0f} [{b1_count} lines], "
+            f"right starts at x≈{right_start:.0f} [{b2_count} lines], "
+            f"split at x={split_x:.1f}, total lines={total_lines})"
         )
-        return [left_col, right_col]
+        return [[text_x_min, split_x], [split_x, text_x_max]]
 
-    ratio_str = f"{best_gap/max_within_line_gap:.1f}x" if max_within_line_gap > 0 else "inf"
     logger.info(
         f"Column detection: single column "
-        f"(best central gap={best_gap:.1f}pt, p90 within-line gap={max_within_line_gap:.1f}pt, "
-        f"ratio={ratio_str}, central zone={central_min:.0f}-{central_max:.0f})"
+        f"(top bucket x≈{b1_x:.0f} has {b1_count}/{total_lines} lines, "
+        f"2nd bucket x≈{b2_x:.0f} has {b2_count} — not enough for 2 cols)"
     )
     return [[text_x_min, text_x_max]]
 
