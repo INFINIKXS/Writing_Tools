@@ -48,6 +48,7 @@ export default function PDFEditorPage() {
   const [fileBytes, setFileBytes] = useState(null);
   const [scale, setScale] = useState(1.0);
   
+  const [spacingData, setSpacingData] = useState(null);
   const [annotations, setAnnotations] = useState([]);
   
   const [isWandActive, setIsWandActive] = useState(false);
@@ -81,7 +82,7 @@ export default function PDFEditorPage() {
     [livePreviewUrl, currentFile]
   );
 
-  const handleUpload = (file) => {
+  const handleUpload = async (file) => {
     if (!file) return;
     setCurrentFile(file);
     const reader = new FileReader();
@@ -95,6 +96,23 @@ export default function PDFEditorPage() {
     if (prevLiveUrlRef.current) {
       URL.revokeObjectURL(prevLiveUrlRef.current);
       prevLiveUrlRef.current = null;
+    }
+
+    // Fetch authoritative spacing + column data from the backend
+    try {
+      const fd = new FormData();
+      fd.append('file', file, 'document.pdf');
+      const res = await fetch('http://localhost:8000/api/pdf/extract-spacing', {
+        method: 'POST', body: fd,
+      });
+      if (res.ok) {
+        const payload = await res.json();
+        setSpacingData(payload);
+      } else {
+        console.error('Failed to extract spacing data');
+      }
+    } catch (e) {
+      console.error('extract-spacing error:', e);
     }
   };
 
@@ -164,6 +182,27 @@ export default function PDFEditorPage() {
       objectUrlRef.current = newUrl;
 
       pdfEditStore.clear(activeFileId); // edits are now baked-in; remove CSS overlays
+
+      // Clear stale spacingData so items don't briefly render at old coordinates
+      // against the new baked PDF while we wait for fresh data from the backend.
+      setSpacingData(null);
+
+      // Re-extract ground-truth spacing + columns from the freshly baked PDF
+      try {
+        const spacingFd = new FormData();
+        spacingFd.append('file', blob, 'document.pdf');
+        const spacingRes = await fetch(
+          'http://localhost:8000/api/pdf/extract-spacing',
+          { method: 'POST', body: spacingFd },
+        );
+        if (spacingRes.ok) {
+          const payload = await spacingRes.json();
+          setSpacingData(payload);
+        }
+      } catch (e) {
+        console.error('Failed to re-extract spacing after bake:', e);
+      }
+
       setCurrentFile(newUrl);           // ✅ stable string ref — no full remount
       setFileBytes(bakedBytes);
       setLivePreviewUrl(null);          // clear any legacy preview URL
@@ -320,6 +359,7 @@ export default function PDFEditorPage() {
             file={viewerFile} 
             scale={scale} 
             annotations={annotations}
+            spacingData={spacingData}
             onUpdateAnnotation={updateAnnotation}
             onDeleteAnnotation={deleteAnnotation}
             onCanvasClick={handleCanvasClick}

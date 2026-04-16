@@ -30,54 +30,49 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
  * Also informed by pdf-text-reader (npm) which inserts spaces when
  * distance-between-text exceeds a font-proportional threshold.
  */
-function groupAdjacentItems(items) {
-  if (!items || items.length < 2) return items;
+// ── Median helper for word-boundary detection ──
+function getMedian(arr) {
+  const sorted = [...arr].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 !== 0
+    ? sorted[mid]
+    : (sorted[mid - 1] + sorted[mid]) / 2;
+}
 
-  const sorted = [...items].sort((a, b) => {
-    const yDiff = a.pdfY_top - b.pdfY_top;
-    if (Math.abs(yDiff) > (a.fontSize || 12) * 0.4) return yDiff;
-    return a.pdfX - b.pdfX;
-  });
+/**
+ * Group per-character rawdict data into words using inter-character gaps.
+ * A gap > 2.5× the median gap on the line signals a word boundary.
+ */
+function groupCharsIntoWords(lineData) {
+  const { chars, gaps } = lineData;
+  if (!chars || chars.length === 0) return [];
 
-  const grouped = [];
-  let current = { ...sorted[0] };
+  const medianGap = gaps.length > 0 ? getMedian(gaps) : 0;
+  const wordBoundaryThreshold = Math.max(medianGap * 2.5, 1.0);
 
-  for (let i = 1; i < sorted.length; i++) {
-    const next = sorted[i];
-    const fontSize = current.fontSize || 12;
+  const words = [];
+  let currentWord = [];
 
-    // Same line? Y-top within ±40% of font size
-    const sameLine = Math.abs(next.pdfY_top - current.pdfY_top) <= fontSize * 0.4;
+  if (chars[0].c !== ' ' && chars[0].c !== '\u00A0') {
+    currentWord.push(chars[0]);
+  }
 
-    // Same font SIZE (within 0.5pt) — more reliable than name comparison
-    // because PDF.js assigns different internal font IDs to the original
-    // embedded font vs the re-registered font after redaction+reinsertion.
-    // The original unedited text might have fontName "g_d0_f5" while the
-    // re-inserted edited text has "g_d1_f0" — different IDs, same visual font.
-    const sameFontSize = Math.abs((next.fontSize || 12) - fontSize) < 0.5;
-
-    if (sameLine && sameFontSize) {
-      // Merge everything on the same line with the same font.
-      // Insert space if there's a visible gap between items.
-      const currentRight = current.pdfX + (current.pdfW || 0);
-      const gap = next.pdfX - currentRight;
-      const needsSpace = gap > fontSize * 0.12;
-
-      current = {
-        ...current,
-        str: current.str + (needsSpace ? ' ' : '') + next.str,
-        // Width spans from current's left edge to next's right edge
-        pdfW: (next.pdfX + (next.pdfW || 0)) - current.pdfX,
-        pdfH: Math.max(current.pdfH || 0, next.pdfH || 0),
-      };
-    } else {
-      grouped.push(current);
-      current = { ...next };
+  for (let i = 0; i < gaps.length; i++) {
+    const isBoundary =
+      gaps[i] > wordBoundaryThreshold ||
+      chars[i + 1].c === ' ' ||
+      chars[i + 1].c === '\u00A0';
+    if (isBoundary && currentWord.length > 0) {
+      words.push(currentWord);
+      currentWord = [];
+    }
+    if (chars[i + 1].c !== ' ' && chars[i + 1].c !== '\u00A0') {
+      currentWord.push(chars[i + 1]);
     }
   }
-  grouped.push(current);
 
-  return grouped;
+  if (currentWord.length > 0) words.push(currentWord);
+  return words;
 }
 
 // Drag component strictly bound to page coordinates
@@ -233,7 +228,7 @@ function DraggableElement({ annotation, onUpdate, onDelete, scale }) {
   );
 }
 
-export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdateAnnotation, onDeleteAnnotation, onCanvasClick, isWandActive, onLivePreview }) {
+export default function PDFViewer({ file, scale = 1.0, annotations = [], spacingData = null, onUpdateAnnotation, onDeleteAnnotation, onCanvasClick, isWandActive, onLivePreview }) {
   const [numPages, setNumPages] = useState(null);
 
   // ─── Dual-document pattern (eliminates the white-flash on bake) ─────────────
@@ -274,6 +269,184 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
   // the callback captures the pageMetadata value from the render it was created in,
   // not the current value. A ref is always current regardless of render timing.
   const pageItemsExtracted = useRef({});
+
+  // Extract items for each page when spacingData is available.
+  // This runs whenever spacingData changes (first load, or after a bake)
+  // OR when a page reports its size via onLoadSuccess.
+  // Only pages that have a known size AND haven't been extracted yet will
+  // be processed, so this naturally handles all timing scenarios:
+  //   - spacingData arrives before pages load: waits for sizes, then extracts
+  //   - pages load before spacingData arrives: waits for spacingData, then extracts
+  //   - both already ready (zoom change, etc.): skipped due to extraction guard
+  useEffect(() => {
+    if (!spacingData) return;
+
+    Object.entries(pageMetadata).forEach(([pageNumStr, meta]) => {
+      const pageNum = parseInt(pageNumStr);
+      const index = pageNum - 1;
+      if (!meta?.size) return;
+      if (pageItemsExtracted.current[pageNum]) return;
+
+      const pageData = spacingData.find((p) => p.page === index);
+      if (!pageData || !pageData.blocks) return;
+
+      pageItemsExtracted.current[pageNum] = true;
+
+      // ── Step 1: Build one item per line AND index words by baseline ──
+      const lineItems = [];
+      const allWordsByBaseline = {};
+
+      pageData.blocks.forEach((blockData) => {
+        if (!blockData.lines) return;
+        blockData.lines.forEach((lineData) => {
+          const words = groupCharsIntoWords(lineData);
+          if (words.length === 0) return;
+
+          const baselineKey = Math.round(words[0][0].origin_y * 2) / 2;
+          if (!allWordsByBaseline[baselineKey]) allWordsByBaseline[baselineKey] = [];
+          words.forEach((w) => allWordsByBaseline[baselineKey].push(w));
+
+          const allCharsInLine = words.flat();
+          const lineStr = words.map((wc) => wc.map((c) => c.c).join('')).join(' ');
+          const lineX0 = allCharsInLine[0].x0;
+          const lineX1 = allCharsInLine[allCharsInLine.length - 1].x1;
+          const lineY_base = allCharsInLine[0].origin_y;
+          const lineY_top = Math.min(...allCharsInLine.map((c) => c.y0));
+          const lineH = Math.max(...allCharsInLine.map((c) => c.y1 - c.y0));
+          const lineFontSize = allCharsInLine[0].size;
+          const lineFontName = allCharsInLine[0].font;
+          let hasSuperscript = false;
+          for (const ch of allCharsInLine) {
+            if (ch.is_superscript) hasSuperscript = true;
+          }
+          const ascenderH = Math.max(0, lineY_base - lineY_top);
+          const descenderH = Math.max(0, lineY_top + lineH - lineY_base);
+
+          lineItems.push({
+            str: lineStr,
+            pdfX: lineX0,
+            pdfY_base: lineY_base,
+            pdfY_top: lineY_top,
+            pdfW: lineX1 - lineX0,
+            pdfH: lineH,
+            fontSize: lineFontSize,
+            fontName: lineFontName,
+            hasSuperscript,
+            ascender_h: ascenderH,
+            descender_h: descenderH,
+            color: 'black',
+            _baselineKey: baselineKey,
+          });
+        });
+      });
+
+      // ── Step 2: Find baselines that need regrouping ──
+      const blockCountPerBaseline = {};
+      pageData.blocks.forEach((blockData, bi) => {
+        if (!blockData.lines) return;
+        blockData.lines.forEach((lineData) => {
+          const words = groupCharsIntoWords(lineData);
+          if (words.length === 0) return;
+          const baselineKey = Math.round(words[0][0].origin_y * 2) / 2;
+          if (!blockCountPerBaseline[baselineKey]) blockCountPerBaseline[baselineKey] = new Set();
+          blockCountPerBaseline[baselineKey].add(bi);
+        });
+      });
+
+      const baselinesNeedingRegroup = new Set();
+      for (const [baseline, blockSet] of Object.entries(blockCountPerBaseline)) {
+        if (blockSet.size > 1) baselinesNeedingRegroup.add(parseFloat(baseline));
+      }
+
+      // ── Step 3: Column index helper ──
+      const columns = pageData.columns || null;
+      const getColumnIndex = (x) => {
+        if (!columns || columns.length <= 1) return 0;
+        const splitX = (columns[0][1] + columns[1][0]) / 2;
+        return x < splitX ? 0 : 1;
+      };
+
+      // ── Step 4: Start with ALL line items from untouched baselines ──
+      const finalItems = [];
+      for (const li of lineItems) {
+        if (baselinesNeedingRegroup.has(li._baselineKey)) continue;
+        finalItems.push(li);
+      }
+
+      // ── Step 5: Regroup only the affected baselines ──
+      for (const baseline of baselinesNeedingRegroup) {
+        const wordsOnLine = allWordsByBaseline[baseline] || [];
+        if (wordsOnLine.length === 0) continue;
+        wordsOnLine.sort((a, b) => a[0].x0 - b[0].x0);
+
+        let currentItem = null;
+        let currentCol = -1;
+
+        for (const wordChars of wordsOnLine) {
+          const wordStr = wordChars.map((c) => c.c).join('');
+          const wordX0 = wordChars[0].x0;
+          const wordY_base = wordChars[0].origin_y;
+          const wordY_top = Math.min(...wordChars.map((c) => c.y0));
+          const wordW = wordChars[wordChars.length - 1].x1 - wordChars[0].x0;
+          const wordH = Math.max(...wordChars.map((c) => c.y1 - c.y0));
+          const wordFontSize = wordChars[0].size;
+          const wordFontName = wordChars[0].font;
+          let wordHasSuperscript = false;
+          for (const ch of wordChars) {
+            if (ch.is_superscript) wordHasSuperscript = true;
+          }
+          const ascenderH = Math.max(0, wordY_base - wordY_top);
+          const descenderH = Math.max(0, wordY_top + wordH - wordY_base);
+          const wordCol = getColumnIndex(wordX0);
+
+          if (!currentItem) {
+            currentItem = {
+              str: wordStr, pdfX: wordX0, pdfY_base: wordY_base, pdfY_top: wordY_top,
+              pdfW: wordW, pdfH: wordH, fontSize: wordFontSize, fontName: wordFontName,
+              hasSuperscript: wordHasSuperscript, ascender_h: ascenderH, descender_h: descenderH,
+              color: 'black',
+            };
+            currentCol = wordCol;
+          } else {
+            const sameColumn = wordCol === currentCol;
+            const gap = wordX0 - (currentItem.pdfX + currentItem.pdfW);
+            if (sameColumn && gap <= currentItem.fontSize * 1.5) {
+              const needsSpace = gap > currentItem.fontSize * 0.12;
+              currentItem.str += (needsSpace ? ' ' : '') + wordStr;
+              currentItem.pdfW = wordX0 + wordW - currentItem.pdfX;
+              currentItem.pdfH = Math.max(currentItem.pdfH, wordH);
+              currentItem.pdfY_top = Math.min(currentItem.pdfY_top, wordY_top);
+              if (wordHasSuperscript) currentItem.hasSuperscript = true;
+              if (ascenderH > currentItem.ascender_h) currentItem.ascender_h = ascenderH;
+              if (descenderH > currentItem.descender_h) currentItem.descender_h = descenderH;
+            } else {
+              finalItems.push(currentItem);
+              currentItem = {
+                str: wordStr, pdfX: wordX0, pdfY_base: wordY_base, pdfY_top: wordY_top,
+                pdfW: wordW, pdfH: wordH, fontSize: wordFontSize, fontName: wordFontName,
+                hasSuperscript: wordHasSuperscript, ascender_h: ascenderH, descender_h: descenderH,
+                color: 'black',
+              };
+              currentCol = wordCol;
+            }
+          }
+        }
+        if (currentItem) finalItems.push(currentItem);
+      }
+
+      // ── Sort final items in reading order ──
+      finalItems.sort((a, b) => {
+        const yDiff = a.pdfY_base - b.pdfY_base;
+        if (Math.abs(yDiff) > 1.5) return yDiff;
+        return a.pdfX - b.pdfX;
+      });
+
+      setPageMetadata((prev) => ({
+        ...prev,
+        [pageNum]: { ...prev[pageNum], items: finalItems },
+      }));
+    });
+  }, [spacingData, pageMetadata]);
 
   const edits = useSyncExternalStore(pdfEditStore.subscribe, () => pdfEditStore.getEdits(activeFileId));
 
@@ -538,106 +711,20 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], onUpdat
               scale={scale}
               renderTextLayer={true}
               renderAnnotationLayer={true}
-              onLoadSuccess={async (page) => {
-                // FIX: Use the ref to guard re-extraction, not pageMetadata state.
-                // pageMetadata inside this callback is a stale closure — it holds
-                // whatever value pageMetadata had when this render cycle ran.
-                // pageItemsExtracted.current is a ref and is always current.
-                if (pageItemsExtracted.current[index + 1]) {
-                  // Page already extracted. On zoom, just clear _colorsApplied
-                  // so the useEffect re-samples colors and span widths at the new scale.
-                  setPageMetadata(prev => ({
-                    ...prev,
-                    [index + 1]: { ...prev[index + 1], _colorsApplied: false }
-                  }));
-                  return;
-                }
-
-                // Mark as extracted immediately (sync) before the async work below,
-                // so concurrent calls for the same page don't double-extract.
-                pageItemsExtracted.current[index + 1] = true;
-
+              onLoadSuccess={(page) => {
+                // Just store the page size here. Item extraction happens in a
+                // separate useEffect that waits for spacingData to be available.
+                // We don't extract items in this handler because onLoadSuccess
+                // can fire before spacingData arrives — and we don't want to
+                // produce "placeholder" items that get rendered and then have
+                // to be replaced.
                 const newSize = {
                   height: page.originalHeight || page.view[3],
                 };
-
-                try {
-                  const textContent = await page.getTextContent();
-
-                  // Always use scale=1 viewport so coordinates are in raw PDF points.
-                  // Util.transform with this viewport flips Y from PDF bottom-left
-                  // to screen/MuPDF top-left — the same space PyMuPDF uses.
-                  // No further Y conversion is needed anywhere downstream.
-                  const viewport1 = page.getViewport({ scale: 1.0 });
-
-                  const items = textContent.items
-                    .filter(item => item.str.trim() !== '')
-                    // Exclude pure digit strings (footnote superscripts like ¹ ² ³)
-                    // These have aggressively shifted baselines and confuse hit-testing
-                    .filter(item => !item.str.match(/^\d+$/))
-                    .map(item => {
-                      const tx = pdfjs.Util.transform(viewport1.transform, item.transform);
-
-                      // tx[4] = x in PDF points from left edge (MuPDF space)
-                      // tx[5] = baseline Y in PDF points from top of page (MuPDF space)
-
-                      // Rotation-safe font size: Math.hypot works for all /Rotate values.
-                      // For upright pages: tx[0]=fontSize, tx[1]=0 → hypot=fontSize.
-                      // For 90° rotated: tx[0]=0, tx[1]=fontSize → hypot=fontSize.
-                      const fontSize = Math.hypot(tx[0], tx[1]);
-                      const lineHeight = fontSize * 1.2;
-
-                      // Guard against unreliable item.height values.
-                      // Some PDFs (especially LaTeX/InDesign exports) multiply item.height
-                      // by a near-zero textAdvanceScale, producing garbage like 0.54
-                      // when the visual height is 18. We cross-check against lineHeight.
-                      const ascenderH = (item.height > 0 && item.height < lineHeight)
-                        ? item.height
-                        : fontSize * 0.8;
-
-                      const descenderH = lineHeight - ascenderH;
-
-                      const pdfY_base = tx[5];           // baseline from top of page
-                      const pdfY_top = pdfY_base - ascenderH;  // top of cap-height
-                      const pdfH = ascenderH + descenderH; // full visual height
-
-                      return {
-                        str: item.str,
-                        fontName: item.fontName,
-                        fontSize,
-                        pdfX: tx[4],
-                        pdfY_base,
-                        pdfY_top,
-                        pdfH,
-                        // pdfW starts as glyph-advance width from PDF.js.
-                        // The color-sampling useEffect will overwrite this with
-                        // the true rendered span width (includes justified spacing).
-                        pdfW: item.width,
-                        ascender_h: ascenderH,
-                        descender_h: descenderH,
-                        color: 'black'
-                      };
-                    });
-
-                  // Group adjacent items into logical sentence-lines.
-                  // After redaction + reinsertion, text is fragmented into
-                  // one TextItem per word/letter.  Grouping merges them back
-                  // into line-level items for a natural editing experience.
-                  const groupedItems = groupAdjacentItems(items);
-
-                  setPageMetadata(prev => ({
-                    ...prev,
-                    [index + 1]: { size: newSize, items: groupedItems }
-                    // _colorsApplied is intentionally absent here so the useEffect runs
-                  }));
-                } catch (err) {
-                  console.error(`Error extracting text layer for page ${index + 1}:`, err);
-                  // Store size even on failure so the page container renders correctly
-                  setPageMetadata(prev => ({
-                    ...prev,
-                    [index + 1]: { ...prev[index + 1], size: newSize }
-                  }));
-                }
+                setPageMetadata((prev) => ({
+                  ...prev,
+                  [index + 1]: { ...(prev[index + 1] || {}), size: newSize },
+                }));
               }}
               onRenderSuccess={() => {
                 // Intentionally empty.
