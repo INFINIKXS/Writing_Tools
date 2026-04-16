@@ -45,8 +45,15 @@ def _measure_span_width(page: fitz.Page, x0: float, origin_y: float):
     """
     BASELINE_TOLERANCE = 2.0  # points
 
-    # Generous clip: 300pt wide to catch the full span even if x0 is at the start
-    clip = fitz.Rect(x0 - 5, origin_y - 15, x0 + 300, origin_y + 10)
+    # IMPORTANT: PyMuPDF's `clip` parameter silently omits any span that is
+    # not FULLY contained inside the clip rect (see docs for Page.get_text).
+    # A long justified line can easily be 450+pt wide, so a clip of "x0±300"
+    # drops the real span and leaves only tiny stray fragments — which then
+    # produces a wildly wrong measurement (e.g. 6pt instead of 495pt).
+    # Use a page-wide clip bounded only in the Y direction so we keep spans
+    # of any horizontal extent on this baseline.
+    page_rect = page.rect
+    clip = fitz.Rect(page_rect.x0, origin_y - 15, page_rect.x1, origin_y + 10)
     try:
         rd = page.get_text("rawdict", clip=clip)
     except Exception:
@@ -273,10 +280,16 @@ async def apply_edits(
             measured_w, matched_span = _measure_span_width(page, x0, origin_y)
             if measured_w and measured_w > 0:
                 x1 = x0 + measured_w
-                logger.info(f"Using backend-measured width: {measured_w:.2f} (frontend was {edit['rect']['w']:.2f})")
+                logger.info(
+                    f"Using backend-measured width: {measured_w:.2f} "
+                    f"(frontend was {edit['rect']['w']:.2f})"
+                )
             else:
                 x1 = x1_frontend
-                logger.info(f"Backend width measurement failed, using frontend width: {edit['rect']['w']:.2f}")
+                logger.info(
+                    f"Backend width measurement failed, using frontend width: "
+                    f"{edit['rect']['w']:.2f}"
+                )
 
             # ── Font resolution ──────────────────────────────────────────────────
             edit["fontName"] = _resolve_font_name(page, edit, x0, y0, x1_frontend, y1)
@@ -570,9 +583,49 @@ async def apply_edits(
             edit_plans.append(plan)
 
         # ── Phase 2: Redact all erase regions at once ──
+        # Sample the background color just above/below each erase rect.
+        # This preserves colored backgrounds (table stripes, tinted boxes)
+        # instead of painting them white.
+        def _sample_background_color(page, rect):
+            """Sample the pixel color in thin strips just above and below
+            the erase rect. Returns an (r, g, b) tuple in 0-1 range.
+            Falls back to white if sampling fails."""
+            try:
+                pix = page.get_pixmap(dpi=72)  # 1pt = 1px at 72dpi
+                samples = []
+
+                # Sample strip just ABOVE the rect (1pt tall)
+                strip_above = fitz.Rect(rect.x0, rect.y0 - 1.5, rect.x1, rect.y0 - 0.5)
+                # Sample strip just BELOW the rect (1pt tall)
+                strip_below = fitz.Rect(rect.x0, rect.y1 + 0.5, rect.x1, rect.y1 + 1.5)
+
+                for strip in (strip_above, strip_below):
+                    x0i, y0i = int(max(0, strip.x0)), int(max(0, strip.y0))
+                    x1i = int(min(pix.width, strip.x1))
+                    y1i = int(min(pix.height, strip.y1))
+                    if x1i <= x0i or y1i <= y0i:
+                        continue
+                    for py in range(y0i, y1i):
+                        for px in range(x0i, x1i):
+                            r, g, b = pix.pixel(px, py)[:3]
+                            samples.append((r, g, b))
+
+                if not samples:
+                    return (1.0, 1.0, 1.0)
+
+                # Use median (not mean) — robust against occasional text pixels
+                # that might leak into the sample strips.
+                samples.sort(key=lambda rgb: rgb[0] + rgb[1] + rgb[2])
+                mid_rgb = samples[len(samples) // 2]
+                return (mid_rgb[0] / 255.0, mid_rgb[1] / 255.0, mid_rgb[2] / 255.0)
+            except Exception as e:
+                logger.debug(f"background sample failed: {e}")
+                return (1.0, 1.0, 1.0)
+
         for plan in edit_plans:
             for rect in plan["erase_rects"]:
-                page.add_redact_annot(rect, fill=(1, 1, 1))
+                bg_color = _sample_background_color(page, rect)
+                page.add_redact_annot(rect, fill=bg_color)
         page.apply_redactions(images=0, graphics=0)
 
         # ── Phase 2.5: Re-register fonts after redaction ──
