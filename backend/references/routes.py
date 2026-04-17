@@ -14,6 +14,7 @@ from references.metadata import extract_pdf_metadata, extract_docx_metadata
 from references.parser import FormatRequest, parse_raw_reference
 from citations.formatting import format_reference
 from references.matcher import parse_reference_list, match_references_to_pdfs, extract_pdf_metadata_fast, parse_raw_reference_fast
+from references.ref_list_verifier import detect_style, verify_single_reference
 from core.config import API_KEY, KEY_MANAGER_AVAILABLE, get_api_key_manager
 
 router = APIRouter()
@@ -190,6 +191,145 @@ async def match_references_endpoint(
             yield event("complete", "Matching complete.", data=results)
 
         except Exception as e:
+            yield event("error", f"Unexpected error: {type(e).__name__}: {e}")
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@router.post("/api/verify-reference-list")
+async def verify_reference_list(request: Request):
+    """
+    Verify a list of references for metadata accuracy and formatting correctness.
+    Accepts JSON body: { "references_text": "...", "style": "harvard"|"apa"|"vancouver"|null }
+    If style is null/missing, auto-detects from the references.
+    Streams SSE progress events.
+    """
+    body = await request.json()
+    references_text = body.get("references_text", "").strip()
+    user_style = body.get("style")  # null means auto-detect
+
+    if not references_text:
+        raise HTTPException(status_code=400, detail="No references text provided.")
+
+    async def _stream():
+        def event(stage: str, message: str, data=None):
+            payload = {"stage": stage, "message": message}
+            if data is not None:
+                payload["data"] = data
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+        try:
+            # ── 1. Split into individual references ──
+            print(f"\n{'='*60}")
+            print(f"[RefVerifier] Starting reference list verification")
+            print(f"[RefVerifier] Input length: {len(references_text)} chars")
+            print(f"{'='*60}")
+
+            yield event("splitting", "Splitting reference list into individual entries…")
+            raw_refs = parse_reference_list(references_text)
+            if not raw_refs:
+                print(f"[RefVerifier] ERROR: Could not split references from input")
+                yield event("error", "Could not detect any references in the provided text.")
+                return
+            print(f"[RefVerifier] Split into {len(raw_refs)} references:")
+            for idx, ref in enumerate(raw_refs):
+                print(f"  [{idx+1}] {ref[:80]}{'…' if len(ref) > 80 else ''}")
+            yield event("splitting", f"Found {len(raw_refs)} references.")
+            await asyncio.sleep(0)
+
+            # ── 2. Auto-detect style (if not specified) ──
+            if user_style and user_style in ("harvard", "apa", "vancouver"):
+                style = user_style
+                style_info = {"style": style, "confidence": 100, "auto_detected": False, "evidence": ["User-selected"], "all_scores": {style: 100}}
+                print(f"[RefVerifier] Style: {style.upper()} (user-selected)")
+                yield event("detecting", f"Using user-selected style: {style.upper()}")
+            else:
+                yield event("detecting", "Auto-detecting citation style…")
+                detection = detect_style(raw_refs)
+                style = detection["style"]
+                if style not in ("harvard", "apa", "vancouver"):
+                    style = "apa"
+                confidence = detection.get("confidence", 0)
+                style_info = {
+                    "style": style,
+                    "confidence": confidence,
+                    "auto_detected": True,
+                    "evidence": detection.get("evidence", []),
+                    "all_scores": detection.get("all_scores", {}),
+                }
+                print(f"[RefVerifier] Style: {style.upper()} (auto-detected, {confidence}% confidence)")
+                print(f"[RefVerifier] Evidence: {detection.get('evidence', [])}")
+                print(f"[RefVerifier] All scores: {detection.get('all_scores', {})}")
+                yield event("detecting", f"Detected style: {style.upper()} ({confidence}% confidence)")
+
+            # Send style_info immediately so frontend can display it
+            yield event("style_detected", "Style determined.", data={"style_info": style_info})
+            await asyncio.sleep(0)
+
+            # ── 3. Verify each reference (stream results one by one) ──
+            total = len(raw_refs)
+            verified_count = 0
+            issues_count = 0
+            unverifiable_count = 0
+
+            for i, ref in enumerate(raw_refs):
+                print(f"\n{'─'*50}")
+                print(f"[RefVerifier] [{i+1}/{total}] Verifying:")
+                print(f"  Input: {ref[:120]}{'…' if len(ref) > 120 else ''}")
+
+                yield event("verifying", f"Verifying reference {i + 1}/{total}…")
+
+                ref_result = await asyncio.to_thread(verify_single_reference, ref, style)
+
+                status = ref_result.get("overall_status", "unverifiable")
+                if status == "verified":
+                    verified_count += 1
+                elif status == "issues_found":
+                    issues_count += 1
+                else:
+                    unverifiable_count += 1
+
+                # Log result details
+                print(f"  DOI: {ref_result.get('doi', 'none')}")
+                print(f"  API source: {ref_result.get('api_source', 'none')}")
+                print(f"  Status: {status}")
+                print(f"  Accuracy: {ref_result.get('accuracy_score', 0):.0%}")
+                meta_issues = [i for i in ref_result.get('metadata_issues', []) if i.get('status') != 'correct']
+                if meta_issues:
+                    print(f"  Metadata issues:")
+                    for mi in meta_issues:
+                        print(f"    - {mi['field']}: {mi['status']} (user: '{mi.get('user_value', '')}' → correct: '{mi.get('correct_value', '')}')")
+                fmt_issues = ref_result.get('formatting_issues', [])
+                if fmt_issues:
+                    print(f"  Formatting issues:")
+                    for fi in fmt_issues:
+                        print(f"    - {fi['issue']}: {fi['detail']}")
+
+                # Stream this result immediately to frontend
+                yield event("ref_result", f"Reference {i + 1}/{total} verified: {status}", data={
+                    "index": i,
+                    "result": ref_result,
+                })
+                await asyncio.sleep(0)
+
+            # ── 4. Summary ──
+            summary_text = f"{verified_count} verified, {issues_count} with issues, {unverifiable_count} unverifiable"
+            print(f"\n{'='*60}")
+            print(f"[RefVerifier] DONE — {summary_text}")
+            print(f"{'='*60}\n")
+
+            yield event("complete", "Verification complete.", data={
+                "summary": {
+                    "total": total,
+                    "verified": verified_count,
+                    "issues_found": issues_count,
+                    "unverifiable": unverifiable_count,
+                },
+            })
+
+        except Exception as e:
+            print(f"[RefVerifier] EXCEPTION: {type(e).__name__}: {e}")
+            import traceback; traceback.print_exc()
             yield event("error", f"Unexpected error: {type(e).__name__}: {e}")
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
