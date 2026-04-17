@@ -33,25 +33,25 @@ def _expand_ligatures(text: str) -> str:
 
 def _measure_span_width(page: fitz.Page, x0: float, origin_y: float):
     """
-    Measure the true rendered width of text at the given baseline origin.
+    Measure the true rendered width of text at the given baseline origin
+    AND return the full line's per-character data.
 
-    Uses rawdict per-character bboxes for ground-truth measurement.
-    Matching is purely spatial — no text comparison — so it works correctly with:
-      - Subset fonts (unmapped glyphs rendered as U+FFFD)
-      - Ligatures (fi/fl/ffi stored as single glyphs)
-      - Multi-span lines (bold/italic segments within a word)
+    A "span" in PyMuPDF's rawdict is a run of identically-styled text — a
+    long visual line that contains bold/italic/font-size variations (e.g.
+    citations like ²⁵, italicised terms) is split into multiple spans.
+    For correct minimal-diff editing we need ALL chars on the line, not
+    just one span's chars. This function unions every span on the same
+    baseline into a synthetic "line span" and returns it.
 
-    Returns: (width, matched_span_dict) or (None, None) on failure.
+    Returns: (width, synthetic_line_span_dict) or (None, None) on failure.
+    The synthetic span dict has the standard rawdict shape including a
+    "chars" key with EVERY char on the line, sorted by x-position.
     """
     BASELINE_TOLERANCE = 2.0  # points
 
-    # IMPORTANT: PyMuPDF's `clip` parameter silently omits any span that is
-    # not FULLY contained inside the clip rect (see docs for Page.get_text).
-    # A long justified line can easily be 450+pt wide, so a clip of "x0±300"
-    # drops the real span and leaves only tiny stray fragments — which then
-    # produces a wildly wrong measurement (e.g. 6pt instead of 495pt).
-    # Use a page-wide clip bounded only in the Y direction so we keep spans
-    # of any horizontal extent on this baseline.
+    # IMPORTANT: PyMuPDF's `clip` parameter silently omits any span that
+    # is not FULLY contained inside the clip rect (see docs). Use a
+    # page-wide clip bounded only in Y so long spans aren't dropped.
     page_rect = page.rect
     clip = fitz.Rect(page_rect.x0, origin_y - 15, page_rect.x1, origin_y + 10)
     try:
@@ -59,52 +59,56 @@ def _measure_span_width(page: fitz.Page, x0: float, origin_y: float):
     except Exception:
         return None, None
 
-    # Collect all spans on the same baseline
+    # Collect every span whose baseline matches origin_y
     baseline_spans = []
     for block in rd.get("blocks", []):
-        if block.get("type", 0) != 0:  # text blocks only
+        if block.get("type", 0) != 0:
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
                 span_origin = span.get("origin", (0, 0))
-                # Same baseline? (within tolerance)
                 if abs(span_origin[1] - origin_y) <= BASELINE_TOLERANCE:
                     baseline_spans.append(span)
 
     if not baseline_spans:
         return None, None
 
-    # Find the span whose origin x is closest to the target x0
-    best_span = min(baseline_spans, key=lambda s: abs(s["origin"][0] - x0))
-
-    # Measure width from per-character bboxes (rawdict always has "chars")
-    chars = best_span.get("chars", [])
-    if not chars:
-        # Fall back to span bbox if chars list is empty
+    # Union every char from every same-baseline span, sorted by x-position.
+    # This gives us the COMPLETE line of text — across all style boundaries.
+    all_chars = []
+    for span in baseline_spans:
+        all_chars.extend(span.get("chars", []))
+    if not all_chars:
+        # Fall back to bbox of the closest span
+        best_span = min(baseline_spans, key=lambda s: abs(s["origin"][0] - x0))
         sb = best_span.get("bbox", (0, 0, 0, 0))
         return sb[2] - sb[0], best_span
 
-    # first char left edge to last char right edge = true rendered width
-    measured_w = chars[-1]["bbox"][2] - chars[0]["bbox"][0]
+    all_chars.sort(key=lambda c: c["bbox"][0])
 
-    # Check for multi-span continuation: if there are adjacent spans
-    # on the same baseline that start immediately after this one ends,
-    # include them in the measurement (handles mid-word font changes)
-    last_x = chars[-1]["bbox"][2]
-    for other_span in baseline_spans:
-        if other_span is best_span:
-            continue
-        other_chars = other_span.get("chars", [])
-        if not other_chars:
-            continue
-        gap = other_chars[0]["bbox"][0] - last_x
-        # If gap < 1pt, these spans are contiguous (same word, different styling)
-        if 0 <= gap < 1.0:
-            measured_w += (other_chars[-1]["bbox"][2] - other_chars[0]["bbox"][0]) + gap
-            last_x = other_chars[-1]["bbox"][2]
+    # Width = leftmost char's x0 to rightmost char's x1
+    measured_w = all_chars[-1]["bbox"][2] - all_chars[0]["bbox"][0]
 
-    logger.info(f"_measure_span_width: x0={x0:.1f} origin_y={origin_y:.1f} → width={measured_w:.2f}")
-    return measured_w, best_span
+    # Build a synthetic "line span" carrying the unified char list.
+    # Use the closest-to-x0 span's metadata (font, size, color, origin)
+    # since that's most likely the styling at the click point.
+    closest_span = min(baseline_spans, key=lambda s: abs(s["origin"][0] - x0))
+    synthetic_span = dict(closest_span)  # shallow copy of metadata
+    synthetic_span["chars"] = all_chars
+    # Recompute bbox to cover all chars
+    synthetic_span["bbox"] = (
+        all_chars[0]["bbox"][0],
+        min(c["bbox"][1] for c in all_chars),
+        all_chars[-1]["bbox"][2],
+        max(c["bbox"][3] for c in all_chars),
+    )
+
+    logger.info(
+        f"_measure_span_width: x0={x0:.1f} origin_y={origin_y:.1f} → "
+        f"width={measured_w:.2f}, "
+        f"unified {len(baseline_spans)} span(s) into {len(all_chars)} chars"
+    )
+    return measured_w, synthetic_span
 
 
 # ── Helper: get per-font space width from get_texttrace() ────────────────────
@@ -587,19 +591,32 @@ async def apply_edits(
         # This preserves colored backgrounds (table stripes, tinted boxes)
         # instead of painting them white.
         def _sample_background_color(page, rect):
-            """Sample the pixel color in thin strips just above and below
-            the erase rect. Returns an (r, g, b) tuple in 0-1 range.
-            Falls back to white if sampling fails."""
+            """Sample the pixel color in thin strips to the LEFT and RIGHT
+            of the erase rect, on the SAME row. Sampling above/below is
+            unreliable in tables — the strip above/below may fall into a
+            different cell with a different background. Same-row sampling
+            stays within the cell.
+
+            Returns an (r, g, b) tuple in 0-1 range. Falls back to white if
+            sampling fails or returns no samples (e.g. text spans the full
+            cell width with no padding to sample).
+            """
             try:
                 pix = page.get_pixmap(dpi=72)  # 1pt = 1px at 72dpi
                 samples = []
 
-                # Sample strip just ABOVE the rect (1pt tall)
-                strip_above = fitz.Rect(rect.x0, rect.y0 - 1.5, rect.x1, rect.y0 - 0.5)
-                # Sample strip just BELOW the rect (1pt tall)
-                strip_below = fitz.Rect(rect.x0, rect.y1 + 0.5, rect.x1, rect.y1 + 1.5)
+                # Sample strips to the LEFT and RIGHT of the erase rect on
+                # the SAME row. We use a 4pt-wide strip and stay vertically
+                # within the rect's y-range so we never cross into adjacent
+                # cells/rows.
+                strip_left = fitz.Rect(
+                    max(0, rect.x0 - 5), rect.y0 + 1, rect.x0 - 1, rect.y1 - 1
+                )
+                strip_right = fitz.Rect(
+                    rect.x1 + 1, rect.y0 + 1, rect.x1 + 5, rect.y1 - 1
+                )
 
-                for strip in (strip_above, strip_below):
+                for strip in (strip_left, strip_right):
                     x0i, y0i = int(max(0, strip.x0)), int(max(0, strip.y0))
                     x1i = int(min(pix.width, strip.x1))
                     y1i = int(min(pix.height, strip.y1))
@@ -610,11 +627,27 @@ async def apply_edits(
                             r, g, b = pix.pixel(px, py)[:3]
                             samples.append((r, g, b))
 
+                # If horizontal sampling produced nothing useful (text fills
+                # the cell with no padding), fall back to one row above the
+                # rect — better than guessing white.
+                if not samples:
+                    strip_above = fitz.Rect(
+                        rect.x0, max(0, rect.y0 - 2), rect.x1, rect.y0 - 0.5
+                    )
+                    x0i, y0i = int(max(0, strip_above.x0)), int(max(0, strip_above.y0))
+                    x1i = int(min(pix.width, strip_above.x1))
+                    y1i = int(min(pix.height, strip_above.y1))
+                    if x1i > x0i and y1i > y0i:
+                        for py in range(y0i, y1i):
+                            for px in range(x0i, x1i):
+                                r, g, b = pix.pixel(px, py)[:3]
+                                samples.append((r, g, b))
+
                 if not samples:
                     return (1.0, 1.0, 1.0)
 
-                # Use median (not mean) — robust against occasional text pixels
-                # that might leak into the sample strips.
+                # Use median (not mean) — robust against any text pixel
+                # leakage at the edges.
                 samples.sort(key=lambda rgb: rgb[0] + rgb[1] + rgb[2])
                 mid_rgb = samples[len(samples) // 2]
                 return (mid_rgb[0] / 255.0, mid_rgb[1] / 255.0, mid_rgb[2] / 255.0)
