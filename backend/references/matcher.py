@@ -142,6 +142,39 @@ def parse_raw_reference_fast(ref_text: str) -> dict:
     if year_match:
         metadata["year"] = year_match.group(1)
 
+    # Volume & Issue (e.g. "21(1)")
+    vol_match = re.search(r'\b(\d+)\s*\(([\d\-A-Za-z]+)\)', ref_text)
+    if vol_match:
+        metadata["volume"] = vol_match.group(1)
+        metadata["issue"] = vol_match.group(2)
+    elif re.search(r'vol\.?\s*(\d+)', ref_text, re.IGNORECASE):
+        v = re.search(r'vol\.?\s*(\d+)', ref_text, re.IGNORECASE)
+        if v: metadata["volume"] = v.group(1)
+
+    # Pages (e.g. "pp. 254" or "4004" or "10-20")
+    # Strip DOIs and URLs first so their numeric portions aren't matched as pages
+    pages_text = re.sub(r'(?:doi[:\s]*|https?://\S+|10\.\d{4,}/\S+)', '', ref_text, flags=re.IGNORECASE)
+    pages_match = re.search(r'(?:pp?\.?\s*|pages?\s*)?([eE]?\d+)\s*[-–]\s*([eE]?\d+)', pages_text)
+    if pages_match:
+        metadata["pages"] = f"{pages_match.group(1)}-{pages_match.group(2)}"
+    else:
+        single_page_match = re.search(r'pp?\.?\s*([eE]?\d+)', pages_text)
+        if single_page_match:
+            metadata["pages"] = single_page_match.group(1)
+
+    # Source / Journal (heuristic: text between title and volume)
+    if metadata.get("volume"):
+        vol_pattern = r'\b' + re.escape(metadata["volume"]) + r'\s*\('
+        m = re.search(vol_pattern, ref_text)
+        if m:
+            left_part = ref_text[:m.start()].strip()
+            # Find the last quotation mark or period-space that might signify the end of the title
+            title_end_m = re.search(r'.*([\'"]|\.\s+)(.*?)[.,]?\s*$', left_part)
+            if title_end_m:
+                candidate = title_end_m.group(2).strip(" ,.")
+                if len(candidate) > 4 and not candidate.lower().startswith('pp'):
+                    metadata["source"] = candidate
+
     # Try to split author/title from common patterns:
     # "Author, A. (2020). Title. ..."  or  "Author, A., 2020. Title. ..."
     author_title_m = re.match(

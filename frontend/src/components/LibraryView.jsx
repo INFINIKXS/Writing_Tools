@@ -144,6 +144,7 @@ const FIELD_LABELS = { authors: 'Authors', title: 'Title', year: 'Year', source:
 function VerifierResultCard({ result, index, copiedId, onCopy, expanded, onToggle }) {
     const status = STATUS_CONFIG[result.overall_status] || STATUS_CONFIG.unverifiable;
     const hasMetaIssues = result.metadata_issues?.some(i => i.status !== 'correct' && i.status !== 'skipped');
+    const hasMeta = result.metadata_issues?.length > 0;
     const hasFormatIssues = result.formatting_issues?.length > 0;
 
     return (
@@ -219,15 +220,15 @@ function VerifierResultCard({ result, index, copiedId, onCopy, expanded, onToggl
             )}
 
             {/* Expandable details */}
-            {(hasMetaIssues || hasFormatIssues) && (
+            {(hasMeta || hasFormatIssues) && (
                 <button
                     onClick={() => onToggle(index)}
                     className="w-full flex items-center justify-between text-[10px] font-semibold text-neutral-600 hover:text-neutral-400 transition-colors"
                 >
                     <span className="flex items-center gap-1.5">
                         Details
-                        {hasMetaIssues && <span className="text-[8px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">Metadata</span>}
-                        {hasFormatIssues && <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/20">Format</span>}
+                        {hasMetaIssues && <span className="text-[8px] px-1 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">Metadata Issue</span>}
+                        {hasFormatIssues && <span className="text-[8px] px-1 py-0.5 rounded bg-violet-500/10 text-violet-400 border border-violet-500/20">Format Issue</span>}
                     </span>
                     <ChevronRight size={10} className={`transition-transform duration-200 ${expanded ? 'rotate-90' : ''}`} />
                 </button>
@@ -236,7 +237,7 @@ function VerifierResultCard({ result, index, copiedId, onCopy, expanded, onToggl
             {expanded && (
                 <div className="mt-2 space-y-2 animate-fade-in-up">
                     {/* Metadata issues */}
-                    {hasMetaIssues && (
+                    {hasMeta && (
                         <div className="bg-white/[0.02] border border-white/5 rounded-lg p-3">
                             <div className="flex items-center justify-between mb-2">
                                 <div className="flex items-center gap-1.5">
@@ -251,9 +252,10 @@ function VerifierResultCard({ result, index, copiedId, onCopy, expanded, onToggl
                                     <div key={idx} className="flex items-start gap-2">
                                         <span className={`text-[10px] shrink-0 mt-0.5 ${
                                             issue.status === 'correct' ? 'text-emerald-400' :
-                                            issue.status === 'missing' ? 'text-amber-400' : 'text-red-400'
+                                            issue.status === 'missing' ? 'text-amber-400' :
+                                            issue.status === 'unavailable' ? 'text-neutral-600' : 'text-red-400'
                                         }`}>
-                                            {issue.status === 'correct' ? '✓' : issue.status === 'missing' ? '○' : '✗'}
+                                            {issue.status === 'correct' ? '✓' : issue.status === 'missing' ? '○' : issue.status === 'unavailable' ? '?' : '✗'}
                                         </span>
                                         <span className="text-[9px] font-bold uppercase tracking-widest text-neutral-500 w-14 shrink-0 pt-0.5">
                                             {FIELD_LABELS[issue.field] || issue.field}
@@ -270,6 +272,9 @@ function VerifierResultCard({ result, index, copiedId, onCopy, expanded, onToggl
                                             )}
                                             {issue.status === 'correct' && (
                                                 <div className="text-[10px] text-neutral-500 break-all">{issue.user_value || issue.correct_value}</div>
+                                            )}
+                                            {issue.status === 'unavailable' && (
+                                                <div className="text-[10px] text-neutral-600 italic break-all">Unable to verify — not available from API</div>
                                             )}
                                             {issue.detail && issue.status !== 'correct' && (
                                                 <div className="text-[9px] text-neutral-600 mt-0.5">{issue.detail}</div>

@@ -47,6 +47,7 @@ def _compare_authors(user_authors, api_authors) -> dict:
     """
     Compare user-supplied author string/list against API-verified authors.
     Returns { status, detail, user_value, correct_value }.
+    Only requires the first author surname to match, gracefully handling 'et al.' truncations.
     """
     if not api_authors:
         return {"status": "skipped", "detail": "API did not return authors"}
@@ -82,42 +83,55 @@ def _compare_authors(user_authors, api_authors) -> dict:
 
     surname_match, surname_ratio = _fuzzy_match(user_first, api_first, 0.85)
 
-    # Count match
-    count_ok = len(user_list) == len(api_list)
-
-    if surname_match and count_ok:
+    if surname_match:
         return {
             "status": "correct",
-            "detail": f"First author and count match ({len(api_list)} authors)",
+            "detail": f"First author matches ({api_first.capitalize()})",
             "user_value": "; ".join(user_list),
             "correct_value": "; ".join(api_list),
         }
     else:
-        issues = []
-        if not surname_match:
-            issues.append(f"First author mismatch: '{user_first}' vs '{api_first}' (similarity {surname_ratio:.0%})")
-        if not count_ok:
-            issues.append(f"Author count: {len(user_list)} in reference vs {len(api_list)} from API")
         return {
             "status": "incorrect",
-            "detail": "; ".join(issues),
+            "detail": f"First author mismatch: '{user_first}' vs '{api_first}' (similarity {surname_ratio:.0%})",
             "user_value": "; ".join(user_list),
             "correct_value": "; ".join(api_list),
         }
 
 
-def _compare_field(field_name: str, user_val, api_val, threshold=0.80) -> Optional[dict]:
+def _compare_field(field_name: str, user_val, api_val, threshold=0.80, original_ref: str = "") -> Optional[dict]:
     """
     Compare a single metadata field. Returns a dict describing the comparison,
     or None if there's nothing meaningful to compare.
     """
+    import re
     if not api_val:
-        return None  # Can't verify without API data
+        # Return 'unavailable' so the UI can show "could not verify" instead of silently skipping
+        return {"field": field_name, "status": "unavailable", "user_value": str(user_val).strip() if user_val else "", "correct_value": ""}
 
     user_str = str(user_val).strip() if user_val else ""
     api_str = str(api_val).strip()
 
     if not user_str:
+        if original_ref:
+            # Fallback: check if the correct API value literally exists in the raw reference text.
+            # This covers cases where our regex extractor failed to split the string properly.
+            a_clean = api_str.replace('–', '-').replace('—', '-')
+            o_clean = original_ref.replace('–', '-').replace('—', '-')
+            
+            if field_name in ("year", "volume", "issue", "pages"):
+                if re.search(r'\b' + re.escape(a_clean) + r'\b', o_clean, re.IGNORECASE):
+                    return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+            else:
+                if len(a_clean) > 4 and a_clean.lower() in o_clean.lower():
+                    return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+                # Relaxed source check: maybe the API has "The Lancet. Global health" but text has "The Lancet Global health"
+                elif field_name == "source" and len(a_clean) > 5:
+                    a_words = [w for w in re.split(r'\W+', a_clean.lower()) if len(w) > 3]
+                    o_words = [w for w in re.split(r'\W+', o_clean.lower()) if len(w) > 3]
+                    if a_words and all(w in o_words for w in a_words):
+                        return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+
         return {
             "field": field_name,
             "status": "missing",
@@ -132,15 +146,37 @@ def _compare_field(field_name: str, user_val, api_val, threshold=0.80) -> Option
         a = api_str.replace('–', '-').replace('—', '-')
         if u == a:
             return {"field": field_name, "status": "correct", "user_value": user_str, "correct_value": api_str}
-        else:
-            return {"field": field_name, "status": "incorrect", "user_value": user_str, "correct_value": api_str}
-
-    # For title, source — fuzzy match
-    is_match, ratio = _fuzzy_match(user_str, api_str, threshold)
-    if is_match:
-        return {"field": field_name, "status": "correct", "user_value": user_str, "correct_value": api_str}
     else:
-        return {"field": field_name, "status": "incorrect", "user_value": user_str, "correct_value": api_str}
+        # For title, source — fuzzy match
+        is_match, ratio = _fuzzy_match(user_str, api_str, threshold)
+        if is_match:
+            return {"field": field_name, "status": "correct", "user_value": user_str, "correct_value": api_str}
+
+    # Final Fallback: if we haven't returned correct, but we have original_ref, check if the api_str
+    # literally exists unmodified in the text. This saves us from regex garbage extractions.
+    if original_ref:
+        a_clean = api_str.replace('–', '-').replace('—', '-')
+        o_clean = original_ref.replace('–', '-').replace('—', '-')
+        
+        if field_name in ("year", "volume", "issue", "pages"):
+            # For pages, strip DOIs/URLs first so page values don't match inside DOI strings
+            if field_name == "pages":
+                o_clean = re.sub(r'(?:doi[:\s]*|https?://\S+|10\.\d{4,}/\S+)', '', o_clean, flags=re.IGNORECASE)
+            if re.search(r'\b' + re.escape(a_clean) + r'\b', o_clean, re.IGNORECASE):
+                return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+        else:
+            if len(a_clean) > 4 and a_clean.lower() in o_clean.lower():
+                return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+            # Relaxed source / title check:
+            elif len(a_clean) > 5:
+                # remove punctuation, check tokens
+                a_words = [w for w in re.split(r'\W+', a_clean.lower()) if len(w) > 3]
+                o_words = [w for w in re.split(r'\W+', o_clean.lower()) if len(w) > 3]
+                if a_words and all(w in o_words for w in a_words):
+                    return {"field": field_name, "status": "correct", "user_value": a_clean, "correct_value": api_str}
+
+    # If we still failed
+    return {"field": field_name, "status": "incorrect", "user_value": user_str, "correct_value": api_str}
 
 
 def _detect_formatting_issues(original_ref: str, correct_ref: str, style: str) -> list:
@@ -325,6 +361,17 @@ def verify_single_reference(original_ref: str, style: str) -> dict:
         if success:
             result["api_verified"] = True
             result["api_source"] = "pubmed"
+            # Supplement with CrossRef for any fields PubMed left empty
+            # (e.g. pages for MDPI/open-access journals with DOI-only elocationids)
+            missing_fields = [f for f in ("pages", "volume", "issue", "source") if not api_metadata.get(f)]
+            if missing_fields:
+                cr_metadata = {k: None for k in api_metadata}
+                cr_sources = {}
+                if perform_crossref_lookup(doi, cr_metadata, cr_sources):
+                    for field in missing_fields:
+                        if cr_metadata.get(field):
+                            api_metadata[field] = cr_metadata[field]
+                            field_sources[field] = "crossref"
         else:
             success = perform_crossref_lookup(doi, api_metadata, field_sources)
             if success:
@@ -363,29 +410,33 @@ def verify_single_reference(original_ref: str, style: str) -> dict:
         scores.append(1.0 if author_result["status"] == "correct" else 0.0)
 
     # Title
-    title_cmp = _compare_field("title", parsed.get("title"), api_metadata.get("title"), threshold=0.85)
+    title_cmp = _compare_field("title", parsed.get("title"), api_metadata.get("title"), threshold=0.85, original_ref=original_ref)
     if title_cmp:
         metadata_issues.append(title_cmp)
-        scores.append(1.0 if title_cmp["status"] == "correct" else 0.0)
+        if title_cmp["status"] != "unavailable":
+            scores.append(1.0 if title_cmp["status"] == "correct" else 0.0)
 
     # Year
-    year_cmp = _compare_field("year", parsed.get("year"), api_metadata.get("year"))
+    year_cmp = _compare_field("year", parsed.get("year"), api_metadata.get("year"), original_ref=original_ref)
     if year_cmp:
         metadata_issues.append(year_cmp)
-        scores.append(1.0 if year_cmp["status"] == "correct" else 0.0)
+        if year_cmp["status"] != "unavailable":
+            scores.append(1.0 if year_cmp["status"] == "correct" else 0.0)
 
     # Source / Journal
-    source_cmp = _compare_field("source", parsed.get("source"), api_metadata.get("source"), threshold=0.80)
+    source_cmp = _compare_field("source", parsed.get("source"), api_metadata.get("source"), threshold=0.80, original_ref=original_ref)
     if source_cmp:
         metadata_issues.append(source_cmp)
-        scores.append(1.0 if source_cmp["status"] == "correct" else (0.5 if source_cmp["status"] == "missing" else 0.0))
+        if source_cmp["status"] != "unavailable":
+            scores.append(1.0 if source_cmp["status"] == "correct" else (0.5 if source_cmp["status"] == "missing" else 0.0))
 
     # Volume, Issue, Pages
     for field in ("volume", "issue", "pages"):
-        cmp = _compare_field(field, parsed.get(field), api_metadata.get(field))
+        cmp = _compare_field(field, parsed.get(field), api_metadata.get(field), original_ref=original_ref)
         if cmp:
             metadata_issues.append(cmp)
-            scores.append(1.0 if cmp["status"] == "correct" else 0.0)
+            if cmp["status"] != "unavailable":
+                scores.append(1.0 if cmp["status"] == "correct" else 0.0)
 
     result["metadata_issues"] = metadata_issues
     result["accuracy_score"] = round(sum(scores) / max(len(scores), 1), 2)

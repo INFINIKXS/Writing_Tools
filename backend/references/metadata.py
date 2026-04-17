@@ -78,12 +78,14 @@ def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expecte
                         field_sources["pages"] = "pubmed"
                     elif result.get("elocationid"):
                         eloc = str(result.get("elocationid"))
-                        if "doi:" in eloc.lower():
-                            eloc = eloc.split(":")[-1].strip()
-                            if "/" in eloc:
-                                eloc = eloc.split("/")[-1]
-                        metadata["pages"] = eloc
-                        field_sources["pages"] = "pubmed"
+                        # DOI-based elocationids (e.g. "doi: 10.3390/ijerph18084004")
+                        # are NOT page numbers — skip them since DOI is captured separately.
+                        if "doi:" not in eloc.lower():
+                            # Strip common prefixes like "pii: " 
+                            if ":" in eloc:
+                                eloc = eloc.split(":")[-1].strip()
+                            metadata["pages"] = eloc
+                            field_sources["pages"] = "pubmed"
                         
                     metadata["type"] = "Journal Article"
                     field_sources["type"] = "pubmed"

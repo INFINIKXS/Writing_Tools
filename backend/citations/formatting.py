@@ -162,6 +162,8 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     """
     authors = metadata.get("authors") or ["Unknown Author"]
     title = metadata.get("title") or "Untitled"
+    if isinstance(title, str):
+        title = title.rstrip('.')
     year = metadata.get("year") or "n.d."
     source = metadata.get("source")
     volume = metadata.get("volume")
@@ -237,12 +239,15 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     elif volume:
         location_parts.append(volume)
     if pages:
+        # Use 'p.' for single page/article numbers, 'pp.' for ranges
+        is_range = any(sep in pages for sep in ('-', '–', '—', ','))
+        page_prefix = 'pp.' if is_range else 'p.'
         if location_parts and style == "harvard":
-            location_parts.append(f", pp. {pages}")
+            location_parts.append(f", {page_prefix} {pages}")
         elif location_parts:
             location_parts.append(f", {pages}")
         else:
-            location_parts.append(f"pp. {pages}")
+            location_parts.append(f"{page_prefix} {pages}")
     location = ''.join(location_parts)
     
     doi_str = f"https://doi.org/{doi}" if doi else (url or "")
