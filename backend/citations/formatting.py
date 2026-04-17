@@ -387,8 +387,9 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f", {day_month}"
                 ref_html += f", {day_month}"
             if pages:
-                ref_plain += f", p. {pages}"
-                ref_html += f", p. {pages}"
+                np_prefix = 'pp.' if any(s in pages for s in ('-', '–', '—', ',')) else 'p.'
+                ref_plain += f", {np_prefix} {pages}"
+                ref_html += f", {np_prefix} {pages}"
             ref_plain += "."
             ref_html += "."
             if ending:
