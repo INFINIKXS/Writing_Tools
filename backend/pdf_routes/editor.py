@@ -257,6 +257,35 @@ def _get_column_boundaries(page):
     return [[text_x_min, text_x_max]]
 
 
+def _line_font_flags(spans):
+    """
+    Given a list of PyMuPDF spans for a line, return (is_bold, is_italic, dominant_font_name)
+    based on the span that contains the most characters.
+    """
+    from collections import Counter
+    font_counts = Counter()
+    font_details = {}
+
+    for span in spans:
+        font_name = span.get("font", "")
+        flags = span.get("flags", 0)
+        
+        is_bold = bool(flags & 16) or "Bold" in font_name
+        is_italic = bool(flags & 2) or "Italic" in font_name or "Oblique" in font_name
+        
+        chars_len = len(span.get("chars", []))
+        font_counts[font_name] += chars_len
+        
+        if font_name not in font_details:
+            font_details[font_name] = {"is_bold": is_bold, "is_italic": is_italic}
+            
+    if not font_counts:
+        return False, False, ""
+        
+    dom_font = font_counts.most_common(1)[0][0]
+    return font_details[dom_font]["is_bold"], font_details[dom_font]["is_italic"], dom_font
+
+
 def extract_page_spacing_data(page):
     """
     Extract per-character spatial data from a page.
@@ -265,6 +294,7 @@ def extract_page_spacing_data(page):
       - chars: per-char data (c, x0, x1, y0, y1, origin_x, origin_y, font, size, is_superscript)
       - gaps: inter-character gaps (length = len(chars) - 1)
       - line_x0, line_x1, line_y0, line_y1: line bbox
+      - is_bold, is_italic, dominant_font: authoritative style info from PyMuPDF
     """
     data = page.get_text("rawdict", flags=fitz.TEXTFLAGS_TEXT)
     blocks_out = []
@@ -277,8 +307,19 @@ def extract_page_spacing_data(page):
         for line in block.get("lines", []):
             line_chars = []
 
-            for span in line.get("spans", []):
+            spans = line.get("spans", [])
+            dom_bold, dom_italic, dom_font = _line_font_flags(spans)
+
+            for span in spans:
                 is_superscript = bool(span.get("flags", 0) & fitz.TEXT_FONT_SUPERSCRIPT)
+                
+                # Span-level color — convert sRGB packed int to "rgb(r, g, b)" string
+                # for direct use as a CSS color value in the frontend.
+                span_color_int = span.get("color", 0)
+                span_r = (span_color_int >> 16) & 0xFF
+                span_g = (span_color_int >> 8) & 0xFF
+                span_b = span_color_int & 0xFF
+                span_color_css = f"rgb({span_r}, {span_g}, {span_b})"
 
                 for ch in span.get("chars", []):
                     line_chars.append({
@@ -292,6 +333,7 @@ def extract_page_spacing_data(page):
                         "font":         span["font"],
                         "size":         span["size"],
                         "is_superscript": is_superscript,
+                        "color":        span_color_css,
                     })
 
             if not line_chars:
@@ -302,6 +344,13 @@ def extract_page_spacing_data(page):
                 gap = line_chars[i]["x0"] - line_chars[i - 1]["x1"]
                 gaps.append(gap)
 
+            # Line-level dominant color: mode of per-char colors.
+            # Hyperlinked runs will have their own color; the most-common color
+            # is the line's body text color.
+            from collections import Counter as _CounterLocal
+            color_counts = _CounterLocal(c["color"] for c in line_chars)
+            dom_color = color_counts.most_common(1)[0][0] if color_counts else "rgb(0, 0, 0)"
+
             block_lines.append({
                 "chars":   line_chars,
                 "gaps":    gaps,
@@ -309,6 +358,10 @@ def extract_page_spacing_data(page):
                 "line_x1": line["bbox"][2],
                 "line_y0": line["bbox"][1],
                 "line_y1": line["bbox"][3],
+                "is_bold": dom_bold,
+                "is_italic": dom_italic,
+                "dominant_font": dom_font,
+                "dominant_color": dom_color,
             })
 
         if block_lines:

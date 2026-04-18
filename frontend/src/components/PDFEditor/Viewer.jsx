@@ -307,20 +307,105 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
           words.forEach((w) => allWordsByBaseline[baselineKey].push(w));
 
           const allCharsInLine = words.flat();
-          const lineStr = words.map((wc) => wc.map((c) => c.c).join('')).join(' ');
-          const lineX0 = allCharsInLine[0].x0;
-          const lineX1 = allCharsInLine[allCharsInLine.length - 1].x1;
-          const lineY_base = allCharsInLine[0].origin_y;
-          const lineY_top = Math.min(...allCharsInLine.map((c) => c.y0));
-          const lineH = Math.max(...allCharsInLine.map((c) => c.y1 - c.y0));
-          const lineFontSize = allCharsInLine[0].size;
-          const lineFontName = allCharsInLine[0].font;
-          let hasSuperscript = false;
+
+          // Detect dominant baseline + font size to classify super/sub.
+          const baselineCounts = {};
           for (const ch of allCharsInLine) {
-            if (ch.is_superscript) hasSuperscript = true;
+            const key = Math.round(ch.origin_y * 2) / 2;
+            baselineCounts[key] = (baselineCounts[key] || 0) + 1;
           }
+          let dominantBaseline = allCharsInLine[0].origin_y;
+          let maxCount = 0;
+          for (const [key, count] of Object.entries(baselineCounts)) {
+            if (count > maxCount) {
+              maxCount = count;
+              dominantBaseline = parseFloat(key);
+            }
+          }
+          const sizeCounts = {};
+          for (const ch of allCharsInLine) {
+            const key = Math.round(ch.size * 2) / 2;
+            sizeCounts[key] = (sizeCounts[key] || 0) + 1;
+          }
+          let dominantSize = allCharsInLine[0].size;
+          let maxSizeCount = 0;
+          for (const [key, count] of Object.entries(sizeCounts)) {
+            if (count > maxSizeCount) {
+              maxSizeCount = count;
+              dominantSize = parseFloat(key);
+            }
+          }
+          const SUB_BASELINE_THRESHOLD = dominantSize * 0.15;
+
+          // Build lineStr INCLUDING all super/sub chars inline. Track which
+          // char indices are super vs sub so the InlineEditor can render
+          // them as <sup>/<sub> elements.
+          let lineStr = '';
+          const charKinds = []; // per char in lineStr: 'normal' | 'super' | 'sub'
+          const charColors = []; // parallel: per-char color string
+          words.forEach((wordChars, wi) => {
+            if (wi > 0) {
+              lineStr += ' ';
+              charKinds.push('normal');
+              // For injected separator space, borrow the previous word's last color
+              charColors.push(
+                wordChars[0]?.color || charColors[charColors.length - 1] || 'rgb(0, 0, 0)'
+              );
+            }
+            for (const ch of wordChars) {
+              lineStr += ch.c;
+              if (ch.is_superscript) {
+                charKinds.push('super');
+              } else if (
+                ch.origin_y > dominantBaseline + SUB_BASELINE_THRESHOLD &&
+                ch.size < dominantSize - 0.5
+              ) {
+                charKinds.push('sub');
+              } else {
+                charKinds.push('normal');
+              }
+              charColors.push(ch.color || 'rgb(0, 0, 0)');
+            }
+          });
+
+          // Collapse charKinds into contiguous ranges
+          const superscriptRanges = [];
+          let runStart = -1;
+          let runKind = null;
+          for (let i = 0; i <= charKinds.length; i++) {
+            const k = i < charKinds.length ? charKinds[i] : 'normal';
+            if (k === runKind) continue;
+            if (runStart !== -1 && runKind !== 'normal') {
+              superscriptRanges.push({
+                kind: runKind,
+                charStart: runStart,
+                charEnd: i,
+                color: charColors[runStart] || 'rgb(0, 0, 0)',
+              });
+            }
+            if (k !== 'normal') {
+              runStart = i;
+              runKind = k;
+            } else {
+              runStart = -1;
+              runKind = null;
+            }
+          }
+
+          // Bounding box: enclose ALL chars (including super/sub raised
+          // above or dropped below the dominant baseline).
+          const lineX0 = Math.min(...allCharsInLine.map((c) => c.x0));
+          const lineX1 = Math.max(...allCharsInLine.map((c) => c.x1));
+          const lineY_base = dominantBaseline;
+          const lineY_top = Math.min(...allCharsInLine.map((c) => c.y0));
+          const lineY_bottom = Math.max(...allCharsInLine.map((c) => c.y1));
+          const lineH = lineY_bottom - lineY_top;
+          const lineFontSize = dominantSize;
+          const lineFontName = allCharsInLine[0].font;
           const ascenderH = Math.max(0, lineY_base - lineY_top);
-          const descenderH = Math.max(0, lineY_top + lineH - lineY_base);
+          const descenderH = Math.max(0, lineY_bottom - lineY_base);
+
+          const hasSuperscript = superscriptRanges.length > 0;
 
           lineItems.push({
             str: lineStr,
@@ -332,10 +417,17 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
             fontSize: lineFontSize,
             fontName: lineFontName,
             hasSuperscript,
+            superscriptRanges,
             ascender_h: ascenderH,
             descender_h: descenderH,
-            color: 'black',
+            color: lineData.dominant_color || 'rgb(0, 0, 0)',
             _baselineKey: baselineKey,
+            // Authoritative style info from backend PyMuPDF font flags.
+            // These override PDF.js's text-layer heuristics which can
+            // misreport bold/italic for subsetted embedded fonts.
+            isBold: lineData.is_bold === true,
+            isItalic: lineData.is_italic === true,
+            fontPostScriptName: lineData.dominant_font || lineFontName,
           });
         });
       });
@@ -404,7 +496,7 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
               str: wordStr, pdfX: wordX0, pdfY_base: wordY_base, pdfY_top: wordY_top,
               pdfW: wordW, pdfH: wordH, fontSize: wordFontSize, fontName: wordFontName,
               hasSuperscript: wordHasSuperscript, ascender_h: ascenderH, descender_h: descenderH,
-              color: 'black',
+              color: wordChars[0].color || 'rgb(0, 0, 0)',
             };
             currentCol = wordCol;
           } else {
@@ -425,7 +517,7 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
                 str: wordStr, pdfX: wordX0, pdfY_base: wordY_base, pdfY_top: wordY_top,
                 pdfW: wordW, pdfH: wordH, fontSize: wordFontSize, fontName: wordFontName,
                 hasSuperscript: wordHasSuperscript, ascender_h: ascenderH, descender_h: descenderH,
-                color: 'black',
+                color: wordChars[0].color || 'rgb(0, 0, 0)',
               };
               currentCol = wordCol;
             }
@@ -523,54 +615,6 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
           updates.top = matchedSpan.style.top;
           updates.left = matchedSpan.style.left;
           updates.lineHeight = cs.lineHeight;
-        }
-
-        // Sample the text color from the canvas pixels
-        if (ctx && item.str && item.str.trim()) {
-          const screenFontSize = (item.fontSize || 12) * currentScale;
-          const screenX = item.pdfX * currentScale;
-          const screenW = item.pdfW * currentScale;
-          const screenBaselineY = item.pdfY_base * currentScale;
-
-          // ── THE DENSE GRID EYEDROPPER ──
-          // Instead of 4 random dots, grab a 10x10 pixel chunk directly from 
-          // the visual center of the word.
-          const midX = Math.round((screenX + screenW * 0.5) * pixelRatioX) - 5;
-          const midY = Math.round((screenBaselineY - screenFontSize * 0.3) * pixelRatioY) - 5;
-
-          let purestColor = null;
-          let maxDistance = 0; // We want the pixel that is furthest away from White
-
-          try {
-            // Extract the RGBA data for all 100 pixels in this 10x10 grid
-            const imgData = ctx.getImageData(midX, midY, 10, 10).data;
-            
-            // Loop through all pixels (data is an array of [r,g,b,a, r,g,b,a...])
-            for (let i = 0; i < imgData.length; i += 4) {
-              const r = imgData[i];
-              const g = imgData[i+1];
-              const b = imgData[i+2];
-              const a = imgData[i+3];
-
-              if (a < 100) continue; // Ignore transparent or highly blended pixels
-
-              // Calculate how "dark/colorful" this pixel is compared to pure white (255,255,255)
-              const distanceFromWhite = (255 - r) + (255 - g) + (255 - b);
-
-              // If this is the strongest ink we've seen so far, save it
-              if (distanceFromWhite > maxDistance) {
-                maxDistance = distanceFromWhite;
-                purestColor = [r, g, b];
-              }
-            }
-          } catch (e) {
-             // CORS or canvas taint issues
-          }
-
-          // If we found a solid color (distance > 30 ensures we aren't just picking off-white paper noise)
-          if (purestColor && maxDistance > 30) {
-            updates.color = `rgb(${purestColor[0]}, ${purestColor[1]}, ${purestColor[2]})`;
-          }
         }
 
         return Object.keys(updates).length > 0 ? { ...item, ...updates } : item;
@@ -756,36 +800,38 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
                       item={item}
                       scale={scale}
                       existingEdit={edits.find(e => e.pageNum === index + 1 && e.nodeIndex === selectedTextIdx)}
-                      onCommit={(newVal, formatOptions) => {
-                      const origItem = pageMetadata[index + 1].items[selectedTextIdx];
-                      pdfEditStore.commitEdit(activeFileId, {
-                        pageNum: index + 1,
-                        origStr: origItem.str,
-                        newStr: newVal,
-                        origin_y: origItem.pdfY_base,
-                        ascender_h: origItem.ascender_h,
-                        descender_h: origItem.descender_h,
-                        rect: {
-                          x: origItem.pdfX,
-                          y: origItem.pdfY_top,
-                          w: origItem.pdfW,
-                          h: origItem.pdfH
-                        },
-                        origFontSize: origItem.fontSize,
-                        fontSizeAdj: formatOptions.fontSizeAdj,
-                        fontName: origItem.fontName,
-                        color: formatOptions.color,
-                        customFontFamily: formatOptions.fontFamily,
-                        isBold: formatOptions.isBold,
-                        isItalic: formatOptions.isItalic,
-                        nodeIndex: selectedTextIdx
-                      });
-                      setSelectedTextIdx(null);
-                      // Trigger live backend bake after the store has been updated
-                      if (onLivePreview) setTimeout(onLivePreview, 0);
-                    }}
-                    onCancel={() => setSelectedTextIdx(null)}
-                  />
+                      onCommit={(newVal, formatOptions, newSuperscriptRanges) => {
+                        const origItem = pageMetadata[index + 1].items[selectedTextIdx];
+                        pdfEditStore.commitEdit(activeFileId, {
+                          pageNum: index + 1,
+                          origStr: origItem.str,
+                          newStr: newVal,
+                          origin_y: origItem.pdfY_base,
+                          ascender_h: origItem.ascender_h,
+                          descender_h: origItem.descender_h,
+                          rect: {
+                            x: origItem.pdfX,
+                            y: origItem.pdfY_top,
+                            w: origItem.pdfW,
+                            h: origItem.pdfH
+                          },
+                          origFontSize: origItem.fontSize,
+                          fontSizeAdj: formatOptions.fontSizeAdj,
+                          fontName: origItem.fontName,
+                          color: formatOptions.color,
+                          customFontFamily: formatOptions.fontFamily,
+                          isBold: formatOptions.isBold,
+                          isItalic: formatOptions.isItalic,
+                          nodeIndex: selectedTextIdx,
+                          // InlineEditor produces fresh superscriptRanges
+                          // from the committed DOM tree (positions in newVal).
+                          superscriptRanges: newSuperscriptRanges || [],
+                        });
+                        setSelectedTextIdx(null);
+                        if (onLivePreview) setTimeout(onLivePreview, 0);
+                      }}
+                      onCancel={() => setSelectedTextIdx(null)}
+                    />
                   );
                 })()}
               </>
