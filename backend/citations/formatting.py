@@ -307,8 +307,9 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f". {pub_str}"
                 ref_html += f". {pub_str}"
             if pages:
-                ref_plain += f", pp. {pages}"
-                ref_html += f", pp. {pages}"
+                pg_prefix = 'pp.' if any(s in pages for s in ('-', '–', '—', ',')) else 'p.'
+                ref_plain += f", {pg_prefix} {pages}"
+                ref_html += f", {pg_prefix} {pages}"
             ref_plain += "."
             ref_html += "."
             if ending:
@@ -353,8 +354,9 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
                 ref_plain += f" {pub_str}"
                 ref_html += f" {pub_str}"
             if pages:
-                ref_plain += f", pp. {pages}"
-                ref_html += f", pp. {pages}"
+                pg_prefix = 'pp.' if any(s in pages for s in ('-', '–', '—', ',')) else 'p.'
+                ref_plain += f", {pg_prefix} {pages}"
+                ref_html += f", {pg_prefix} {pages}"
             ref_plain += "."
             ref_html += "."
             if ending:
