@@ -309,6 +309,27 @@ def _detect_formatting_issues(original_ref: str, correct_ref: str, style: str) -
                 "detail": "Harvard uses 'and' between authors, not '&'.",
             })
 
+    # 8. Incorrect p./pp. usage (Harvard & APA)
+    if style in ("harvard", "apa"):
+        # Find all occurrences of pp./p. followed by page values
+        page_prefix_matches = re.finditer(r'\b(pp?)\.\s*([eE]?\d[\d\s,\-–—eE]*\d|[eE]?\d+)', original_ref)
+        for m in page_prefix_matches:
+            prefix = m.group(1)  # 'p' or 'pp'
+            page_val = m.group(2)
+            is_range = any(sep in page_val for sep in ('-', '–', '—', ','))
+            if prefix == 'pp' and not is_range:
+                issues.append({
+                    "issue": "page_prefix",
+                    "detail": f"Use 'p.' for a single page or article number ('{page_val}'), not 'pp.'.",
+                })
+                break
+            elif prefix == 'p' and is_range:
+                issues.append({
+                    "issue": "page_prefix",
+                    "detail": f"Use 'pp.' for page ranges ('{page_val}'), not 'p.'.",
+                })
+                break
+
     return issues
 
 
