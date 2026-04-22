@@ -3,15 +3,12 @@ Citation verification API route: POST /api/verify (SSE streaming).
 """
 import json
 import asyncio
-import random
 import re
 
-from google import genai
 from fastapi import APIRouter, UploadFile, File, HTTPException
 from starlette.responses import StreamingResponse
 
-from core.config import KEY_MANAGER_AVAILABLE, get_api_key_manager
-from core.gemini import get_client, MAX_RETRIES, RETRY_BASE_DELAY
+from core.gemini import get_client, gemini_request_with_retry
 from utils.text_extraction import extract_pdf_text, extract_docx_text, extract_doc_text
 from utils.text_utils import count_references_and_citations
 from citations.extraction import extract_reference_section, extract_citations_regex, detect_document_consistency_issues
@@ -89,14 +86,12 @@ async def verify_citations(file: UploadFile = File(...)):
         yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending to Gemini AI for semantic matching...'})}\n\n"
         await asyncio.sleep(0.1)
 
-        try:
-            model_name = 'gemini-3-flash-preview'
-            client = get_client(model=model_name)
-            key_manager = get_api_key_manager() if KEY_MANAGER_AVAILABLE else None
+        model_name = 'gemini-3-flash-preview'
+        client = get_client(model=model_name)
 
-            citations_list = json.dumps([c["text"] for c in python_citations], indent=2)
+        citations_list = json.dumps([c["text"] for c in python_citations], indent=2)
 
-            prompt = f"""You are a citation verification assistant. Python has already extracted the following in-text citations from a document using regex. Your PRIMARY source of truth is this pre-extracted list.
+        prompt = f"""You are a citation verification assistant. Python has already extracted the following in-text citations from a document using regex. Your PRIMARY source of truth is this pre-extracted list.
 
 PRE-EXTRACTED IN-TEXT CITATIONS (found by Python regex — these are confirmed):
 {citations_list}
@@ -124,48 +119,27 @@ Output in strict JSON format only:
 }}
 """
 
-            yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
-            
-            last_retry_error = None
-            for attempt in range(1, MAX_RETRIES + 1):
-                try:
-                    response = await asyncio.to_thread(
-                        client.models.generate_content,
-                        model=model_name,
-                        contents=prompt,
-                    )
-                    # Track usage after successful call
-                    if key_manager:
-                        key_manager.increment_usage(model=model_name)
-                    break
-                except Exception as e:
-                    error_str = str(e)
-                    is_rate_limited = any(code in error_str for code in ['429', 'RESOURCE_EXHAUSTED'])
-                    is_retryable = is_rate_limited or any(code in error_str for code in [
-                        '503', 'UNAVAILABLE',
-                        'SSL', 'ConnectionError', 'ConnectionReset', 'Timeout', 'timeout',
-                        'ServiceUnavailable',
-                    ])
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Gemini is matching citations to references...'})}\n\n"
 
-                    # On rate limit, rotate to next key
-                    if is_rate_limited and key_manager:
-                        has_backup = key_manager.mark_exhausted(model=model_name)
-                        if has_backup:
-                            new_key = key_manager.get_current_key(model=model_name)
-                            if new_key:
-                                client = genai.Client(api_key=new_key)
-                                yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'Rate limited — rotated to next API key (attempt {attempt}/{MAX_RETRIES})'})}\n\n"
+        # SSE-aware progress callback for the retry helper
+        async def sse_progress(msg):
+            nonlocal sse_queue
+            sse_queue.append(msg)
 
-                    if is_retryable and attempt < MAX_RETRIES:
-                        delay = RETRY_BASE_DELAY * (2 ** (attempt - 1)) + random.uniform(0, 1)
-                        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'API temporarily unavailable (attempt {attempt}/{MAX_RETRIES}). Retrying in {delay:.0f}s...'})}\n\n"
-                        await asyncio.sleep(delay)
-                        last_retry_error = e
-                    else:
-                        raise
+        sse_queue = []
+
+        try:
+            response = await gemini_request_with_retry(
+                client, prompt, model=model_name,
+                progress_callback=sse_progress,
+            )
         except Exception as e:
             yield f"data: {json.dumps({'stage': 'error', 'message': f'Gemini API error: {str(e)}'})}\n\n"
             return
+
+        # Flush any queued progress messages
+        for msg in sse_queue:
+            yield f"data: {json.dumps({'stage': 'analyzing', 'message': msg})}\n\n"
 
         yield f"data: {json.dumps({'stage': 'processing', 'message': 'Parsing AI response...'})}\n\n"
         await asyncio.sleep(0.1)
@@ -221,6 +195,14 @@ Output in strict JSON format only:
                 if dup_groups:
                     analysis["duplicate_reference_groups"] = dup_groups
 
+            # Capture AI's in-text citations for cross-validation before overriding
+            ai_extracted_citations = analysis.get("in_text_citations", [])
+            
+            # Regex is entirely responsible for citations. We override the AI's 
+            # citations here to prevent LLM hallucinations (misclassifying references
+            # as citations) from propagating to string verification and counts.
+            analysis["in_text_citations"] = [c["text"] for c in python_citations]
+
             analysis = count_references_and_citations(analysis)
 
             # Stage 5: Cross-validate Python vs AI
@@ -229,7 +211,7 @@ Output in strict JSON format only:
 
             validation = cross_validate(
                 python_citations,
-                analysis.get("in_text_citations", []),
+                ai_extracted_citations,
                 analysis.get("references", [])
             )
             analysis["cross_validation"] = validation

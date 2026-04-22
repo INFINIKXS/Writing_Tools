@@ -100,8 +100,18 @@ def extract_reference_section(full_text: str) -> tuple:
     Split the document into body text and reference section.
     Returns (body_text, reference_text).
     """
+    # Patterns ordered from most specific to least specific.
+    # Use re.MULTILINE so ^ matches start of every line.
+    # "references?" matches both "Reference" (singular) and "References" (plural).
     ref_heading_patterns = [
-        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
+        # Standard: heading on its own line with newlines around it
+        r'(?i)\n\s*(references?|bibliography|works\s+cited|reference\s+list)\s*\n',
+        # Heading on its own line (MULTILINE ^...$) — catches missing trailing \n
+        r'(?im)^\s*(references?|bibliography|works\s+cited|reference\s+list)\s*$',
+        # Heading at start of text (no leading \n)
+        r'(?i)^\s*(references?|bibliography|works\s+cited|reference\s+list)\s*\n',
+        # Heading followed directly by content (no trailing newline)
+        r'(?i)\n\s*(references?|bibliography|works\s+cited|reference\s+list)\s*(?=\S)',
     ]
     
     for pattern in ref_heading_patterns:
@@ -253,6 +263,45 @@ def detect_document_consistency_issues(citations_list: list) -> list:
     return warnings
 
 
+# ─── FALSE-POSITIVE FILTER ───────────────────────────────────────────────
+# Reference list entries (e.g. "Serrano N. (2024)") look like corporate
+# narrative citations to NAR_CORP because "Surname Initials" resembles a
+# two-word organisation name.  This filter catches them.
+_REF_ENTRY_FP = re.compile(
+    r'^'
+    r'(?:[A-Z][a-z\u00E0-\u00F6\u00F8-\u00FF]+(?:[\-\u2013][A-Z][a-z]+)*'
+    r'(?:\s+(?:van|von|de|del|den|der|di|du|le|la|al|el|bin|ibn|mac|mc))*'
+    r'\s+)'
+    r'[A-Z]{1,4}\.'
+    r'(?:\s*[A-Z]{1,4}\.)*'
+    r'\s*[,.]?\s*'
+    r'\(\d{4}',
+)
+
+# Bare initials leaked as a sub-match: "JM. (2024)" or "A. (2024)"
+_BARE_INITIALS_FP = re.compile(
+    r'^[A-Z]{1,4}\.'
+    r'(?:\s*[A-Z]{1,4}\.)*'
+    r'\s*[,.]?\s*'
+    r'\(\d{4}',
+)
+
+def _looks_like_ref_entry(citation_text: str, ctype: str) -> bool:
+    """
+    Returns True when a matched 'citation' is almost certainly a reference-
+    list entry rather than a genuine in-text citation.
+
+    Harvard/APA reference entries start with  Surname, I. (YEAR)  or
+    Surname IM. (YEAR).  The NAR_CORP pattern misreads "Surname I." as a
+    two-word corporate name.  Also catches bare-initial fragments like
+    "JM. (2024)" that leak when the full match was already filtered.
+    """
+    if ctype not in ('NAR_CORP', 'NAR_SINGLE'):
+        return False
+    return bool(_REF_ENTRY_FP.search(citation_text) or
+                _BARE_INITIALS_FP.search(citation_text))
+
+
 def extract_citations_regex(body_text: str) -> list:
     """
     Extract all in-text citations from the body text using regex patterns.
@@ -342,9 +391,16 @@ def extract_citations_regex(body_text: str) -> list:
             if is_overlapping(match.start(), match.end()):
                 continue
             
+            citation_text = match.group(0).strip()
+
+            # Reject reference-list entries that leaked into body text.
+            # Still consume the span so sub-matches can't leak through.
+            if _looks_like_ref_entry(citation_text, label):
+                matched_spans.append((match.start(), match.end()))
+                continue
+            
             matched_spans.append((match.start(), match.end()))
             
-            citation_text = match.group(0).strip()
             if citation_text not in seen_texts:
                 warnings = check_formatting_irregularities(citation_text)
                 found_citations.append({"text": citation_text, "type": label, "irregularities": warnings})

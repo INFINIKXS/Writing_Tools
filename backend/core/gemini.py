@@ -81,7 +81,7 @@ async def _try_model_with_retries(client, prompt, model, config, max_retries, pr
                 '503', 'UNAVAILABLE',
                 'SSL', 'ConnectionError', 'ConnectionReset',
                 'Timeout', 'timeout',
-                'ServiceUnavailable',
+                'ServiceUnavailable', 'Server disconnected', 'ReadError',
             ])
 
             # On rate limit, rotate to next key (only if allowed)
@@ -130,6 +130,7 @@ async def gemini_request_with_retry(client, prompt, model='gemini-3-flash-previe
             '503', 'UNAVAILABLE', '429', 'RESOURCE_EXHAUSTED',
             'SSL', 'ConnectionError', 'ConnectionReset',
             'Timeout', 'timeout', 'ServiceUnavailable',
+            'Server disconnected', 'ReadError',
         ])
         if not is_transient:
             raise  # Non-transient errors (400, 404, etc.) should not trigger fallback

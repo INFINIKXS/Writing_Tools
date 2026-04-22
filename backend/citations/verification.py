@@ -333,6 +333,8 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'^(?:'
         r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'
         r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]{1,4},'
+        # Multi-word surname + initials: "Solberg Nes L," or "Van der Berg AB,"
+        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+[A-Za-z][a-zA-Zà-öø-ÿ\'\-]+)+\s+[A-Z]{1,4},'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
         r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('
