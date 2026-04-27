@@ -5,6 +5,14 @@ import re
 from collections import defaultdict
 
 
+def _normalise_quotes(text):
+    """Normalise curly/smart quotes to ASCII equivalents for reliable regex matching."""
+    return (text
+            .replace('\u2018', "'").replace('\u2019', "'")
+            .replace('\u201C', '"').replace('\u201D', '"')
+            .replace('\u2032', "'").replace('\u0060', "'"))
+
+
 def detect_style_from_references(reference_list):
     """
     Detects citation style using ONLY the reference list entries.
@@ -16,7 +24,7 @@ def detect_style_from_references(reference_list):
     scores = defaultdict(float)
     evidence = defaultdict(list)
 
-    ref_block = '\n'.join(reference_list)
+    ref_block = _normalise_quotes('\n'.join(reference_list))
     total_refs = len(reference_list)
     if total_refs == 0:
         return {'style': 'apa', 'confidence': 0, 'evidence': ['Empty reference list']}
@@ -217,7 +225,7 @@ def classify_single_reference(ref_text):
     Returns the style name string (e.g. 'vancouver', 'apa', 'harvard').
     """
     scores = defaultdict(float)
-    text = ref_text.strip()
+    text = _normalise_quotes(ref_text.strip())
 
     # ── Vancouver signals ──
     _v1 = bool(re.match(r'^\[?\d+\]?\.?\s', text))

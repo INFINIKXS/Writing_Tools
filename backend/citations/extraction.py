@@ -129,7 +129,8 @@ def check_formatting_irregularities(citation_text: str) -> list:
     warnings = []
     
     # Check lowercase names (no capital letters at start of words)
-    words = re.findall(r'\b[a-zA-Z]+\b', citation_text)
+    # Use apostrophe-aware tokenising so surnames like Ng'andu stay intact
+    words = re.findall(r"\b[a-zA-Z]+(?:'[a-zA-Z]+)*\b", citation_text)
     lower_words = [w for w in words if w.islower() and w.lower() not in ('et', 'al', 'and', 'in', 'cited', 'quoted', 'pp', 'p', 's', 'the', 'of', 'for', 'a', 'an', 'nd', 'no', 'date', 'v', 'vol', 'issue', 'org', 'who', 'cdc')]
     if lower_words:
         warnings.append(f"Potential uncapitalized author name/word: {', '.join(lower_words)}")
@@ -286,6 +287,29 @@ _BARE_INITIALS_FP = re.compile(
     r'\(\d{4}',
 )
 
+# Common parenthetical labels that are NOT citations.
+# e.g. (Wave 1), (Part 2), (Phase 3), (Group A), (Cohort 2)
+_NON_CITATION_LABEL = re.compile(
+    r'^\(\s*(?:Wave|Part|Phase|Step|Stage|Group|Section|Chapter|Item|'
+    r'Option|Type|Level|Round|Trial|Version|Cohort|Arm|Cycle|Block|'
+    r'Panel|Module|Unit|Band|Grade|Tier|Batch|Run|Test|Experiment|'
+    r'Session|Period|Quarter|Volume|Issue|Edition|Series|Supplement|'
+    r'Appendix|Table|Figure|Equation|Example|Sample|Case|Model|'
+    r'Scenario|Condition|Study|Domain|Factor|Cluster|Theme|Track|'
+    r'Stream|Zone|Area|Region|Site|Page|Strand|Category|Set)'
+    r'\s+[\dA-Za-z]',
+    re.IGNORECASE
+)
+
+# Parenthetical date ranges that are NOT citations.
+# e.g. (July-August 2020), (March-April 2021), (Jan-Mar 2019)
+_MONTH = (r'(?:January|February|March|April|May|June|July|August|September|'
+          r'October|November|December|Jan|Feb|Mar|Apr|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)')
+_DATE_RANGE_FP = re.compile(
+    r'^\(\s*' + _MONTH + r'\s*[-]\s*' + _MONTH,
+    re.IGNORECASE
+)
+
 def _looks_like_ref_entry(citation_text: str, ctype: str) -> bool:
     """
     Returns True when a matched 'citation' is almost certainly a reference-
@@ -329,6 +353,12 @@ def extract_citations_regex(body_text: str) -> list:
     body_text = body_text.replace('\u2014', '-')      # em-dash -> hyphen
     body_text = body_text.replace('\ufb01', 'fi')     # fi ligature
     body_text = body_text.replace('\ufb02', 'fl')     # fl ligature
+
+    # Collapse newlines inside parentheses to spaces.
+    # PDF extractors preserve visual line breaks from justified text, so a
+    # citation like (UK Data Service, 2026a) can appear as (UK Data\nService, 2026a).
+    body_text = re.sub(r'\(([^()]*)\)', lambda m: '(' + m.group(1).replace('\n', ' ') + ')', body_text)
+
     seen_texts = set()  # Deduplication
     
     # Track positions already matched to avoid double-matching
@@ -396,6 +426,17 @@ def extract_citations_regex(body_text: str) -> list:
             # Reject reference-list entries that leaked into body text.
             # Still consume the span so sub-matches can't leak through.
             if _looks_like_ref_entry(citation_text, label):
+                matched_spans.append((match.start(), match.end()))
+                continue
+
+            # Reject date ranges: (July-August 2020), (March-April 2021)
+            if _DATE_RANGE_FP.search(citation_text):
+                matched_spans.append((match.start(), match.end()))
+                continue
+
+            # Reject common parenthetical labels mismatched as MLA_PAGE.
+            # e.g. (Wave 1), (Part 2), (Phase 3)
+            if label == 'MLA_PAGE' and _NON_CITATION_LABEL.search(citation_text):
                 matched_spans.append((match.start(), match.end()))
                 continue
             

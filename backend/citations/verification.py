@@ -25,10 +25,16 @@ def verify_matches_with_string_search(in_text_citations, references):
             return surname
         return None
 
-    def extract_year(text):
-        """Extract the first 4-digit year found in a string."""
-        m = re.search(r'\b(19|20)\d{2}\b', text)
-        return m.group(0) if m else None
+    def extract_year(text, mode='first'):
+        """Extract a 4-digit year (with optional letter suffix) from a string.
+        mode='first': returns the first year found (for references — pub year is early).
+        mode='last':  returns the last year found (for citations — pub year is at the end).
+        Preserves letter suffixes (e.g. 2026a, 2026b) so they form distinct compound keys.
+        """
+        matches = re.findall(r'\b(?:19|20)\d{2}[a-z]?\b', text)
+        if not matches:
+            return None
+        return matches[-1] if mode == 'last' else matches[0]
 
     # Build compound-key index
     ref_compound_index = {}
@@ -38,7 +44,7 @@ def verify_matches_with_string_search(in_text_citations, references):
         ref_surname = extract_first_author(ref)
         if not ref_surname:
             continue
-        ref_year = extract_year(ref)
+        ref_year = extract_year(ref, mode='first')
         normalized_surname = ref_surname.lower().replace('\u2019', "'")
         key = (normalized_surname, ref_year)
         ref_compound_index.setdefault(key, []).append(ref)
@@ -57,14 +63,25 @@ def verify_matches_with_string_search(in_text_citations, references):
             verification_results["unmatched_citations"].append(cit)
             continue
 
-        cit_year = extract_year(cit)
+        cit_year = extract_year(cit, mode='last')
         normalized_cit_surname = cit_surname.lower().replace('\u2019', "'")
 
-        # 1. Try compound key (surname + year)
+        # 1. Try compound key (surname + year, including suffix like 2026b)
         compound_key = (normalized_cit_surname, cit_year)
         candidates = ref_compound_index.get(compound_key, [])
 
-        # 2. If no year in citation, fall back to surname-only match
+        # 2. Fallback: try base year without suffix (2026b -> 2026)
+        if not candidates and cit_year and re.match(r'\d{4}[a-z]', cit_year):
+            base_year = cit_year[:4]
+            candidates = ref_compound_index.get((normalized_cit_surname, base_year), [])
+        if not candidates and cit_year and not re.match(r'\d{4}[a-z]', cit_year or ''):
+            # Citation has no suffix — check if refs have suffixed variants
+            for key, refs in ref_compound_index.items():
+                if key[0] == normalized_cit_surname and key[1] and key[1][:4] == cit_year:
+                    candidates = refs
+                    break
+
+        # 3. If still nothing, fall back to surname-only match
         if not candidates:
             candidates = ref_surname_index.get(normalized_cit_surname, [])
 
@@ -431,9 +448,10 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         author = None
         year = None
         text_stripped = text.strip()
-        # Try multi-word org name first: "Department of Health" or "World Health Organization"
+        # Try multi-word org name first: "Department of Health" or "GBD 2021 Diabetes Collaborators"
+        # Allow digits/mixed tokens (e.g. "2021") inside the org name
         org_match = re.match(
-            r'^((?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)*[A-Z][a-zA-Zà-öø-ÿ\'\-]+)'
+            r'^((?:[A-Za-z0-9][A-Za-z0-9à-öø-ÿ\'\-]*(?:\s+(?:of|for|the|and|on|in|&))?\s+)*[A-Z][a-zA-Zà-öø-ÿ\'\-]+)'
             r'(?:\s*[.,]|\s*\()',
             text_stripped
         )
@@ -447,9 +465,15 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             author_match = re.match(r'^[^a-z]*?([A-Z][a-zA-Zà-öø-ÿ\'\-]+)', text_stripped)
             if author_match:
                 author = author_match.group(1).lower()
-        year_match = re.search(r'\b(19|20)\d{2}\b', text)
-        if year_match:
-            year = year_match.group(0)
+        # Prefer parenthesized year (YYYY) — that's the publication year in APA/Harvard.
+        # Falls back to the first bare year if no parenthesized year is found.
+        paren_year = re.search(r'\((\d{4})\)', text)
+        if paren_year:
+            year = paren_year.group(1)
+        else:
+            year_match = re.search(r'\b(19|20)\d{2}\b', text)
+            if year_match:
+                year = year_match.group(0)
         return (author, year)
     
     verbatim_map = {}

@@ -75,19 +75,65 @@ async def reformat_reference(request: Request, style: str = "harvard"):
 async def format_references(req: FormatRequest):
     """
     Parse raw reference text into metadata, then format deterministically.
-    Returns metadata alongside formatted output so the frontend can do instant style switching.
+    Streams SSE events as each reference is processed so the UI updates incrementally.
     """
-    formatted_refs = []
-    for ref in req.references:
-        try:
-            metadata = await parse_raw_reference(ref)
-            result = format_reference(metadata, req.style)
-            result["original"] = ref
-            formatted_refs.append(result)
-        except Exception as e:
-            formatted_refs.append({"original": ref, "error": str(e)})
+    async def _stream():
+        def event(stage: str, message: str, data=None):
+            payload = {"stage": stage, "message": message}
+            if data is not None:
+                payload["data"] = data
+            return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
-    return {"formatted_references": formatted_refs}
+        total = len(req.references)
+        yield event("start", f"Processing {total} reference{'s' if total != 1 else ''}...")
+
+        api_count = 0
+        regex_count = 0
+
+        for i, ref in enumerate(req.references):
+            yield event("processing", f"Processing reference {i + 1}/{total}...", data={"index": i})
+            await asyncio.sleep(0)
+
+            try:
+                # parse_raw_reference is synchronous (no AI) but does network I/O
+                metadata = await asyncio.to_thread(parse_raw_reference, ref)
+                corrections = metadata.pop("corrections", [])
+                api_verified = metadata.pop("api_verified", False)
+                api_source = metadata.pop("api_source", None)
+
+                result = format_reference(metadata, req.style)
+                result["original"] = ref
+                result["corrections"] = corrections
+                result["api_verified"] = api_verified
+                result["api_source"] = api_source
+
+                if api_verified:
+                    api_count += 1
+                else:
+                    regex_count += 1
+
+                yield event("ref_result", f"Reference {i + 1}/{total} done.", data={
+                    "index": i,
+                    "result": result,
+                })
+            except Exception as e:
+                yield event("ref_result", f"Reference {i + 1}/{total} failed.", data={
+                    "index": i,
+                    "result": {"original": ref, "error": str(e)},
+                })
+
+            await asyncio.sleep(0)
+
+        yield event("complete", "All references processed.", data={
+            "summary": {
+                "total": total,
+                "api_verified": api_count,
+                "regex_only": regex_count,
+            }
+        })
+
+    return StreamingResponse(_stream(), media_type="text/event-stream")
+
 
 
 @router.post("/api/match-references")

@@ -18,3 +18,4 @@ pdf2image
 pytesseract
 ocrmypdf
 fonttools
+pycryptodome

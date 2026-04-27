@@ -1,6 +1,6 @@
 {
   "service": "Google",
-  "last_reset_date": "2026-04-16",
+  "last_reset_date": "2026-04-28",
   "current_index": 0,
   "total_requests_today": 0,
   "quota_limit_per_key": 20,
@@ -10,7 +10,7 @@
       "key_suffix": "...T1q8",
       "model_usage": {},
       "exhausted_models": [],
-      "last_exhausted": null,
+      "last_exhausted": "2026-04-27T10:59:23.750295",
       "quota_used": 0,
       "exhausted": false
     },
@@ -19,7 +19,7 @@
       "key_suffix": "...fabg",
       "model_usage": {},
       "exhausted_models": [],
-      "last_exhausted": null,
+      "last_exhausted": "2026-04-27T10:59:50.335467",
       "quota_used": 0,
       "exhausted": false
     },
@@ -28,7 +28,7 @@
       "key_suffix": "...bufo",
       "model_usage": {},
       "exhausted_models": [],
-      "last_exhausted": null,
+      "last_exhausted": "2026-04-27T10:59:56.340152",
       "quota_used": 0,
       "exhausted": false
     },

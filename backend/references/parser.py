@@ -1,14 +1,16 @@
 """
-Raw reference text parser: regex + AI extraction with anti-hallucination input containment check.
+Raw reference text parser: deterministic DOI-first pipeline.
+No AI — uses PubMed/Crossref APIs for authoritative metadata,
+regex for everything else.
 """
 import re
-import json
 import difflib
-from typing import List
+from typing import List, Optional
 
 from pydantic import BaseModel
 
-from core.gemini import get_client, gemini_request_with_retry
+from references.metadata import perform_pubmed_lookup, perform_crossref_lookup
+from references.matcher import parse_raw_reference_fast
 from utils.text_utils import classify_source_type
 
 
@@ -17,32 +19,172 @@ class FormatRequest(BaseModel):
     style: str = "harvard"
 
 
-def _value_in_input(value: str, ref_text: str, threshold: float = 0.6) -> bool:
+# ─── Correction detection ────────────────────────────────────────────────────
+
+def _detect_corrections(user_parsed: dict, api_metadata: dict, original_ref: str) -> list:
     """
-    Anti-hallucination check: verify that a value extracted by AI actually
-    appears in the original input text.
+    Compare user's original reference text against API-verified metadata.
+    Returns a list of corrections: [{"field": ..., "user_value": ..., "correct_value": ..., "detail": ...}]
     """
-    if not value or not ref_text:
-        return False
-    val_lower = value.lower().strip()
-    ref_lower = ref_text.lower()
-    if val_lower in ref_lower:
-        return True
-    val_clean = re.sub(r'[.,;:\'\"()\[\]{}]', '', val_lower).strip()
-    ref_clean = re.sub(r'[.,;:\'\"()\[\]{}]', '', ref_lower)
-    if val_clean in ref_clean:
-        return True
-    ratio = difflib.SequenceMatcher(None, val_clean, ref_clean).ratio()
-    if len(val_clean) <= 6:
-        return val_clean in ref_clean
-    return ratio >= threshold
+    corrections = []
+
+    # Year
+    user_year = user_parsed.get("year")
+    api_year = api_metadata.get("year")
+    if user_year and api_year and str(user_year) != str(api_year):
+        corrections.append({
+            "field": "year",
+            "user_value": str(user_year),
+            "correct_value": str(api_year),
+            "detail": f"Publication year is {api_year}, not {user_year}.",
+        })
+
+    # Title
+    user_title = user_parsed.get("title")
+    api_title = api_metadata.get("title")
+    if user_title and api_title:
+        t1 = re.sub(r'[^\w\s]', '', user_title.lower()).strip()
+        t2 = re.sub(r'[^\w\s]', '', api_title.lower()).strip()
+        # If the API title is a substring of the user-parsed title (or vice versa),
+        # it means the regex just grabbed extra text — not a real user error.
+        if t2 in t1 or t1 in t2:
+            pass  # Not a real correction
+        else:
+            ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
+            if 0.5 < ratio < 0.95:
+                corrections.append({
+                    "field": "title",
+                    "user_value": user_title,
+                    "correct_value": api_title,
+                    "detail": f"Title differs from the published version ({ratio:.0%} match).",
+                })
+
+    # Authors (first-author surname check)
+    user_authors = user_parsed.get("authors")
+    api_authors = api_metadata.get("authors")
+    if user_authors and api_authors:
+        def first_surname(val):
+            if isinstance(val, list):
+                val = val[0] if val else ""
+            return re.split(r'[,\s]', str(val).strip())[0].lower().rstrip('.')
+
+        u_first = first_surname(user_authors)
+        a_first = first_surname(api_authors)
+        if u_first and a_first:
+            surname_ratio = difflib.SequenceMatcher(None, u_first, a_first).ratio()
+            if 0.5 < surname_ratio < 1.0:
+                corrections.append({
+                    "field": "authors",
+                    "user_value": u_first.capitalize(),
+                    "correct_value": a_first.capitalize(),
+                    "detail": f"First author surname: '{u_first.capitalize()}' → '{a_first.capitalize()}'.",
+                })
+
+    # Volume
+    user_vol = user_parsed.get("volume")
+    api_vol = api_metadata.get("volume")
+    if user_vol and api_vol and str(user_vol) != str(api_vol):
+        corrections.append({
+            "field": "volume",
+            "user_value": str(user_vol),
+            "correct_value": str(api_vol),
+            "detail": f"Volume is {api_vol}, not {user_vol}.",
+        })
+
+    # Issue
+    user_issue = user_parsed.get("issue")
+    api_issue = api_metadata.get("issue")
+    if user_issue and api_issue and str(user_issue) != str(api_issue):
+        corrections.append({
+            "field": "issue",
+            "user_value": str(user_issue),
+            "correct_value": str(api_issue),
+            "detail": f"Issue is {api_issue}, not {user_issue}.",
+        })
+
+    # Pages
+    user_pages = user_parsed.get("pages")
+    api_pages = api_metadata.get("pages")
+    if user_pages and api_pages:
+        u_norm = str(user_pages).replace('–', '-').replace('—', '-')
+        a_norm = str(api_pages).replace('–', '-').replace('—', '-')
+        if u_norm != a_norm:
+            corrections.append({
+                "field": "pages",
+                "user_value": str(user_pages),
+                "correct_value": str(api_pages),
+                "detail": f"Pages: {api_pages}, not {user_pages}.",
+            })
+
+    return corrections
 
 
-async def parse_raw_reference(ref_text: str) -> dict:
+# ─── Title search fallback ───────────────────────────────────────────────────
+
+def _try_title_search_for_doi(parsed: dict) -> Optional[str]:
+    """
+    Search Crossref by title to find a DOI when none was provided.
+    Returns a DOI string if a confident match is found, else None.
+    """
+    import urllib.parse
+    import requests
+
+    title = parsed.get("title", "")
+    if not title or len(title) < 10:
+        return None
+
+    try:
+        title_encoded = urllib.parse.quote(title)
+        url = f'https://api.crossref.org/works?query.bibliographic="{title_encoded}"&rows=3'
+        resp = requests.get(url, timeout=10, headers={'User-Agent': 'WritingTools/1.0'})
+        if resp.status_code != 200:
+            return None
+
+        items = resp.json().get('message', {}).get('items', [])
+        for item in items:
+            cr_doi = item.get('DOI')
+            if not cr_doi:
+                continue
+
+            cr_titles = item.get('title', [])
+            cr_title = cr_titles[0] if cr_titles else ""
+
+            if cr_title:
+                t1 = "".join(c for c in title.lower() if c.isalnum() or c.isspace()).strip()
+                t2 = "".join(c for c in cr_title.lower() if c.isalnum() or c.isspace()).strip()
+                ratio = difflib.SequenceMatcher(None, t1, t2).ratio()
+                if ratio < 0.85:
+                    continue
+
+            # Also verify year if available
+            parsed_year = parsed.get("year")
+            if parsed_year:
+                cr_date = item.get('published-print', item.get('published-online', item.get('created', {})))
+                if cr_date and 'date-parts' in cr_date:
+                    cr_year = str(cr_date['date-parts'][0][0]) if cr_date['date-parts'][0] else None
+                    if cr_year and cr_year != str(parsed_year):
+                        continue
+
+            return cr_doi
+
+    except Exception as e:
+        print(f"[Formatter] Title search failed: {e}")
+
+    return None
+
+
+# ─── Main parse function ─────────────────────────────────────────────────────
+
+def parse_raw_reference(ref_text: str) -> dict:
     """
     Parse a raw reference string into structured metadata.
-    Pipeline: Regex first → AI extraction with Input Containment Check.
+    Deterministic pipeline: Regex → DOI lookup → Title search → Regex fallback.
+
+    Returns metadata dict with optional 'corrections' list and 'api_source' field.
     """
+    # Step 1: Fast regex extraction (DOI, year, vol, issue, pages, authors, title)
+    parsed = parse_raw_reference_fast(ref_text)
+
     metadata = {
         "authors": None, "title": None, "year": None,
         "source": None, "doi": None, "url": None,
@@ -51,134 +193,114 @@ async def parse_raw_reference(ref_text: str) -> dict:
     }
     field_sources = {}
 
-    # ─── Step 1: Regex extraction ───
-    doi_match = re.search(
-        r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,}/[a-zA-Z0-9.\-_/:()]+)',
-        ref_text, re.IGNORECASE
-    )
-    if doi_match:
-        doi = doi_match.group(1).rstrip('.,;)')
+    # Copy regex-extracted DOI
+    doi = parsed.get("doi")
+    if doi:
         metadata["doi"] = doi
         field_sources["doi"] = "text_parsing"
 
-    year_match = re.search(r'\b((?:19|20)\d{2})\b', ref_text)
-    if year_match:
-        metadata["year"] = year_match.group(1)
-        field_sources["year"] = "text_parsing"
+    # Step 2: If DOI found, fetch authoritative metadata from PubMed/Crossref
+    api_success = False
+    api_source = None
 
-    vol_match = re.search(r'(\d+)\s*\((\d+)\)', ref_text)
-    if vol_match:
-        metadata["volume"] = vol_match.group(1)
-        metadata["issue"] = vol_match.group(2)
-        field_sources["volume"] = "text_parsing"
-        field_sources["issue"] = "text_parsing"
+    if doi:
+        api_metadata = {
+            "authors": None, "title": None, "year": None,
+            "source": None, "doi": doi, "url": None,
+            "volume": None, "issue": None, "pages": None,
+            "publisher": None, "type": "Other",
+        }
+        api_sources = {}
 
-    pages_match = re.search(r'(?:pp?\.?\s*)?(\d+)\s*[-–]\s*(\d+)', ref_text)
-    if pages_match:
-        metadata["pages"] = f"{pages_match.group(1)}-{pages_match.group(2)}"
-        field_sources["pages"] = "text_parsing"
+        api_success = perform_pubmed_lookup(doi, api_metadata, api_sources)
+        if api_success:
+            api_source = "pubmed"
+            # Supplement with Crossref for any fields PubMed left empty
+            missing_fields = [f for f in ("pages", "volume", "issue", "source") if not api_metadata.get(f)]
+            if missing_fields:
+                cr_meta = {k: None for k in api_metadata}
+                cr_src = {}
+                if perform_crossref_lookup(doi, cr_meta, cr_src):
+                    for field in missing_fields:
+                        if cr_meta.get(field):
+                            api_metadata[field] = cr_meta[field]
+                            api_sources[field] = "crossref"
+        else:
+            api_success = perform_crossref_lookup(doi, api_metadata, api_sources)
+            if api_success:
+                api_source = "crossref"
 
-    if not metadata["doi"]:
+        if api_success:
+            # Use API metadata as the authoritative source
+            for key in ("authors", "title", "year", "source", "volume", "issue", "pages", "publisher", "type"):
+                if api_metadata.get(key):
+                    metadata[key] = api_metadata[key]
+                    field_sources[key] = api_sources.get(key, api_source)
+
+            # Get abbreviated source if available
+            if api_metadata.get("source_abbreviated"):
+                metadata["source_abbreviated"] = api_metadata["source_abbreviated"]
+                field_sources["source_abbreviated"] = api_sources.get("source_abbreviated", api_source)
+
+    # Step 3: No DOI or API failed — try title search
+    if not api_success:
+        discovered_doi = _try_title_search_for_doi(parsed)
+        if discovered_doi:
+            print(f"[Formatter] Title search found DOI: {discovered_doi}")
+            api_metadata = {
+                "authors": None, "title": None, "year": None,
+                "source": None, "doi": discovered_doi, "url": None,
+                "volume": None, "issue": None, "pages": None,
+                "publisher": None, "type": "Other",
+            }
+            api_sources = {}
+
+            api_success = perform_pubmed_lookup(discovered_doi, api_metadata, api_sources)
+            if not api_success:
+                api_success = perform_crossref_lookup(discovered_doi, api_metadata, api_sources)
+
+            if api_success:
+                api_source = api_sources.get("doi", "crossref")
+                metadata["doi"] = discovered_doi
+                field_sources["doi"] = "title_search"
+                for key in ("authors", "title", "year", "source", "volume", "issue", "pages", "publisher", "type"):
+                    if api_metadata.get(key):
+                        metadata[key] = api_metadata[key]
+                        field_sources[key] = api_sources.get(key, api_source)
+                if api_metadata.get("source_abbreviated"):
+                    metadata["source_abbreviated"] = api_metadata["source_abbreviated"]
+                    field_sources["source_abbreviated"] = api_sources.get("source_abbreviated", api_source)
+
+    # Step 4: Regex fallback — fill remaining gaps from user input
+    for key in ("year", "volume", "issue", "pages", "doi"):
+        if not metadata.get(key) and parsed.get(key):
+            metadata[key] = parsed[key]
+            field_sources[key] = "text_parsing"
+
+    if not metadata.get("authors") and parsed.get("authors"):
+        metadata["authors"] = parsed["authors"]
+        field_sources["authors"] = "text_parsing"
+
+    if not metadata.get("title") and parsed.get("title"):
+        metadata["title"] = parsed["title"]
+        field_sources["title"] = "text_parsing"
+
+    if not metadata.get("source") and parsed.get("source"):
+        metadata["source"] = parsed["source"]
+        field_sources["source"] = "text_parsing"
+
+    # URL fallback
+    if not metadata.get("doi") and not metadata.get("url"):
         url_match = re.search(r'(https?://\S+)', ref_text)
         if url_match:
             metadata["url"] = url_match.group(1).rstrip('.,;)')
             field_sources["url"] = "text_parsing"
 
-    # ─── Step 2: AI extraction with Input Containment Check ───
-    try:
-        model_name = 'gemini-3-flash-preview'
-        client = get_client(model=model_name)
-
-        prompt = f"""You are a metadata extraction tool. Extract ONLY what you can see in the reference text below.
-DO NOT invent, guess, or hallucinate any information. If a field is not clearly visible, return null.
-Every value you return MUST come directly from the text — do not rephrase, infer, or add information.
-
-Extract these fields from the reference:
-- authors: List of author names exactly as they appear in the text (e.g. ["Clair, A.", "Hughes, A."])
-- title: The main title of the work, exactly as written in the text
-- year: The publication year as it appears in the text
-- source: Journal name or publisher, exactly as written in the text
-- source_abbreviated: If the source is a journal, provide its strictly abbreviated NLM catalog form (e.g. 'J Am Med Assoc', 'Int J Obes Suppl'). Omit periods. If not a journal, return null. THIS IS EXEMPT FROM THE "EXACTLY AS WRITTEN" RULE.
-- doi: The DOI if present, exactly as written
-
-REFERENCE TEXT:
-{ref_text}
-
-Respond in strict JSON only:
-{{
-    "authors": ["author1", "author2"] or null,
-    "title": "title text" or null,
-    "year": "2025" or null,
-    "source": "journal or publisher name" or null,
-    "source_abbreviated": "J Am Med Assoc" or null,
-    "doi": "10.1234/example" or null
-}}"""
-
-        response = await gemini_request_with_retry(client, prompt, model=model_name)
-        ai_text = response.text.strip()
-        if ai_text.startswith('```json'):
-            ai_text = ai_text[7:].strip()
-        if ai_text.endswith('```'):
-            ai_text = ai_text[:-3].strip()
-        ai_data = json.loads(ai_text)
-        print(f"[Formatter AI] Raw extraction: {ai_data}")
-
-        # ─── Input Containment Check ───
-        ai_title = ai_data.get("title")
-        if ai_title and _value_in_input(ai_title, ref_text):
-            if not metadata.get("title"):
-                metadata["title"] = ai_title
-                field_sources["title"] = "ai_verified"
-        elif ai_title:
-            print(f"[Formatter Anti-Hallucination] REJECTED title: '{ai_title}' — not found in input")
-
-        ai_authors = ai_data.get("authors")
-        if ai_authors and isinstance(ai_authors, list):
-            verified_authors = []
-            for author in ai_authors:
-                if _value_in_input(author, ref_text):
-                    verified_authors.append(author)
-                else:
-                    surname = author.split(',')[0].strip() if ',' in author else author.split()[0].strip()
-                    if _value_in_input(surname, ref_text):
-                        verified_authors.append(author)
-                    else:
-                        print(f"[Formatter Anti-Hallucination] REJECTED author: '{author}' — not found in input")
-            if verified_authors:
-                metadata["authors"] = verified_authors
-                field_sources["authors"] = "ai_verified"
-
-        ai_source = ai_data.get("source")
-        if ai_source and _value_in_input(ai_source, ref_text):
-            if not metadata.get("source"):
-                metadata["source"] = ai_source
-                field_sources["source"] = "ai_verified"
-        elif ai_source:
-            print(f"[Formatter Anti-Hallucination] REJECTED source: '{ai_source}' — not found in input")
-
-        ai_source_abbr = ai_data.get("source_abbreviated")
-        if ai_source_abbr and not metadata.get("source_abbreviated"):
-            metadata["source_abbreviated"] = ai_source_abbr
-            field_sources["source_abbreviated"] = "ai_inferred"
-
-        ai_year = ai_data.get("year")
-        if ai_year and str(ai_year) in ref_text:
-            if not metadata.get("year"):
-                metadata["year"] = str(ai_year)
-                field_sources["year"] = "ai_verified"
-
-        ai_doi = ai_data.get("doi")
-        if ai_doi and ai_doi in ref_text and not metadata.get("doi"):
-            metadata["doi"] = ai_doi
-            field_sources["doi"] = "ai_verified"
-
-    except Exception as e:
-        print(f"[Formatter AI] FAILED: {type(e).__name__}: {e}")
-
-    # ─── Step 3: Classify type ───
+    # Step 5: Classify type
     if metadata["type"] == "Other":
         metadata["type"] = classify_source_type(metadata)
 
+    # Ensure authors is a list
     if isinstance(metadata["authors"], str):
         raw = metadata["authors"]
         if '; ' in raw:
@@ -189,5 +311,14 @@ Respond in strict JSON only:
         else:
             metadata["authors"] = [raw.strip()]
 
+    # Step 6: Detect corrections (user input vs API truth)
+    corrections = []
+    if api_success:
+        corrections = _detect_corrections(parsed, metadata, ref_text)
+
     metadata["field_sources"] = field_sources
+    metadata["corrections"] = corrections
+    metadata["api_verified"] = api_success
+    metadata["api_source"] = api_source
+
     return metadata
