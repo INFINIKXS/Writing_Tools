@@ -296,56 +296,44 @@ def detect_irregularities_deterministically(citations_list: list, references: li
     return irregularities
 
 
-def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
-    """
-    For each reference identified by the AI, find the closest verbatim match
-    in the original document text. Includes safeguards against DOI bleeding
-    and cross-reference mixups.
-    
-    Returns a dict mapping AI reference -> verbatim source text with confidence.
-    """
-    # ─── PRE-STEP: Clean Invisible Garbage (Docs/PDFs) ───
-    def _normalize_text(t):
-        """Normalize Unicode characters for consistent comparison."""
-        t = t.replace('\u00a0', ' ')      # non-breaking space
-        t = t.replace('\u202f', ' ')      # narrow no-break space
-        t = t.replace('\u2006', ' ')      # thin space
-        t = t.replace('\u2009', ' ')      # thin space
-        t = t.replace('\u200b', '')       # zero-width space
-        t = t.replace('\u200c', '')       # zero-width non-joiner
-        t = t.replace('\u200d', '')       # zero-width joiner
-        t = t.replace('\u2018', "'")      # left single quote
-        t = t.replace('\u2019', "'")      # right single quote
-        t = t.replace('\u201c', '"')      # left double quote
-        t = t.replace('\u201d', '"')      # right double quote
-        t = t.replace('\u2013', '-')      # en-dash -> hyphen
-        t = t.replace('\u2014', '-')      # em-dash -> hyphen
-        t = t.replace('\ufb01', 'fi')     # fi ligature
-        t = t.replace('\ufb02', 'fl')     # fl ligature
-        return t
+def _normalize_text(t):
+    """Normalize Unicode characters for consistent comparison."""
+    t = t.replace('\u00a0', ' ')      # non-breaking space
+    t = t.replace('\u202f', ' ')      # narrow no-break space
+    t = t.replace('\u2006', ' ')      # thin space
+    t = t.replace('\u2009', ' ')      # thin space
+    t = t.replace('\u200b', '')       # zero-width space
+    t = t.replace('\u200c', '')       # zero-width non-joiner
+    t = t.replace('\u200d', '')       # zero-width joiner
+    t = t.replace('\u2018', "'")      # left single quote
+    t = t.replace('\u2019', "'")      # right single quote
+    t = t.replace('\u201c', '"')      # left double quote
+    t = t.replace('\u201d', '"')      # right double quote
+    t = t.replace('\u2013', '-')      # en-dash -> hyphen
+    t = t.replace('\u2014', '-')      # em-dash -> hyphen
+    t = t.replace('\ufb01', 'fi')     # fi ligature
+    t = t.replace('\ufb02', 'fl')     # fl ligature
+    return t
 
-    full_text = _normalize_text(full_text)
-    # Keep original AI references for use as dictionary keys (must match frontend lookups),
-    # but create normalized copies for internal comparison against normalized full_text.
-    original_ai_references = list(ai_references)
-    ai_references_norm = [_normalize_text(r) for r in ai_references]
 
-    # ─── STEP 1: Isolate the reference section ───
-    ref_section = full_text
-    ref_heading_patterns = [
-        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
-    ]
-    ref_start_idx = None
-    for pattern in ref_heading_patterns:
-        match = re.search(pattern, full_text)
-        if match:
-            ref_start_idx = match.end()
-            break
-    
-    if ref_start_idx is not None:
-        ref_section = full_text[ref_start_idx:]
-    
-    # ─── STEP 2: Smart atomic splitting ───
+def _split_ref_section_to_atomic(ref_section: str) -> list:
+    """
+    Split a reference section string into individual atomic reference entries.
+    Handles multi-line references, merged entries, and various formatting styles.
+    Returns a list of cleaned reference strings (entries > 20 chars).
+    """
+    # ── Known lowercase surname prefixes that start a NEW reference ──
+    # These must not be swallowed by the catch-all `[a-z]` continuation rule.
+    _LC_SURNAME_PREFIXES = (
+        'de', 'del', 'della', 'di', 'du', 'da', 'das', 'dos', 'do',
+        'van', 'von', 'vom',
+        'el', 'al', 'bin', 'ibn', 'abd', 'abu',
+        'la', 'le', 'les', 'lo',
+        'mc', 'mac',
+        'den', 'der', 'ter', 'ten',
+        'op', 'het',
+    )
+
     ref_start_pattern = re.compile(
         r'^(?:'
         r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'
@@ -360,11 +348,20 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'|\(\d{4}\)'
         # Org-name references: "Department of Health. (2016)." or "World Health Organization. (2020)."
         r'|(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\.?\s*\(\d{4}'
+        # All-caps abbreviation (2+ letters) followed by digit or letter: "GBD 2021 ...", "UNICEF (2020)", "NCD Risk ..."
+        r'|[A-Z]{2,}\s+[\dA-Z]'
+        # Lowercase-prefix surname: "de Vries, M.", "van der Berg, A.", "el-Sayed, A.", "al-Rashid, F."
+        r'|(?:de|del|della|di|du|da|das|dos|do|van|von|vom|el|al|bin|ibn|abd|abu|la|le|les|lo|den|der|ter|ten|op|het)'
+        r'(?:[\s\-]+(?:de|del|della|di|du|da|das|dos|do|van|von|vom|el|al|bin|ibn|abd|abu|la|le|les|lo|den|der|ter|ten|op|het))*'
+        r'[\s\-]+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'
+        # Digit-prefixed org: "3ie (2022)"
+        r'|\d+[a-zA-Z]+\s*\(\d{4}'
         r')',
     )
 
-    org_name_pattern = re.compile(r'^[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]')
-    
+    # Matches both mixed-case org starts ("Department of ...") and abbreviation starts ("GBD 2021 ...", "WHO ...")
+    org_name_pattern = re.compile(r'^(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+|[A-Z]{2,})\s+(?:[A-Z]|\d)')
+
     continuation_pattern = re.compile(
         r'^(?:'
         r'https?://'
@@ -374,39 +371,69 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'|pp?\.\s*\d'
         r'|[Vv]ol\.|[Ii]ssue|[Rr]etrieved'
         r'|(?:The|A|An|In|On|Of|For|And|Their|Its|Effects?|Impact)\s'
-        r'|[a-z]'
         r'|["\'\u201c\u2018]'
         r')'
     )
-    
+    # Separate lowercase-start check — only treat as continuation if it's NOT
+    # a known surname prefix or digit-prefixed org with a year nearby.
+    _lc_prefixes_re = re.compile(
+        r'^(?:'
+        # Known surname prefixes followed by an uppercase surname: "de Vries," "van der Berg," "el-Sayed,"
+        r'(?:' + '|'.join(_LC_SURNAME_PREFIXES) + r')'
+        r'(?:[\s\-]+(?:' + '|'.join(_LC_SURNAME_PREFIXES) + r'))*'
+        r'[\s\-]+[A-Z]'
+        # OR digit-prefixed org with year in parens: "3ie (2022)"
+        r'|\d+[a-zA-Z]+\s*\(\d{4}'
+        r')',
+        re.IGNORECASE
+    )
+
     has_year = re.compile(r'\b(?:19|20)\d{2}\b')
-    
+
     lines = ref_section.split('\n')
     atomic_refs = []
     current_ref_lines = []
-    
+
     for line in lines:
         stripped = line.strip()
         if not stripped:
             continue
-        
-        is_continuation = continuation_pattern.match(stripped)
-        
+
+        is_continuation = bool(continuation_pattern.match(stripped))
+        force_new_ref = False  # Set when lowercase-start lines are positively identified as refs
+
+        # Lowercase lines: treat as continuation UNLESS they match a known
+        # surname-prefix or digit-prefixed org pattern AND contain a year,
+        # OR they look like a standalone lowercase org name with a year.
+        if not is_continuation and re.match(r'^[a-z\d]', stripped):
+            if _lc_prefixes_re.match(stripped) and has_year.search(stripped[:200]):
+                is_continuation = False  # Known prefix — this is a new ref
+                force_new_ref = True
+            elif re.search(r'\(\d{4}\)', stripped[:50]) and not line[0:1].isspace():
+                # Lowercase org name with parenthesized year near the start:
+                # "uk parliament (2019) ..." — strong signal for a standalone reference.
+                # Guards: year must be within 50 chars (org names are short),
+                # and the original line must NOT be indented (indentation = continuation).
+                is_continuation = False
+                force_new_ref = True
+            else:
+                is_continuation = True  # Default: lowercase start = continuation
+
         is_org_name = org_name_pattern.match(stripped) and not is_continuation
         if is_org_name:
             is_org_name = bool(has_year.search(stripped[:150]))
-        
-        is_new_ref = (ref_start_pattern.match(stripped) or is_org_name) and not is_continuation
-        
+
+        is_new_ref = (ref_start_pattern.match(stripped) or is_org_name or force_new_ref) and not is_continuation
+
         if is_new_ref and current_ref_lines:
             atomic_refs.append(' '.join(current_ref_lines))
             current_ref_lines = [stripped]
         else:
             current_ref_lines.append(stripped)
-    
+
     if current_ref_lines:
         atomic_refs.append(' '.join(current_ref_lines))
-    
+
     atomic_refs = [r for r in atomic_refs if len(r) > 20]
 
     # ─── POST-SPLIT PASS: detect merged references ───
@@ -417,6 +444,8 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         r'\s*,\s*(?:[A-Z]\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
+        # Also demerge at all-caps abbreviation boundaries: "...doi GBD 2021 Diabetes"
+        r'|[A-Z]{2,}\s+\d'
         r')'
     )
     demerged_refs = []
@@ -428,12 +457,13 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         current_ref = parts[0]
         for pt in parts[1:]:
             ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
-            
+
             starts_like_ref = bool(re.match(
                 r'^(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+\s*,\s*[A-Z]\.'
                 r'|\[\d+\]'
-                r'|\d+\.\s+[A-Z]', pt))
-                
+                r'|\d+\.\s+[A-Z]'
+                r'|[A-Z]{2,}\s+\d', pt))
+
             if ends_like_ref and starts_like_ref:
                 demerged_refs.append(current_ref.strip())
                 current_ref = pt
@@ -442,8 +472,290 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         if current_ref.strip():
             demerged_refs.append(current_ref.strip())
     atomic_refs = demerged_refs
+
+    # ─── SAFETY NET: split oversized entries that still contain merged refs ───
+    # If an atomic ref is suspiciously long, it likely contains multiple
+    # references that the primary splitter missed.  We look for embedded
+    # reference-start boundaries (author+year patterns) and split there.
+    safety_split_pattern = re.compile(
+        r'(?<=\.)\s+'                  # split after a period + whitespace
+        r'(?='
+        # Standard author start: "Smith, A." / "Van der Berg, A."
+        r'(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,\s*[A-Z]\.)'
+        # OR lowercase-prefix surname start: "de Vries, A."
+        r'|(?:(?:de|del|della|di|du|da|van|von|el|al|bin|ibn|la|le|den|der|ter|ten)\s+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,)'
+        # OR org/abbreviation start with year within 150 chars
+        r'|(?:[A-Z]{2,}\s+[\dA-Z])'
+        # OR digit-prefixed org: "3ie (2022)"
+        r'|(?:\d+[a-zA-Z]+\s*\(\d{4})'
+        # OR numbered: "[1]" or "1. "
+        r'|(?:\[\d+\])'
+        r'|(?:\d+\.\s+[A-Z])'
+        r')'
+    )
+    final_refs = []
+    for ref in atomic_refs:
+        if len(ref) > 300:
+            parts = safety_split_pattern.split(ref)
+            if len(parts) > 1:
+                # Validate: only keep splits where both sides contain a year
+                rebuilt = []
+                for p in parts:
+                    p = p.strip()
+                    if not p:
+                        continue
+                    if rebuilt and not has_year.search(rebuilt[-1]):
+                        # Previous chunk has no year — merge back
+                        rebuilt[-1] = rebuilt[-1] + ' ' + p
+                    else:
+                        rebuilt.append(p)
+                final_refs.extend(r for r in rebuilt if len(r) > 20)
+            else:
+                final_refs.append(ref)
+        else:
+            final_refs.append(ref)
+    atomic_refs = final_refs
+
+    return atomic_refs
+
+def _reconcile_references(ref_section: str, extracted_refs: list) -> list:
+    """
+    Post-extraction reconciliation: guarantees no references are silently dropped.
+
+    Uses two complementary techniques:
+      1. Multi-signal control total — counts several independent reference
+         anchors (DOIs, author patterns, numbered entries, parenthesized
+         years, abbreviation starts) in the raw section and compares the
+         maximum against extracted count.
+      2. Character-span gap recovery — maps each extracted ref back to its
+         position in the raw text, finds uncovered regions that contain
+         reference-like content, and rescues them as recovered references.
+
+    Returns the (possibly augmented) list of references.
+    """
+    has_year = re.compile(r'\b(?:19|20)\d{2}\b')
+
+    # ── Step 1: Multi-signal control total ────────────────────────────────
+    # Count several independent "reference anchor" signals in the raw text.
+    # Each signal independently estimates how many references exist.
+    # Taking the MAX across all signals gives the most robust expected count.
+
+    lines = ref_section.split('\n')
+    non_blank_lines = [ln.strip() for ln in lines if ln.strip()]
+
+    # Continuation-line exclusion pattern (shared across signals)
+    _continuation_re = re.compile(
+        r'^(?:https?://|[Dd]oi[\s.:]|[Aa]vailable\s+at|[Aa]ccessed'
+        r'|pp?\.\s*\d|[Vv]ol\.|[Ii]ssue|[Rr]etrieved'
+        r'|(?:The|A|An|In|On|Of|For|And)\s[a-z])'
+    )
+
+    # ── Signal 1: DOI count ───────────────────────────────────────────────
+    # Each DOI belongs to exactly one reference.  Count unique DOIs.
+    doi_pattern = re.compile(r'(?:doi[:\s]+|doi\.org/)(\S+)', re.IGNORECASE)
+    unique_dois = set()
+    for ln in non_blank_lines:
+        for m in doi_pattern.finditer(ln):
+            # Normalize: strip trailing punctuation
+            doi_val = m.group(1).rstrip('.,;)')
+            unique_dois.add(doi_val.lower())
+    doi_count = len(unique_dois)
+
+    # ── Signal 2: Author-comma-initial pattern ────────────────────────────
+    # "Surname, A." or "Surname, A. B." at the start of a non-continuation
+    # line is a near-certain reference start (APA/Harvard).
+    author_comma_re = re.compile(
+        r'^(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,\s*[A-Z]\.)'     # Standard: Smith, A.
+        r'|^(?:(?:de|del|van|von|el|al|da|di)\s+[A-Z][a-zA-Z\'\-]+\s*,)'  # Prefix: de Vries, M.
+    )
+    author_count = 0
+    for ln in non_blank_lines:
+        if author_comma_re.match(ln) and not _continuation_re.match(ln):
+            author_count += 1
+
+    # ── Signal 3: Numbered entry count ────────────────────────────────────
+    # Vancouver-style "[1]", "[2]", ... or "1. ", "2. " at line start.
+    numbered_re = re.compile(r'^(?:\[\d+\]|\d+\.\s+[A-Z])')
+    numbered_count = 0
+    for ln in non_blank_lines:
+        if numbered_re.match(ln):
+            numbered_count += 1
+
+    # ── Signal 4: Parenthesized year after author-like text ───────────────
+    # "Author (YYYY)" pattern — the parenthesized year is highly specific
+    # to reference starts in APA/Harvard.  Only count non-continuation lines
+    # where the (YYYY) appears within the first 100 chars.
+    paren_year_re = re.compile(
+        r'^[A-Za-z\[\d(].*?\(\d{4}[a-z]?\)'
+    )
+    paren_year_count = 0
+    for ln in non_blank_lines:
+        if paren_year_re.match(ln[:100]) and not _continuation_re.match(ln):
+            paren_year_count += 1
+
+    # ── Signal 5: All-caps abbreviation start ─────────────────────────────
+    # "GBD 2021 ...", "WHO (2020) ...", "NCD Risk ..." — org abbreviations
+    # that start reference entries.
+    abbrev_re = re.compile(r'^[A-Z]{2,}\s+[\dA-Z]')
+    abbrev_count = 0
+    for ln in non_blank_lines:
+        if abbrev_re.match(ln) and has_year.search(ln[:150]):
+            abbrev_count += 1
+
+    # ── Determine expected count ──────────────────────────────────────────
+    # Take the maximum across all signals.  Each signal independently
+    # estimates the reference count; the highest is the most informative.
+    signal_counts = {
+        'doi': doi_count,
+        'author_comma': author_count,
+        'numbered': numbered_count,
+        'paren_year': paren_year_count,
+        'abbreviation': abbrev_count,
+    }
+    expected_starts = max(signal_counts.values())
+    best_signal = max(signal_counts, key=signal_counts.get)
+
+    actual_count = len(extracted_refs)
+
+    if actual_count >= expected_starts:
+        return extracted_refs  # No deficit — all refs accounted for
+
+    print(f"[Reconciliation] Deficit: expected ~{expected_starts} refs "
+          f"(best signal: {best_signal}={signal_counts[best_signal]}), "
+          f"got {actual_count}. Signals: {signal_counts}. Scanning for gaps...")
+
+    # ── Step 2: Character-span coverage map ───────────────────────────────
+    # For each extracted ref, find where it sits in the raw section so we
+    # can identify uncovered "gaps."
+    ref_section_lower = ref_section.lower()
+    claimed_ranges = []  # list of (start, end) positions in ref_section
+
+    for ref in extracted_refs:
+        # Use the first 60 non-whitespace chars as a search key
+        ref_clean = ' '.join(ref.split())
+        search_key = ref_clean[:min(60, len(ref_clean))].lower()
+        if len(search_key) < 10:
+            continue
+        idx = ref_section_lower.find(search_key)
+        if idx >= 0:
+            # Estimate the full span
+            end_idx = idx + len(ref_clean)
+            # Clamp to section length
+            end_idx = min(end_idx, len(ref_section))
+            claimed_ranges.append((idx, end_idx))
+
+    # Sort and merge overlapping ranges
+    claimed_ranges.sort()
+    merged = []
+    for start, end in claimed_ranges:
+        if merged and start <= merged[-1][1] + 5:  # small tolerance for whitespace
+            merged[-1] = (merged[-1][0], max(merged[-1][1], end))
+        else:
+            merged.append((start, end))
+
+    # ── Step 3: Find gaps containing unclaimed references ─────────────────
+    gap_boundaries = []
+    prev_end = 0
+    for start, end in merged:
+        if start > prev_end:
+            gap_boundaries.append((prev_end, start))
+        prev_end = end
+    # Trailing gap
+    if prev_end < len(ref_section):
+        gap_boundaries.append((prev_end, len(ref_section)))
+
+    # ── Step 4: Recover references from gaps ──────────────────────────────
+    # Build a set of normalized keys for existing refs to deduplicate
+    existing_keys = set()
+    for ref in extracted_refs:
+        # Normalize: lowercase, collapse whitespace, strip punctuation
+        key = ' '.join(ref.lower().split())[:80]
+        existing_keys.add(key)
+
+    recovered = []
+    for gap_start, gap_end in gap_boundaries:
+        gap_text = ref_section[gap_start:gap_end].strip()
+
+        if len(gap_text) < 25:
+            continue
+        if not has_year.search(gap_text):
+            continue
+
+        # The gap might contain one or more references — split it using
+        # the same atomic splitter to handle multi-line gaps cleanly.
+        gap_refs = _split_ref_section_to_atomic(gap_text)
+
+        for gr in gap_refs:
+            if len(gr) > 20 and has_year.search(gr):
+                # Deduplicate: skip if this recovered ref already exists
+                gr_key = ' '.join(gr.lower().split())[:80]
+                if gr_key not in existing_keys:
+                    recovered.append(gr)
+                    existing_keys.add(gr_key)
+
+    if recovered:
+        print(f"[Reconciliation] Recovered {len(recovered)} reference(s):")
+        for r in recovered:
+            print(f"  + {r[:100]}{'...' if len(r) > 100 else ''}")
+    else:
+        print(f"[Reconciliation] No recoverable references found in gaps "
+              f"(deficit may be from multi-year titles).")
+
+    return extracted_refs + recovered
+
+
+def extract_references_from_text(full_text: str) -> list:
+    """
+    Extract individual references from a document's full text.
+    Finds the reference section, splits it into atomic entries, demerges
+    any accidentally-joined references, and runs a reconciliation pass
+    to guarantee no references are silently dropped.
+
+    Returns a list of reference strings.
+    """
+    full_text = _normalize_text(full_text)
+
+    # Isolate the reference section
+    ref_section = full_text
+    ref_heading_patterns = [
+        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
+        r'(?im)^\s*(references|bibliography|works\s+cited|reference\s+list)\s*$',
+        r'(?i)^\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
+        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*(?=\S)',
+    ]
+    for pattern in ref_heading_patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            ref_section = full_text[match.end():]
+            break
+
+    # Primary extraction
+    refs = _split_ref_section_to_atomic(ref_section)
+
+    # Reconciliation: detect and recover any silently dropped references
+    refs = _reconcile_references(ref_section, refs)
+
+    return refs
+
+
+def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
+    """
+    For each reference in the provided list, find the closest verbatim match
+    in the original document text. Includes safeguards against DOI bleeding
+    and cross-reference mixups.
     
-    # ─── STEP 3: Match using author + year compound key ───
+    Returns a dict mapping reference -> verbatim source text with confidence.
+    """
+    full_text = _normalize_text(full_text)
+    # Keep original references for use as dictionary keys (must match frontend lookups),
+    # but create normalized copies for internal comparison against normalized full_text.
+    original_ai_references = list(ai_references)
+    ai_references_norm = [_normalize_text(r) for r in ai_references]
+
+    # ─── STEP 1: Get atomic references from document ───
+    atomic_refs = extract_references_from_text(full_text)
+    
+    # ─── STEP 2: Match using author + year compound key ───
     def extract_author_year(text):
         author = None
         year = None
@@ -521,7 +833,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
                 best_score = score
                 best_match = candidate
         
-        # ─── STEP 4: Conflict detection ───
+        # ─── Conflict detection ───
         conflict = None
         if best_match in used_candidates.values():
             conflicting_ref = [k for k, v in used_candidates.items() if v == best_match]
@@ -537,7 +849,7 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
             result["conflict"] = conflict
         
         # Use original (un-normalized) reference string as key so the frontend
-        # can look it up with the same key it received from the AI analysis.
+        # can look it up with the same key it received from the analysis.
         verbatim_map[orig_ref] = result
     
     return verbatim_map
