@@ -6,6 +6,7 @@ import { TextOverlay } from './TextOverlay';
 import { InlineEditor } from './InlineEditor';
 import { useSyncExternalStore } from 'react';
 import { pdfEditStore, activeFileId } from '../../stores/pdfEditStore';
+import { loadPDFFonts } from '../../utils/pdfFontLoader';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -257,6 +258,23 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [file]);
 
+  // Fetch embedded fonts when a new PDF loads
+  useEffect(() => {
+    if (!file) return;
+    
+    const form = new FormData();
+    form.append('file', file);
+    
+    fetch('/api/pdf/extract-fonts', { method: 'POST', body: form })
+      .then(r => r.ok ? r.json() : {})
+      .then(fontsData => {
+        if (fontsData && Object.keys(fontsData).length > 0) {
+          loadPDFFonts(fontsData);
+        }
+      })
+      .catch(e => console.warn('font extraction failed:', e));
+  }, [file]);
+
   const [pageMetadata, setPageMetadata] = useState({});
   const [selectedTextIdx, setSelectedTextIdx] = useState(null);
   const [activePageNum, setActivePageNum] = useState(null);
@@ -404,6 +422,13 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
           const lineFontName = allCharsInLine[0].font;
           const ascenderH = Math.max(0, lineY_base - lineY_top);
           const descenderH = Math.max(0, lineY_bottom - lineY_base);
+
+          // Right-trim trailing whitespace from lineStr so the editable text
+          // doesn't appear to have room for more characters than the bounding
+          // box actually covers. The parallel charKinds/charColors arrays have
+          // already been consumed for superscriptRanges above, so we only need
+          // to trim lineStr itself.
+          lineStr = lineStr.replace(/\s+$/, '');
 
           const hasSuperscript = superscriptRanges.length > 0;
 
@@ -596,11 +621,6 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
 
         if (matchedSpan) {
           const cs = window.getComputedStyle(matchedSpan);
-          const fs = parseFloat(cs.fontSize);
-          if (fs > 0) updates.renderedFontSize = fs;
-          if (cs.fontFamily) updates.renderedFontFamily = cs.fontFamily;
-          if (cs.fontWeight) updates.renderedFontWeight = cs.fontWeight;
-          if (cs.fontStyle) updates.renderedFontStyle = cs.fontStyle;
 
           // FIX: Capture the actual rendered span width in PDF points.
           // item.width from getTextContent() is the glyph-advance width only —
@@ -610,11 +630,6 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
           const spanRect = matchedSpan.getBoundingClientRect();
           const renderedW = spanRect.width / currentScale;
           if (renderedW > 0) updates.pdfW = renderedW;
-
-          updates.transform = matchedSpan.style.transform;
-          updates.top = matchedSpan.style.top;
-          updates.left = matchedSpan.style.left;
-          updates.lineHeight = cs.lineHeight;
         }
 
         return Object.keys(updates).length > 0 ? { ...item, ...updates } : item;
@@ -672,8 +687,14 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
 
   if (!file) {
     return (
-      <div className="flex items-center justify-center p-12 bg-gray-100 rounded-lg shadow-inner h-96 w-full max-w-4xl mx-auto border-2 border-dashed border-gray-300">
-        <p className="text-gray-500 font-medium text-lg">Please upload a PDF to begin editing.</p>
+      <div className="flex items-center justify-center p-12 glass-card h-[600px] w-full max-w-4xl mx-auto flex-col gap-5 text-center mt-4">
+        <div className="w-20 h-20 rounded-full border border-white/10 bg-white/5 flex items-center justify-center mb-2">
+            <svg xmlns="http://www.w3.org/2000/svg" width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="text-neutral-400"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/><path d="M12 18v-6"/><path d="m9 15 3-3 3 3"/></svg>
+        </div>
+        <div>
+          <h3 className="text-2xl font-extrabold text-white mb-2">NO PDF LOADED</h3>
+          <p className="text-sm text-neutral-500 font-medium max-w-sm mx-auto">Please upload a document to begin editing. Use the 'Open Local PDF' button in the toolbar above.</p>
+        </div>
       </div>
     );
   }
@@ -681,7 +702,7 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
   return (
     <div
       ref={scrollContainerRef}
-      className="flex flex-col items-center overflow-auto bg-gray-200 p-8 border rounded-xl shadow-inner h-full relative"
+      className="flex flex-col items-center overflow-auto bg-[#050505] p-8 border border-white/5 rounded-xl h-full relative"
       onClick={() => {
         annotations.forEach(a => { if (a.isEditing) onUpdateAnnotation({ ...a, isEditing: false }) });
         setSelectedTextIdx(null);
@@ -733,13 +754,13 @@ export default function PDFViewer({ file, scale = 1.0, annotations = [], spacing
           position: 'relative',
           zIndex: 1,
         }}
-        loading={<div className="font-semibold text-blue-500 animate-pulse">Loading document...</div>}
+        loading={<div className="font-semibold text-neutral-500 animate-pulse">Loading document...</div>}
       >
         {Array.from(new Array(numPages), (el, index) => (
           <div
             key={`page_${fileGeneration}_${index + 1}`}
             ref={el => { pageContainerRefs.current[index + 1] = el; }}
-            className={`relative bg-white shadow-2xl transition-shadow duration-300 ease-in-out ${isWandActive ? 'hover:shadow-indigo-200' : 'hover:shadow-cyan-100/50'}`}
+            className={`relative bg-white shadow-[0_0_40px_rgba(0,0,0,0.8)] border border-white/20 transition-all duration-300 ease-in-out ${isWandActive ? 'ring-2 ring-purple-500 ring-offset-2 ring-offset-[#050505] cursor-crosshair' : ''}`}
             onPointerDown={(e) => {
               if (isWandActive) {
                 e.preventDefault();

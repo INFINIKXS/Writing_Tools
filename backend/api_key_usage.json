@@ -1,26 +1,30 @@
 {
   "service": "Google",
   "last_reset_date": "2026-04-28",
-  "current_index": 0,
-  "total_requests_today": 0,
+  "current_index": 1,
+  "total_requests_today": 1,
   "quota_limit_per_key": 20,
   "keys": [
     {
       "index": 0,
       "key_suffix": "...T1q8",
       "model_usage": {},
-      "exhausted_models": [],
-      "last_exhausted": "2026-04-27T10:59:23.750295",
+      "exhausted_models": [
+        "gemini-3-flash-preview"
+      ],
+      "last_exhausted": "2026-04-28T00:33:56.835425",
       "quota_used": 0,
       "exhausted": false
     },
     {
       "index": 1,
       "key_suffix": "...fabg",
-      "model_usage": {},
+      "model_usage": {
+        "gemini-3-flash-preview": 1
+      },
       "exhausted_models": [],
       "last_exhausted": "2026-04-27T10:59:50.335467",
-      "quota_used": 0,
+      "quota_used": 1,
       "exhausted": false
     },
     {

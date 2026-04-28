@@ -491,7 +491,7 @@ export default function VerifierView() {
                                                 {displayNumber}
                                             </span>
                                         )}
-                                        <div className="flex-1">
+                                        <div className="flex-1 min-w-0">
                                             <div className="font-mono text-xs text-neutral-300 bg-white/3 px-3 py-2 rounded-lg mb-2 flex flex-wrap items-center gap-1">
                                                 {m.citations ? m.citations.map((cit, idx) => {
                                                     const warnings = results.python_formatting_warnings?.[cit];
@@ -525,9 +525,9 @@ export default function VerifierView() {
                                                 )}
                                             </div>
                                             {verbatimHtml ? (
-                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5" dangerouslySetInnerHTML={{ __html: verbatimHtml }} />
+                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5 break-words" dangerouslySetInnerHTML={{ __html: verbatimHtml }} />
                                             ) : (
-                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5">{verbatimText}</div>
+                                                <div className="text-xs text-neutral-300 leading-relaxed bg-white/[0.03] p-3 rounded-lg border border-white/5 break-words">{verbatimText}</div>
                                             )}
                                             {isVancouver && firstCitedAs && (
                                                 <div className="text-[10px] text-neutral-600 mt-1.5">
