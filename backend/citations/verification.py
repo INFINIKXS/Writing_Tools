@@ -440,12 +440,15 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
     demerge_pattern = re.compile(
         r'(?:(?<=pdf)|(?<=html)|(?<=org)|(?<=\d)|(?<=/))[.]?\s+'
         r'(?='
-        r'(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+'
+        r'(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+'
         r'\s*,\s*(?:[A-Z]\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
-        # Also demerge at all-caps abbreviation boundaries: "...doi GBD 2021 Diabetes"
+        # Demerge at all-caps abbreviation boundaries: "...doi GBD 2021 Diabetes"
         r'|[A-Z]{2,}\s+\d'
+        # Demerge at org-name boundaries: "Nursing and Midwifery Council (NMC). (2018)."
+        # Matches Title-Case multi-word name, optional (ABBR), then (YYYY).
+        r'|(?:[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[\.,]?\s*\(\d{4})'
         r')'
     )
     demerged_refs = []
@@ -459,12 +462,14 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
             ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
 
             starts_like_ref = bool(re.match(
-                r'^(?:(?:[A-Z][a-zA-Zà-öø-ÿ\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Zà-öø-ÿ\'-]+\s*,\s*[A-Z]\.'
+                r'^(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+\s*,\s*[A-Z]\.'
                 r'|\[\d+\]'
                 r'|\d+\.\s+[A-Z]'
-                r'|[A-Z]{2,}\s+\d', pt))
+                r'|[A-Z]{2,}\s+\d'
+                # Org-name start: "Nursing and Midwifery Council (NMC). (2018)"
+                r'|[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[\.,]?\s*\(\d{4}', pt))
 
-            if ends_like_ref and starts_like_ref:
+            if ends_like_ref and starts_like_ref and len(current_ref.strip()) >= 40:
                 demerged_refs.append(current_ref.strip())
                 current_ref = pt
             else:
@@ -481,9 +486,9 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
         r'(?<=\.)\s+'                  # split after a period + whitespace
         r'(?='
         # Standard author start: "Smith, A." / "Van der Berg, A."
-        r'(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,\s*[A-Z]\.)'
+        r'(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,\s*[A-Z]\.)'
         # OR lowercase-prefix surname start: "de Vries, A."
-        r'|(?:(?:de|del|della|di|du|da|van|von|el|al|bin|ibn|la|le|den|der|ter|ten)\s+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,)'
+        r'|(?:(?:de|del|della|di|du|da|van|von|el|al|bin|ibn|la|le|den|der|ter|ten)\s+[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,)'
         # OR org/abbreviation start with year within 150 chars
         r'|(?:[A-Z]{2,}\s+[\dA-Z])'
         # OR digit-prefixed org: "3ie (2022)"
@@ -491,6 +496,8 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
         # OR numbered: "[1]" or "1. "
         r'|(?:\[\d+\])'
         r'|(?:\d+\.\s+[A-Z])'
+        # OR org-name start: "Nursing and Midwifery Council (NMC). (2018)"
+        r'|(?:[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[\.,]?\s*\(\d{4})'
         r')'
     )
     final_refs = []
@@ -853,3 +860,98 @@ def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
         verbatim_map[orig_ref] = result
     
     return verbatim_map
+
+
+def validate_extracted_references(references: list) -> dict:
+    """
+    Post-extraction quality validation layer.
+    
+    Scans every extracted reference for structural anomalies that indicate
+    extraction errors (fragments, merges, missing fields).  Returns a dict
+    with per-reference warnings and an overall health summary.
+    
+    Returns:
+        {
+            "warnings": { "<ref_text[:80]>": [{"type": str, "severity": str, "message": str}] },
+            "health": {"total": int, "clean": int, "flagged": int, "flags": [str]}
+        }
+    """
+    has_year = re.compile(r'\b(?:19|20)\d{2}\b')
+    warnings = {}
+    flagged_count = 0
+    flag_types = set()
+    
+    for ref in references:
+        ref_key = ref[:80]
+        ref_warnings = []
+        
+        # ── Check 1: Fragment detection (too short) ───────────────────────
+        # A real reference should be at least 40 characters.  Anything shorter
+        # is almost certainly a fragment from an incorrect split.
+        if len(ref) < 40:
+            ref_warnings.append({
+                "type": "fragment",
+                "severity": "error",
+                "message": f"Entry is only {len(ref)} characters — likely an incomplete fragment from a split error."
+            })
+            flag_types.add("fragment")
+        
+        # ── Check 2: Missing publication year ─────────────────────────────
+        # Every valid reference should contain a 4-digit year (19xx or 20xx).
+        if not has_year.search(ref):
+            ref_warnings.append({
+                "type": "no_year",
+                "severity": "warning",
+                "message": "No publication year (19xx/20xx) found — may be a continuation line or malformed entry."
+            })
+            flag_types.add("no_year")
+        
+        # ── Check 3: Suspiciously long (likely merged) ────────────────────
+        # Most single references are under 400 characters.  If one is over
+        # 500, it may contain multiple merged references.
+        if len(ref) > 500:
+            # Count how many year instances appear — multiple years strongly
+            # suggest multiple merged references.
+            year_matches = has_year.findall(ref)
+            unique_years = set(year_matches)
+            if len(year_matches) >= 3 or len(unique_years) >= 2:
+                ref_warnings.append({
+                    "type": "likely_merged",
+                    "severity": "error",
+                    "message": f"Entry is {len(ref)} chars with {len(year_matches)} year mentions ({', '.join(sorted(unique_years)[:4])}) — likely contains multiple merged references."
+                })
+                flag_types.add("likely_merged")
+            else:
+                ref_warnings.append({
+                    "type": "long_entry",
+                    "severity": "info",
+                    "message": f"Entry is {len(ref)} characters — unusually long but may be legitimate (e.g., collaborative group)."
+                })
+        
+        # ── Check 4: Missing title/content ────────────────────────────────
+        # A reference with a year but very little text after the year is
+        # likely truncated.
+        if has_year.search(ref):
+            year_match = has_year.search(ref)
+            text_after_year = ref[year_match.end():]
+            if len(text_after_year.strip()) < 10 and len(ref) < 80:
+                ref_warnings.append({
+                    "type": "truncated",
+                    "severity": "warning",
+                    "message": "Very little content after the publication year — entry may be truncated."
+                })
+                flag_types.add("truncated")
+        
+        if ref_warnings:
+            warnings[ref_key] = ref_warnings
+            flagged_count += 1
+    
+    return {
+        "warnings": warnings,
+        "health": {
+            "total": len(references),
+            "clean": len(references) - flagged_count,
+            "flagged": flagged_count,
+            "flags": sorted(flag_types)
+        }
+    }

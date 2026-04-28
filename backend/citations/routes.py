@@ -14,7 +14,7 @@ from utils.text_extraction import extract_pdf_text, extract_docx_text, extract_d
 from utils.text_utils import count_references_and_citations
 from citations.extraction import extract_reference_section, extract_citations_regex, detect_document_consistency_issues
 from citations.deduplication import deduplicate_references
-from citations.verification import verify_matches_with_string_search, extract_verbatim_references, detect_irregularities_deterministically, extract_references_from_text
+from citations.verification import verify_matches_with_string_search, extract_verbatim_references, detect_irregularities_deterministically, extract_references_from_text, validate_extracted_references
 from citations.formatting import apply_italic_formatting
 from citations.ordering import apply_reference_ordering
 
@@ -94,7 +94,14 @@ async def verify_citations(file: UploadFile = File(...)):
         references = unique_refs
 
         ref_count = len(references)
-        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'Found {ref_count} references in document'})}\n\n"
+
+        # Run quality validation on extracted references
+        ref_validation = validate_extracted_references(references)
+        ref_health = ref_validation["health"]
+        health_msg = f'Found {ref_count} references'
+        if ref_health["flagged"] > 0:
+            health_msg += f' ({ref_health["flagged"]} flagged for review)'
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': health_msg})}\n\n"
         await asyncio.sleep(0.1)
 
         # Stage 4: Build analysis result
@@ -112,6 +119,9 @@ async def verify_citations(file: UploadFile = File(...)):
 
             if dup_groups:
                 analysis["duplicate_reference_groups"] = dup_groups
+
+            # Attach reference quality validation
+            analysis["reference_validation"] = ref_validation
 
             analysis = count_references_and_citations(analysis)
 

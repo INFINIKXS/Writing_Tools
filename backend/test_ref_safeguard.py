@@ -143,9 +143,9 @@ results["Test 5 (demerge)"] = "PASS" if len(found5) == 4 else "FAIL"
 print(f"Result: {results['Test 5 (demerge)']} ({len(found5)}/4)")
 
 
-# ── TEST 6: Multi-signal — DOI-heavy references ──────────────────────────
+# ── TEST 6: Multi-signal — DOI-heavy ─────────────────────────────────────
 print("\n" + "=" * 60)
-print("TEST 6: Multi-signal -- DOI-heavy references (no years on same line)")
+print("TEST 6: Multi-signal -- DOI-heavy references")
 print("=" * 60)
 doi_doc = """Some body text.
 
@@ -163,13 +163,11 @@ Evans, E. (2021) 'Title four', Journal D, 9(1), pp. 70-80.
 refs6 = extract_references_from_text(doi_doc)
 expected6 = ['Adams', 'Brown', 'Clark', 'Evans']
 found6 = [a for a in expected6 if any(a.lower() in r.lower()[:40] for r in refs6)]
-missing6 = [a for a in expected6 if a not in found6]
 
 print(f"Extracted {len(refs6)} refs (expected 4):")
 for i, r in enumerate(refs6, 1):
     label = r[:95] + "..." if len(r) > 95 else r
     print(f"  {i}. {label}")
-print(f"\nMissing: {missing6}")
 results["Test 6 (DOI signal)"] = "PASS" if len(found6) == 4 else "FAIL"
 print(f"Result: {results['Test 6 (DOI signal)']} ({len(found6)}/4)")
 
@@ -191,18 +189,16 @@ References
 refs7 = extract_references_from_text(vancouver_doc)
 expected7 = ['[1]', '[2]', '[3]', '[4]', '[5]']
 found7 = [a for a in expected7 if any(a in r[:10] for r in refs7)]
-missing7 = [a for a in expected7 if a not in found7]
 
 print(f"Extracted {len(refs7)} refs (expected 5):")
 for i, r in enumerate(refs7, 1):
     label = r[:95] + "..." if len(r) > 95 else r
     print(f"  {i}. {label}")
-print(f"\nMissing: {missing7}")
 results["Test 7 (Vancouver)"] = "PASS" if len(found7) == 5 else "FAIL"
 print(f"Result: {results['Test 7 (Vancouver)']} ({len(found7)}/5)")
 
 
-# ── TEST 8: Mixed signals — some refs have DOIs, some don't ──────────────
+# ── TEST 8: Mixed signals ────────────────────────────────────────────────
 print("\n" + "=" * 60)
 print("TEST 8: Mixed signals -- some with DOIs, some without")
 print("=" * 60)
@@ -219,15 +215,65 @@ Franks, F. (2022) 'Title five', Journal E, 2(3), pp. 90-100."""
 refs8 = extract_references_from_text(mixed_doc)
 expected8 = ['Adams', 'Brown', 'Clark', 'Evans', 'Franks']
 found8 = [a for a in expected8 if any(a.lower() in r.lower()[:40] for r in refs8)]
-missing8 = [a for a in expected8 if a not in found8]
 
 print(f"Extracted {len(refs8)} refs (expected 5):")
 for i, r in enumerate(refs8, 1):
     label = r[:95] + "..." if len(r) > 95 else r
     print(f"  {i}. {label}")
-print(f"\nMissing: {missing8}")
 results["Test 8 (mixed signals)"] = "PASS" if len(found8) == 5 else "FAIL"
 print(f"Result: {results['Test 8 (mixed signals)']} ({len(found8)}/5)")
+
+
+# ── TEST 9: Org-name demerge — NHS + NMC merged on one line ──────────────
+print("\n" + "=" * 60)
+print("TEST 9: Org-name demerge -- NHS + NMC merged on one line")
+print("=" * 60)
+nhs_merged = (
+    "NHS (2023) NHS Health Check. Available at: https://www.nhs.uk/tests-and-treatments/nhs-health-check/ "
+    "(Accessed: 18 April 2026). "
+    "Nursing and Midwifery Council (NMC). (2018). The Code: Professional standards of practice and behaviour "
+    "for nurses, midwives and nursing associates. Available at: https://www.nmc.org.uk/globalassets/sitedocuments/"
+    "nmc-publications/nmc-code.pdf (Accessed: 27 April 2026). "
+    "Nursing and Midwifery Council (NMC). (2024). Standards of proficiency for registered nurses. Available at: "
+    "https://www.nmc.org.uk/globalassets/sitedocuments/standards/2024/standards-of-proficiency-for-nurses.pdf "
+    "(Accessed: 27 April 2026)."
+)
+
+refs9 = _split_ref_section_to_atomic(nhs_merged)
+expected9 = ['NHS (2023)', 'Nursing and Midwifery Council (NMC). (2018)', 'Nursing and Midwifery Council (NMC). (2024)']
+found9 = [a for a in expected9 if any(a.lower() in r.lower()[:60] for r in refs9)]
+missing9 = [a for a in expected9 if a not in found9]
+
+print(f"Extracted {len(refs9)} refs (expected 3):")
+for i, r in enumerate(refs9, 1):
+    label = r[:100] + "..." if len(r) > 100 else r
+    print(f"  {i}. {label}")
+print(f"\nMissing: {missing9}")
+results["Test 9 (NHS+NMC demerge)"] = "PASS" if len(found9) == 3 else "FAIL"
+print(f"Result: {results['Test 9 (NHS+NMC demerge)']} ({len(found9)}/3)")
+
+
+# ── TEST 10: Org-name demerge via full pipeline ──────────────────────────
+print("\n" + "=" * 60)
+print("TEST 10: Org-name demerge via full pipeline")
+print("=" * 60)
+nhs_doc = """Some body text referencing (NHS, 2023) and (NMC, 2018) and (NMC, 2024).
+
+References
+
+NHS (2023) NHS Health Check. Available at: https://www.nhs.uk/tests-and-treatments/nhs-health-check/ (Accessed: 18 April 2026). Nursing and Midwifery Council (NMC). (2018). The Code: Professional standards of practice and behaviour for nurses, midwives and nursing associates. Available at: https://www.nmc.org.uk/globalassets/sitedocuments/nmc-publications/nmc-code.pdf (Accessed: 27 April 2026). Nursing and Midwifery Council (NMC). (2024). Standards of proficiency for registered nurses. Available at: https://www.nmc.org.uk/globalassets/sitedocuments/standards/2024/standards-of-proficiency-for-nurses.pdf (Accessed: 27 April 2026)."""
+
+refs10 = extract_references_from_text(nhs_doc)
+found10 = [a for a in expected9 if any(a.lower() in r.lower()[:60] for r in refs10)]
+missing10 = [a for a in expected9 if a not in found10]
+
+print(f"Extracted {len(refs10)} refs (expected 3):")
+for i, r in enumerate(refs10, 1):
+    label = r[:100] + "..." if len(r) > 100 else r
+    print(f"  {i}. {label}")
+print(f"\nMissing: {missing10}")
+results["Test 10 (NHS+NMC pipeline)"] = "PASS" if len(found10) == 3 else "FAIL"
+print(f"Result: {results['Test 10 (NHS+NMC pipeline)']} ({len(found10)}/3)")
 
 
 # ── SUMMARY ───────────────────────────────────────────────────────────────

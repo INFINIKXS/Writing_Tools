@@ -26,3 +26,7 @@ Thumbs.db
 # Agents / AI
 .agents/
 .gemini/
+
+
+#Ignore vscode AI rules
+.github\instructions\codacy.instructions.md

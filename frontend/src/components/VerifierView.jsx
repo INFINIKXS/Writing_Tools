@@ -110,26 +110,32 @@ export default function VerifierView() {
         <div className="space-y-4 animate-fade-in-up overflow-y-auto flex-1 min-h-0">
             <header className="mb-6">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Citation Verifier</h1>
-                <p className="text-sm text-neutral-500">Cross-check inline citations against your reference list using Gemini AI.</p>
+                <p className="text-sm text-neutral-500">Cross-check inline citations against your reference list using deterministic analysis.</p>
             </header>
 
             {/* Upload Zone */}
             {!results && !loading && (
                 <>
                     <div
-                        className={`glass-card p-10 flex flex-col items-center justify-center text-center cursor-pointer transition-all min-h-[320px] group
+                        className={`glass-card p-0 flex flex-col lg:flex-row transition-all min-h-[320px] overflow-hidden
               ${isDragActive ? 'border-white/20 bg-white/[0.06]' : ''}`}
                         onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
-                        onClick={() => !file && fileInputRef.current?.click()}
                     >
+                        {/* Left: Upload area */}
+                        <div className="flex-1 flex flex-col items-center justify-center text-center p-10">
                         {!file ? (
                             <>
-                                <div className={`w-20 h-20 rounded-full border border-white/10 bg-white/5 flex items-center justify-center mb-6 transition-transform ${isDragActive ? 'scale-110' : 'group-hover:scale-105'}`}>
+                                <div
+                                    className={`w-20 h-20 rounded-full border border-white/10 bg-white/5 flex items-center justify-center mb-6 transition-transform cursor-pointer ${isDragActive ? 'scale-110' : 'hover:scale-105 hover:bg-white/[0.08]'}`}
+                                    onClick={() => fileInputRef.current?.click()}
+                                >
                                     <UploadCloud size={40} className="text-neutral-400" />
                                 </div>
                                 <h3 className="text-xl font-bold text-white mb-2">DRAG & DROP YOUR FILES</h3>
                                 <p className="text-sm text-neutral-600 mb-4">Supports <strong className="text-neutral-400">PDF</strong>, <strong className="text-neutral-400">DOCX</strong>, and <strong className="text-neutral-400">DOC</strong> (Max 50MB)</p>
-                                <button className="btn-accent text-sm py-2.5 px-8 rounded-lg">UPLOAD FILES</button>
+                                <button className="btn-accent text-sm py-2.5 px-8 rounded-lg" onClick={() => fileInputRef.current?.click()}>UPLOAD FILES</button>
+                                <p className="text-[11px] text-neutral-500 mt-5 max-w-xs leading-relaxed">💡 For best results, place your reference list on a <strong className="text-neutral-400">separate page</strong> with the heading <strong className="text-neutral-400">"References"</strong>.</p>
+                                <p className="text-[11px] text-red-400/70 mt-1.5 max-w-xs leading-relaxed">⚠ References that run together on the same line may not be detected correctly.</p>
                             </>
                         ) : (
                             <div className="w-full max-w-md flex flex-col items-center">
@@ -139,16 +145,60 @@ export default function VerifierView() {
                                 <div className="w-full bg-white/3 border border-white/5 rounded-xl p-4 flex items-center gap-3 mb-6">
                                     <File size={20} className="text-neutral-400 shrink-0" />
                                     <span className="truncate flex-1 text-sm font-medium text-neutral-200">{file.name}</span>
-                                    <button onClick={(e) => { e.stopPropagation(); setFile(null); }} className="p-1.5 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-red-400 transition-colors">
+                                    <button onClick={() => setFile(null)} className="p-1.5 hover:bg-white/10 rounded-lg text-neutral-500 hover:text-red-400 transition-colors">
                                         <XCircle size={18} />
                                     </button>
                                 </div>
-                                <button onClick={(e) => { e.stopPropagation(); verifyFile(); }} className="btn-accent w-full py-3.5 text-base rounded-xl">
+                                <button onClick={() => verifyFile()} className="btn-accent w-full py-3.5 text-base rounded-xl">
                                     Run Citation Verification
                                 </button>
                             </div>
                         )}
                         <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,.docx,.doc" className="hidden" />
+                        </div>
+
+                        {/* Right: Format examples */}
+                        {!file && (
+                        <div className="lg:w-[420px] shrink-0 border-t lg:border-t-0 lg:border-l border-white/5 bg-white/[0.015] p-6 flex flex-col">
+                            <p className="text-xs font-bold uppercase tracking-widest text-neutral-500 mb-4">Accepted Reference Arrangement</p>
+                            <div className="space-y-3 flex-1">
+                                {/* Numbered example */}
+                                <div className="bg-white/[0.03] border border-cyan-500/15 rounded-xl overflow-hidden">
+                                    <div className="bg-cyan-500/5 border-b border-cyan-500/10 px-4 py-2 flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-full bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center text-[10px] font-bold text-cyan-400">1</span>
+                                        <span className="text-xs font-bold uppercase tracking-widest text-cyan-400/80">Numbered</span>
+                                    </div>
+                                    <div className="p-3.5 space-y-2.5 font-mono text-xs leading-relaxed text-neutral-400">
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">1.</span>
+                                            <span>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</span>
+                                        </div>
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">2.</span>
+                                            <span>Jones, A. & Brown, B. (2019). Another title. Publisher.</span>
+                                        </div>
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">3.</span>
+                                            <span>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* Spaced example */}
+                                <div className="bg-white/[0.03] border border-purple-500/15 rounded-xl overflow-hidden">
+                                    <div className="bg-purple-500/5 border-b border-purple-500/10 px-4 py-2 flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-full bg-purple-500/15 border border-purple-500/25 flex items-center justify-center text-[10px] text-purple-400">↕</span>
+                                        <span className="text-xs font-bold uppercase tracking-widest text-purple-400/80">Spaced</span>
+                                    </div>
+                                    <div className="p-3.5 font-mono text-xs leading-relaxed text-neutral-400 space-y-4">
+                                        <div>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</div>
+                                        <div>Jones, A. & Brown, B. (2019). Another title. Publisher.</div>
+                                        <div>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        )}
                     </div>
 
                     {error && (
