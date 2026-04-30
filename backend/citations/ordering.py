@@ -41,53 +41,62 @@ def _normalise_surname(surname):
 
 def _order_by_appearance(body_text, references, verbatim_map):
     """Order references by their first appearance in the body text (Vancouver style)."""
-    UNIFIED_PATTERN = re.compile(
-        r'(?:'
-        # Format 1: Parenthetical APA
-        r'\(([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)'
-        r'(?:\s+(?:and|&)\s+[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)*'
-        r'(?:\s*et\s+al\.)?'
-        r',\s*(\d{4}[a-z]?(?:;\s*[A-Z].*?\d{4}[a-z]?)*)\)'
-        
-        r'|'
-        
-        # Format 2: Narrative APA
-        r'([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)'
-        r'(?:\s+(?:and|&)\s+[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\'\-]+)*'
-        r'(?:\s+et\s+al\.)?'
-        r'\s+\((\d{4}[a-z]?)\)'
-        
-        r'|'
-        
-        # Format 3: Vancouver numbered
-        r'\[(\d+(?:\s*[,–\-]\s*\d+)*)\]'
-        r')'
-    )
-
     seen = OrderedDict()  # canonical_key -> (position, original_text)
 
-    for m in UNIFIED_PATTERN.finditer(body_text):
+    # Clean newlines to make parsing easier without changing string length
+    text_flat = body_text.replace('\n', ' ')
+
+    # 1. Vancouver numbered: [1], [1, 2], [1-3]
+    for m in re.finditer(r'\[(\d+(?:\s*[,–\-]\s*\d+)*)\]', text_flat):
         pos = m.start()
+        # skip if it looks like a year, e.g. [2020]
+        if re.match(r'^\[(19|20)\d{2}\]$', m.group(0)):
+            continue
+        for part in re.split(r',\s*', m.group(1)):
+            ends = re.split(r'[–\-]', part.strip())
+            try:
+                if len(ends) == 2:
+                    for num in range(int(ends[0]), int(ends[1]) + 1):
+                        key = ('__numbered__', str(num))
+                        if key not in seen:
+                            seen[key] = (pos, m.group(0))
+                else:
+                    num = int(ends[0])
+                    key = ('__numbered__', str(num))
+                    if key not in seen:
+                        seen[key] = (pos, m.group(0))
+            except ValueError:
+                pass
+
+    # 2. Parenthetical APA/Harvard: (Author, 2020; Author 2021)
+    for m in re.finditer(r'\(([^)]*\b(?:19|20)\d{2}[a-z]?[^)]*)\)', text_flat):
+        pos = m.start()
+        content = m.group(1)
         
-        if m.group(5):
-            # Vancouver numbered citation
-            for num in _expand_range(m.group(5)):
-                key = ('__numbered__', str(num))
-                if key not in seen:
-                    seen[key] = (pos, m.group(0))
-                    
-        elif m.group(1) and m.group(2):
-            # Parenthetical citation
-            year = m.group(2).split(';')[0].strip()
-            key = (_normalise_surname(m.group(1)), year)
-            if key not in seen:
-                seen[key] = (pos, m.group(0))
-                
-        elif m.group(3) and m.group(4):
-            # Narrative citation
-            key = (_normalise_surname(m.group(3)), m.group(4))
-            if key not in seen:
-                seen[key] = (pos, m.group(0))
+        parts = content.split(';')
+        for i, part in enumerate(parts):
+            part = part.strip()
+            ym = re.search(r'\b((?:19|20)\d{2}[a-z]?)\b', part)
+            if ym:
+                year = ym.group(1)
+                author_part = part[:ym.start()].strip(', ')
+                if author_part:
+                    author_part = re.sub(r'\s+et\s+al\.?$', '', author_part).strip()
+                    first_author = re.split(r'\s+and\s+|\s+&\s+|,', author_part)[0].strip()
+                    if first_author:
+                        first_word = first_author.split()[0]
+                        key = (_normalise_surname(first_word), year)
+                        if key not in seen: 
+                            seen[key] = (pos + i, m.group(0))
+
+    # 3. Narrative APA/Harvard: Author et al. (2020) or Author et al.'s (2020)
+    for m in re.finditer(r'\b([A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\-\']+)(?:\s+(?:and|&)\s+[A-Z][a-zA-Z\u00C0-\u00F6\u00F8-\u00FF\-\']+)*(?:\s+et\s+al\.?)?(?:\'s)?\s*\(((?:19|20)\d{2}[a-z]?)\)', text_flat):
+        pos = m.start()
+        author_part = m.group(1).strip()
+        year = m.group(2)
+        key = (_normalise_surname(author_part), year)
+        if key not in seen:
+            seen[key] = (pos, m.group(0))
 
     appearance_order = sorted(seen.keys(), key=lambda k: seen[k][0])
 
