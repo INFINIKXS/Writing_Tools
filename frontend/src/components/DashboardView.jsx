@@ -1,5 +1,5 @@
 import React from 'react';
-import { UploadCloud, FileText, CheckCircle, ArrowRight, ArrowLeftRight } from 'lucide-react';
+import { UploadCloud, FileText, CheckCircle, ArrowRight, ArrowLeftRight, BookOpen } from 'lucide-react';
 
 // Simple SVG sparkline component
 function Sparkline({ data, color = 'rgba(255,255,255,0.4)', width = 100, height = 32 }) {
@@ -160,13 +160,13 @@ export default function DashboardView({ onNavigate }) {
                     <ArrowRight size={18} className="text-neutral-700 group-hover:text-white transition-colors" />
                 </button>
 
-                <button onClick={() => onNavigate('formatter')} className="glass-card p-6 flex items-center gap-5 group cursor-pointer text-left">
+                <button onClick={() => onNavigate('library')} className="glass-card p-6 flex items-center gap-5 group cursor-pointer text-left">
                     <div className="w-12 h-12 rounded-xl bg-white/5 border border-white/10 flex items-center justify-center shrink-0 group-hover:scale-110 transition-transform">
-                        <FileText size={24} className="text-neutral-400" />
+                        <BookOpen size={24} className="text-neutral-400" />
                     </div>
                     <div className="flex-1">
-                        <h3 className="text-base font-bold text-white mb-1">Reference Formatter</h3>
-                        <p className="text-xs text-neutral-500 leading-relaxed">Format raw references into Harvard style instantly</p>
+                        <h3 className="text-base font-bold text-white mb-1">Reference Library</h3>
+                        <p className="text-xs text-neutral-500 leading-relaxed">Generate references from PDFs and format bibliographies</p>
                     </div>
                     <ArrowRight size={18} className="text-neutral-700 group-hover:text-white transition-colors" />
                 </button>

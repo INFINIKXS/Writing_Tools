@@ -1,4 +1,17 @@
+"""
+LLM-powered phrase operations for the Academic Phrase Bank.
+
+Three core functions:
+  - process_phrasebank_rewrite()  — rewrite dense sentences (kept from v1)
+  - process_phrasebank_suggest()  — rank phrase candidates by relevance to user text
+  - process_phrasebank_fit()      — adapt a phrase template to the user's content
+"""
 import json
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 1.  Rewrite  (kept from v1, updated to use new store)
+# ──────────────────────────────────────────────────────────────────────
 
 async def process_phrasebank_rewrite(sentence: str) -> dict:
     """
@@ -9,12 +22,11 @@ async def process_phrasebank_rewrite(sentence: str) -> dict:
     """
     from main import get_client, gemini_request_with_retry
     import phrasebank_store
-    
-    # Try to get real examples from the uploaded PDFs
-    # We pull from standard descriptive categories for general rewriting
+
+    # Pull real examples from the curated phrase bank
     db_templates = phrasebank_store.get_random_templates("Defining Terms", count=3)
-    db_templates += phrasebank_store.get_random_templates("General Transition", count=2)
-    
+    db_templates += phrasebank_store.get_random_templates("General Transitions", count=2)
+
     if db_templates:
         examples_block = "REAL EXAMPLES FROM YOUR PHRASEBANK:\n" + "\n".join(f"- {t}" for t in db_templates)
     else:
@@ -78,4 +90,144 @@ Respond with ONLY this JSON, nothing else:
         return data
     except Exception as e:
         print(f"[Phrasebank Rewrite] LLM failed: {e}")
+        return {"error": str(e)}
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 2.  Suggest  (NEW — ranks DB phrase candidates for relevance)
+# ──────────────────────────────────────────────────────────────────────
+
+async def process_phrasebank_suggest(user_text: str, candidate_phrases: list[dict]) -> list[dict]:
+    """
+    Takes user text + a list of phrase candidates (from Supabase search)
+    and asks the LLM to rank them by relevance.
+
+    Returns the top candidates with a 'relevance_reason' added to each.
+    If the LLM fails, returns candidates as-is (graceful degradation).
+    """
+    if not candidate_phrases:
+        return []
+
+    from main import get_client, gemini_request_with_retry
+
+    # Build a numbered list of candidates for the prompt
+    numbered = "\n".join(
+        f"{i+1}. [{p['category']}] {p['template']}"
+        for i, p in enumerate(candidate_phrases)
+    )
+
+    prompt = f"""You are an academic writing assistant. A user has written this text:
+
+"{user_text}"
+
+Below are phrase templates from an Academic Phrasebank that might be relevant.
+Rank the TOP 8 most relevant phrases for the user's text.
+
+CANDIDATE PHRASES:
+{numbered}
+
+Respond with ONLY a JSON array. Each element must have:
+- "index": the phrase number (1-based) from the list above
+- "relevance_reason": a brief (1 sentence) reason why this phrase fits the user's text
+
+Order from most to least relevant. Include at most 8 phrases.
+Output ONLY the JSON array, nothing else."""
+
+    try:
+        model_name = 'gemini-3.1-flash-lite-preview'
+        client = get_client(model=model_name)
+        response = await gemini_request_with_retry(client, prompt, model=model_name)
+        raw = response.text.strip()
+
+        if raw.startswith('```json'):
+            raw = raw[7:].strip()
+        if raw.startswith('```'):
+            raw = raw[3:].strip()
+        if raw.endswith('```'):
+            raw = raw[:-3].strip()
+
+        rankings = json.loads(raw)
+
+        # Map back to full phrase objects
+        result = []
+        for item in rankings:
+            idx = item.get("index", 0) - 1
+            if 0 <= idx < len(candidate_phrases):
+                phrase = dict(candidate_phrases[idx])
+                phrase["relevance_reason"] = item.get("relevance_reason", "")
+                result.append(phrase)
+
+        return result[:8]
+
+    except Exception as e:
+        print(f"[Phrasebank Suggest] LLM ranking failed: {e}")
+        # Graceful fallback — return candidates unranked
+        return candidate_phrases[:8]
+
+
+# ──────────────────────────────────────────────────────────────────────
+# 3.  Fit  (NEW — adapts a phrase template to user's content)
+# ──────────────────────────────────────────────────────────────────────
+
+async def process_phrasebank_fit(template: str, example: str, user_text: str) -> dict:
+    """
+    Takes a phrase template (e.g. "This study aims to [X] by [Y]")
+    and the user's sentence, then produces a fitted version that
+    slots their content into the template structure.
+    """
+    from main import get_client, gemini_request_with_retry
+
+    example_block = f'\nEXAMPLE of this template in use:\n"{example}"' if example else ""
+
+    prompt = f"""You are an expert academic writing tutor. Your task is to adapt a user's sentence to fit a specific academic phrase template.
+
+TEMPLATE:
+"{template}"
+{example_block}
+
+USER'S ORIGINAL SENTENCE:
+"{user_text}"
+
+Instructions:
+1. Extract the key content/arguments from the user's sentence.
+2. Slot that content into the template structure, replacing [X], [Y], [Z] placeholders.
+3. Ensure the result is grammatically correct, academically appropriate, and faithful to the user's meaning.
+4. Provide TWO fitted versions: one close to the template, one slightly more flexible.
+
+Respond with ONLY this JSON:
+{{
+    "template_used": "{template}",
+    "fitted_versions": [
+        {{
+            "name": "Close fit",
+            "text": "The sentence rewritten to closely follow the template structure."
+        }},
+        {{
+            "name": "Flexible fit",
+            "text": "A slightly looser adaptation that prioritises natural flow."
+        }}
+    ],
+    "content_extracted": {{
+        "X": "What was mapped to [X]",
+        "Y": "What was mapped to [Y] (if applicable)"
+    }}
+}}"""
+
+    try:
+        model_name = 'gemini-3.1-flash-lite-preview'
+        client = get_client(model=model_name)
+        response = await gemini_request_with_retry(client, prompt, model=model_name)
+        raw = response.text.strip()
+
+        if raw.startswith('```json'):
+            raw = raw[7:].strip()
+        if raw.startswith('```'):
+            raw = raw[3:].strip()
+        if raw.endswith('```'):
+            raw = raw[:-3].strip()
+
+        data = json.loads(raw)
+        return data
+    except Exception as e:
+        print(f"[Phrasebank Fit] LLM failed: {e}")
         return {"error": str(e)}

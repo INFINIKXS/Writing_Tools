@@ -142,13 +142,8 @@ export default function FormatterView() {
     const completedResults = results.filter(Boolean);
 
     return (
-        <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col overflow-hidden">
-            <header className="mb-6">
-                <h1 className="text-3xl font-extrabold text-white mb-1">Reference Formatter</h1>
-                <p className="text-sm text-neutral-500">Transform messy bibliographies into perfect {currentStyle.label} style.</p>
-            </header>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-[500px]">
+        <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 flex-1 min-h-0">
                 {/* Input */}
                 <div className="glass-card flex flex-col overflow-hidden">
                     <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">

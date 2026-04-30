@@ -1,5 +1,6 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
 import { Upload, Copy, Check, BookOpen, ChevronDown, FileText, Loader2, AlertCircle, X, ChevronRight, Trash2, ShieldCheck, ShieldAlert, ClipboardCheck, Send, Sparkles, ChevronUp, RefreshCw } from 'lucide-react';
+import FormatterView from './FormatterView';
 
 const STYLES = [
     { id: 'harvard', label: 'Harvard', desc: 'Cite Them Right (10th ed.)' },
@@ -734,7 +735,7 @@ export default function LibraryView() {
         <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
             <header className="mb-4">
                 <h1 className="text-3xl font-extrabold text-white mb-1">Reference Library</h1>
-                <p className="text-sm text-neutral-500">Generate references from PDFs, or verify an existing reference list for accuracy.</p>
+                <p className="text-sm text-neutral-500">Generate references from PDFs, verify an existing reference list, or format raw references.</p>
             </header>
 
             {/* Tab Toggle */}
@@ -760,6 +761,17 @@ export default function LibraryView() {
                 >
                     <ClipboardCheck size={14} />
                     Verifier
+                </button>
+                <button
+                    onClick={() => setActiveSubTab('formatter')}
+                    className={`px-4 py-2 rounded-lg text-xs font-bold uppercase tracking-wider transition-all duration-200 flex items-center gap-2 ${
+                        activeSubTab === 'formatter'
+                            ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 shadow-lg shadow-emerald-500/10'
+                            : 'text-neutral-500 hover:text-neutral-300 hover:bg-white/5 border border-transparent'
+                    }`}
+                >
+                    <FileText size={14} />
+                    Formatter
                 </button>
             </div>
 
@@ -953,6 +965,9 @@ export default function LibraryView() {
 
             {/* Verifier Sub-View */}
             {activeSubTab === 'verifier' && <VerifierSubView />}
+
+            {/* Formatter Sub-View */}
+            {activeSubTab === 'formatter' && <FormatterView />}
         </div>
     );
 }

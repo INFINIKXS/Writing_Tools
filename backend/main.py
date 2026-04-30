@@ -6,7 +6,7 @@ All domain logic has been refactored into subpackages:
     utils/    — text extraction, text utilities
     citations/ — detection, deduplication, extraction, ordering, verification, formatting, routes
     references/ — metadata extraction, parser, routes
-    search/   — full-text search routes (wraps search_store)
+
     humanizer_routes/ — cognitive synthesizer routes (wraps humanizer / humanizer_store)
     phrasebank_routes/ — academic phrasebank routes (wraps phrasebank / phrasebank_store)
     converter/ — document conversion routes (PDF↔Word, OCR, merge, compress, etc.)
@@ -36,14 +36,14 @@ app.add_middleware(
 # ─── Include domain routers ──────────────────────────────────────────────
 from citations.routes import router as citations_router
 from references.routes import router as references_router
-from search import router as search_router
+
 from humanizer_routes import router as humanizer_router
 from phrasebank_routes import router as phrasebank_router
 from converter import router as converter_router
 
 app.include_router(citations_router)
 app.include_router(references_router)
-app.include_router(search_router)
+
 app.include_router(humanizer_router)
 app.include_router(phrasebank_router)
 app.include_router(converter_router)

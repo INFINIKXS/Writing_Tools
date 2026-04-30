@@ -3,23 +3,18 @@ import { LayoutDashboard, CheckCircle, FileText, BookOpen, Search, Settings, Wan
 import Logo from './components/Logo';
 import DashboardView from './components/DashboardView';
 import VerifierView from './components/VerifierView';
-import FormatterView from './components/FormatterView';
 import LibraryView from './components/LibraryView';
-import SearchView from './components/SearchView';
 import HumanizerView from './components/HumanizerView';
 import PhrasebankView from './components/PhrasebankView';
 import ConverterView from './components/ConverterView';
-import MatcherView from './components/MatcherView';
 import SettingsView from './components/SettingsView';
 import PDFEditorPage from './pages/PDFEditorPage';
 
 const NAV_ITEMS = [
   { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { id: 'verifier', label: 'Verifier', icon: CheckCircle },
-  { id: 'formatter', label: 'Formatter', icon: FileText },
   { id: 'library', label: 'Library', icon: BookOpen },
-  { id: 'matcher', label: 'Matcher', icon: GitCompareArrows },
-  { id: 'search', label: 'Search', icon: Search },
+
   { id: 'humanizer', label: 'Humanizer', icon: Wand2 },
   { id: 'phrasebank', label: 'Phrasebank', icon: BookOpen },
   { id: 'converter', label: 'Converter', icon: ArrowLeftRight },
@@ -34,10 +29,8 @@ function App() {
   const PERSISTENT_VIEWS = useMemo(() => [
     { id: 'dashboard', component: <DashboardView onNavigate={setActiveTab} /> },
     { id: 'verifier', component: <VerifierView /> },
-    { id: 'formatter', component: <FormatterView /> },
     { id: 'library', component: <LibraryView /> },
-    { id: 'search', component: <SearchView /> },
-    { id: 'matcher', component: <MatcherView /> },
+
     { id: 'humanizer', component: <HumanizerView /> },
     { id: 'phrasebank', component: <PhrasebankView /> },
     { id: 'converter', component: <ConverterView /> },
@@ -60,7 +53,7 @@ function App() {
         </div>
 
         {/* Nav Items */}
-        <nav className="flex-1 flex flex-col gap-1 w-full">
+        <nav className="flex-1 flex flex-col justify-between w-full pb-2">
           {NAV_ITEMS.map((item) => (
             <button
               key={item.id}
