@@ -121,7 +121,57 @@ export default function VerifierView() {
               ${isDragActive ? 'border-white/20 bg-white/[0.06]' : ''}`}
                         onDragOver={handleDragOver} onDragLeave={handleDragLeave} onDrop={handleDrop}
                     >
-                        {/* Left: Upload area */}
+                        {/* Left: Format examples */}
+                        {!file && (
+                        <div className="lg:w-[420px] shrink-0 border-b lg:border-b-0 lg:border-r border-white/5 bg-white/[0.015] p-6 flex flex-col">
+                            <p className="text-xs font-bold uppercase tracking-widest text-neutral-500 mb-4">Accepted Reference Arrangement</p>
+                            <div className="space-y-3 flex-1">
+                                {/* Numbered example */}
+                                <div className="bg-white/[0.03] border border-cyan-500/15 rounded-xl overflow-hidden">
+                                    <div className="bg-cyan-500/5 border-b border-cyan-500/10 px-4 py-2 flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-full bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center text-[10px] font-bold text-cyan-400">1</span>
+                                        <span className="text-xs font-bold uppercase tracking-widest text-cyan-400/80">Numbered</span>
+                                    </div>
+                                    <div className="p-3.5 space-y-2.5 font-mono text-xs leading-relaxed text-neutral-400">
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">1.</span>
+                                            <span>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</span>
+                                        </div>
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">2.</span>
+                                            <span>Jones, A. & Brown, B. (2019). Another title. Publisher.</span>
+                                        </div>
+                                        <div className="flex gap-2.5">
+                                            <span className="text-cyan-500/70 shrink-0 font-bold">3.</span>
+                                            <span>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</span>
+                                        </div>
+                                    </div>
+                                </div>
+
+                                {/* OR divider */}
+                                <div className="flex items-center gap-2 py-1">
+                                    <div className="flex-1 h-px bg-white/5" />
+                                    <span className="text-[10px] font-bold uppercase tracking-widest text-neutral-600 px-2">or</span>
+                                    <div className="flex-1 h-px bg-white/5" />
+                                </div>
+
+                                {/* Spaced example */}
+                                <div className="bg-white/[0.03] border border-purple-500/15 rounded-xl overflow-hidden">
+                                    <div className="bg-purple-500/5 border-b border-purple-500/10 px-4 py-2 flex items-center gap-2">
+                                        <span className="w-5 h-5 rounded-full bg-purple-500/15 border border-purple-500/25 flex items-center justify-center text-[10px] text-purple-400">↕</span>
+                                        <span className="text-xs font-bold uppercase tracking-widest text-purple-400/80">Spaced</span>
+                                    </div>
+                                    <div className="p-3.5 font-mono text-xs leading-relaxed text-neutral-400 space-y-4">
+                                        <div>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</div>
+                                        <div>Jones, A. & Brown, B. (2019). Another title. Publisher.</div>
+                                        <div>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</div>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                        )}
+
+                        {/* Right: Upload area */}
                         <div className="flex-1 flex flex-col items-center justify-center text-center p-10">
                         {!file ? (
                             <>
@@ -156,49 +206,6 @@ export default function VerifierView() {
                         )}
                         <input type="file" ref={fileInputRef} onChange={handleFileChange} accept=".pdf,.docx,.doc" className="hidden" />
                         </div>
-
-                        {/* Right: Format examples */}
-                        {!file && (
-                        <div className="lg:w-[420px] shrink-0 border-t lg:border-t-0 lg:border-l border-white/5 bg-white/[0.015] p-6 flex flex-col">
-                            <p className="text-xs font-bold uppercase tracking-widest text-neutral-500 mb-4">Accepted Reference Arrangement</p>
-                            <div className="space-y-3 flex-1">
-                                {/* Numbered example */}
-                                <div className="bg-white/[0.03] border border-cyan-500/15 rounded-xl overflow-hidden">
-                                    <div className="bg-cyan-500/5 border-b border-cyan-500/10 px-4 py-2 flex items-center gap-2">
-                                        <span className="w-5 h-5 rounded-full bg-cyan-500/15 border border-cyan-500/25 flex items-center justify-center text-[10px] font-bold text-cyan-400">1</span>
-                                        <span className="text-xs font-bold uppercase tracking-widest text-cyan-400/80">Numbered</span>
-                                    </div>
-                                    <div className="p-3.5 space-y-2.5 font-mono text-xs leading-relaxed text-neutral-400">
-                                        <div className="flex gap-2.5">
-                                            <span className="text-cyan-500/70 shrink-0 font-bold">1.</span>
-                                            <span>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</span>
-                                        </div>
-                                        <div className="flex gap-2.5">
-                                            <span className="text-cyan-500/70 shrink-0 font-bold">2.</span>
-                                            <span>Jones, A. & Brown, B. (2019). Another title. Publisher.</span>
-                                        </div>
-                                        <div className="flex gap-2.5">
-                                            <span className="text-cyan-500/70 shrink-0 font-bold">3.</span>
-                                            <span>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</span>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                {/* Spaced example */}
-                                <div className="bg-white/[0.03] border border-purple-500/15 rounded-xl overflow-hidden">
-                                    <div className="bg-purple-500/5 border-b border-purple-500/10 px-4 py-2 flex items-center gap-2">
-                                        <span className="w-5 h-5 rounded-full bg-purple-500/15 border border-purple-500/25 flex items-center justify-center text-[10px] text-purple-400">↕</span>
-                                        <span className="text-xs font-bold uppercase tracking-widest text-purple-400/80">Spaced</span>
-                                    </div>
-                                    <div className="p-3.5 font-mono text-xs leading-relaxed text-neutral-400 space-y-4">
-                                        <div>Smith, J. (2020). Title of article. <em className="text-neutral-500">Journal Name, 10</em>(2), 45-67.</div>
-                                        <div>Jones, A. & Brown, B. (2019). Another title. Publisher.</div>
-                                        <div>Lee, C. (2021). Third reference. <em className="text-neutral-500">Journal, 5</em>, 12-30.</div>
-                                    </div>
-                                </div>
-                            </div>
-                        </div>
-                        )}
                     </div>
 
                     {error && (
