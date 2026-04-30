@@ -441,7 +441,7 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
         r'(?:(?<=pdf)|(?<=html)|(?<=org)|(?<=\d)|(?<=/))[.]?\s+'
         r'(?='
         r'(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+'
-        r'\s*,\s*(?:[A-Z]\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
+        r'\s*,?\s*(?:[A-Z][A-Z]?\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
         # Demerge at all-caps abbreviation boundaries: "...doi GBD 2021 Diabetes"
@@ -462,7 +462,7 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
             ends_like_ref = bool(re.search(r'(\b\d{4}\b|https?://\S+|doi\.org/\S+|\d+\s*|p\.\s*\d+|pp\.\s*\d+[-–]\d+\.?)$', current_ref.strip()))
 
             starts_like_ref = bool(re.match(
-                r'^(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+\s*,\s*[A-Z]\.'
+                r'^(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z]{2,3})[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+\s*,?\s*[A-Z][A-Z]?\.'
                 r'|\[\d+\]'
                 r'|\d+\.\s+[A-Z]'
                 r'|[A-Z]{2,}\s+\d'
@@ -486,7 +486,7 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
         r'(?<=\.)\s+'                  # split after a period + whitespace
         r'(?='
         # Standard author start: "Smith, A." / "Van der Berg, A."
-        r'(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,\s*[A-Z]\.)'
+        r'(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,?\s*[A-Z][A-Z]?\.)'
         # OR lowercase-prefix surname start: "de Vries, A."
         r'|(?:(?:de|del|della|di|du|da|van|von|el|al|bin|ibn|la|le|den|der|ter|ten)\s+[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,)'
         # OR org/abbreviation start with year within 150 chars

@@ -242,6 +242,11 @@ def parse_raw_reference(ref_text: str) -> dict:
                 metadata["source_abbreviated"] = api_metadata["source_abbreviated"]
                 field_sources["source_abbreviated"] = api_sources.get("source_abbreviated", api_source)
 
+            # Get day/month for Vancouver date chain
+            if api_metadata.get("day_month"):
+                metadata["day_month"] = api_metadata["day_month"]
+                field_sources["day_month"] = api_sources.get("day_month", api_source)
+
     # Step 3: No DOI or API failed — try title search
     if not api_success:
         discovered_doi = _try_title_search_for_doi(parsed)
@@ -270,6 +275,9 @@ def parse_raw_reference(ref_text: str) -> dict:
                 if api_metadata.get("source_abbreviated"):
                     metadata["source_abbreviated"] = api_metadata["source_abbreviated"]
                     field_sources["source_abbreviated"] = api_sources.get("source_abbreviated", api_source)
+                if api_metadata.get("day_month"):
+                    metadata["day_month"] = api_metadata["day_month"]
+                    field_sources["day_month"] = api_sources.get("day_month", api_source)
 
     # Step 4: Regex fallback — fill remaining gaps from user input
     for key in ("year", "volume", "issue", "pages", "doi"):

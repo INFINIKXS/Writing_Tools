@@ -52,9 +52,16 @@ def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expecte
                         field_sources["title"] = "pubmed"
                         
                     if result.get("pubdate"):
-                        year_match = re.search(r'\b(19|20)\d{2}\b', result.get("pubdate"))
+                        pubdate_raw = result.get("pubdate", "")
+                        year_match = re.search(r'\b(19|20)\d{2}\b', pubdate_raw)
                         if year_match:
                             metadata["year"] = year_match.group(0)
+                            # Extract month (and optional day) for Vancouver date chain
+                            # PubMed pubdate is typically "YYYY Mon DD" or "YYYY Mon" or "YYYY Mon-Mon"
+                            after_year = pubdate_raw[year_match.end():].strip()
+                            if after_year:
+                                metadata["day_month"] = after_year
+                                field_sources["day_month"] = "pubmed"
                         field_sources["year"] = "pubmed"
                         
                     if result.get("fulljournalname"):
@@ -146,6 +153,19 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
                 if parts:
                     metadata["year"] = str(parts[0])
                     field_sources["year"] = "crossref"
+                    # Extract month and day for Vancouver date chain
+                    _MONTH_ABBR = [
+                        '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+                        'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'
+                    ]
+                    if len(parts) >= 2 and parts[1]:
+                        month_idx = int(parts[1])
+                        if 1 <= month_idx <= 12:
+                            day_month = _MONTH_ABBR[month_idx]
+                            if len(parts) >= 3 and parts[2]:
+                                day_month += f" {parts[2]}"
+                            metadata["day_month"] = day_month
+                            field_sources["day_month"] = "crossref"
             
             container = data.get('container-title', [])
             if container:
