@@ -78,7 +78,7 @@ def search_phrases(query: str, limit: int = 20) -> list[dict]:
     result = (
         supabase.table("phrases")
         .select("id, template, category, subcategory, example, formality_level")
-        .text_search("search_vector", ts_query, config="english")
+        .text_search("search_vector", ts_query, options={"config": "english"})
         .limit(limit)
         .execute()
     )

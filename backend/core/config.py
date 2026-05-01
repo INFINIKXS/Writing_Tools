@@ -57,7 +57,7 @@ if not POPPLER_PATH:
                 POPPLER_PATH = _candidate
                 break
 if POPPLER_PATH:
-    print(f"   [✓] Poppler found at: {POPPLER_PATH}")
+    print(f"   [OK] Poppler found at: {POPPLER_PATH}")
 else:
     print("   [i] Poppler not found — PDF to Images may not work")
 
