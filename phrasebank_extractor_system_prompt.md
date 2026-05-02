@@ -84,6 +84,7 @@ Do not extract phrases from:
 - Sentences shorter than 8 words
 - Sentences that are purely descriptive of a specific dataset with no generalizable frame
 - Duplicate or near-duplicate templates already present in your output
+- Do not extract phrases that are generic to the point of being interchangeable with phrases already in a standard academic phrase bank (e.g. "The results show that [X]" is too generic — prefer more structurally distinctive templates)
 
 ---
 
