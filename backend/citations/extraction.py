@@ -390,6 +390,8 @@ def extract_citations_regex(body_text: str) -> list:
         inner = full_block[1:-1]  # Remove ( and )
         parts = [p.strip() for p in inner.split(';')]
         
+        last_author = None  # Track author for YEAR_ONLY inheritance
+
         for part in parts:
             part_clean = part.strip()
             if not part_clean:
@@ -399,7 +401,15 @@ def extract_citations_regex(body_text: str) -> list:
             classified = False
             for pattern, label in INNER_CITATION_PATTERNS:
                 if pattern.search(part_clean):
-                    citation_text = f"({part_clean})"
+                    # For YEAR_ONLY, inherit author from previous citation in same block
+                    if label == 'YEAR_ONLY' and last_author:
+                        citation_text = f"({last_author}, {part_clean})"
+                    else:
+                        citation_text = f"({part_clean})"
+                        # Extract author for potential YEAR_ONLY inheritance
+                        author_match = re.match(r'^(.+?)\s*[,.]?\s*\d{4}', part_clean)
+                        if author_match:
+                            last_author = author_match.group(1).strip().rstrip(',')
                     if citation_text not in seen_texts:
                         warnings = check_formatting_irregularities(citation_text)
                         found_citations.append({"text": citation_text, "type": label, "irregularities": warnings})

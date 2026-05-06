@@ -323,6 +323,45 @@ export default function VerifierView() {
                         </div>
                     )}
 
+                    {results.string_verification?.disambiguation_warnings?.length > 0 && (
+                        <div className="glass-card overflow-hidden border border-indigo-500/20">
+                            <div className="bg-indigo-500/5 border-b border-indigo-500/10 px-5 py-3 flex items-center gap-2">
+                                <AlertCircle size={16} className="text-indigo-400" />
+                                <h3 className="text-sm font-bold text-indigo-200">
+                                    Author-Year Disambiguation ({results.string_verification.disambiguation_warnings.length})
+                                </h3>
+                                <span className="ml-auto text-[9px] uppercase tracking-widest text-indigo-400/60 bg-indigo-500/10 px-2 py-0.5 rounded-full">Harvard Style</span>
+                            </div>
+                            <div className="p-4 max-h-[400px] overflow-y-auto space-y-4">
+                                <p className="text-xs text-neutral-400 leading-relaxed">
+                                    When multiple references share the same first author and publication year, Harvard referencing requires
+                                    letter suffixes (<span className="font-mono text-indigo-300">a</span>, <span className="font-mono text-indigo-300">b</span>, <span className="font-mono text-indigo-300">c</span>…)
+                                    on the year — both in the in-text citations <em>and</em> the reference list — assigned alphabetically by title.
+                                </p>
+                                {results.string_verification.disambiguation_warnings.map((w, i) => (
+                                    <div key={i} className="bg-white/[0.02] p-4 rounded-xl border border-indigo-500/15 border-l-4 border-l-indigo-500/40">
+                                        <div className="flex items-center gap-2 mb-3">
+                                            <span className="inline-block text-[9px] font-bold uppercase tracking-widest text-indigo-400 bg-indigo-500/10 border border-indigo-500/20 px-2 py-0.5 rounded">
+                                                {w.type?.replace(/_/g, ' ')}
+                                            </span>
+                                            <span className="text-sm font-bold text-white">{w.author} ({w.year})</span>
+                                        </div>
+                                        <p className="text-sm text-neutral-300 mb-3 leading-relaxed">{w.message}</p>
+                                        <div className="space-y-2">
+                                            <div className="text-[10px] font-bold uppercase tracking-widest text-neutral-500">Affected References</div>
+                                            {w.references?.map((ref, j) => (
+                                                <div key={j} className="bg-white/3 p-3 rounded-lg border border-white/5 text-xs text-neutral-300 leading-relaxed flex gap-2">
+                                                    <span className="shrink-0 text-indigo-400 font-bold">{w.year}{String.fromCharCode(97 + j)}</span>
+                                                    <span className="break-words">{ref}</span>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
                     {results.duplicate_reference_groups?.length > 0 && (
                         <div className="glass-card overflow-hidden border border-amber-500/20 mb-3">
                             <div className="bg-amber-500/5 border-b border-amber-500/10 px-5 py-3 flex items-center gap-2">

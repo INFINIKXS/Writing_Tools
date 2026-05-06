@@ -2,6 +2,7 @@
 Citation-to-reference verification, cross-validation, and verbatim reference extraction.
 """
 import re
+import unicodedata
 from difflib import SequenceMatcher
 
 
@@ -11,17 +12,22 @@ def verify_matches_with_string_search(in_text_citations, references):
         "unmatched_citations": [],
         "unmatched_references": [],
         "duplicate_first_names": {},
+        "disambiguation_warnings": [],
         "summary": "Surname + year compound-key match verification completed (case-insensitive)."
     }
 
     def extract_first_author(text):
         """Extract the first author's bare surname from a citation or reference string."""
         core = text.strip('()[] ').split(' et al.')[0].split(' and ')[0].strip()
-        # Include curly apostrophe \u2019
-        match = re.search(r'^([A-Za-z\'\-\u2019]+)', core)
+        # Include diacritics (À-Ö, Ø-ö, ø-ÿ) and curly apostrophe \u2019
+        # Allow compound surnames: space-separated words (e.g. "Bosó Pérez")
+        _W = r'[A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\'\-\u2019]+'
+        match = re.search(rf'^({_W}(?:\s+{_W})*)', core)
         if match:
             surname = match.group(1).strip()
-            surname = re.sub(r'\s+[A-Z]{1,3}$', '', surname).strip()
+            # Remove trailing initials like " R" from "Bosó Pérez, R."
+            surname = re.sub(r'[,.]?\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD]{1,3}$', '', surname).strip()
+            surname = surname.rstrip(',').strip()
             return surname
         return None
 
@@ -39,6 +45,7 @@ def verify_matches_with_string_search(in_text_citations, references):
     # Build compound-key index
     ref_compound_index = {}
     ref_surname_index = {}
+    ref_lastword_index = {}  # Fallback: index by last word of compound surname
 
     for ref in references:
         ref_surname = extract_first_author(ref)
@@ -49,11 +56,98 @@ def verify_matches_with_string_search(in_text_citations, references):
         key = (normalized_surname, ref_year)
         ref_compound_index.setdefault(key, []).append(ref)
         ref_surname_index.setdefault(normalized_surname, []).append(ref)
+        # For compound surnames like "Bosó Pérez", also index by last word "pérez"
+        surname_words = normalized_surname.split()
+        if len(surname_words) > 1:
+            last_word = surname_words[-1]
+            ref_lastword_index.setdefault((last_word, ref_year), []).append(ref)
 
     # Report duplicate surnames
     for surname_lower, refs in ref_surname_index.items():
         if len(refs) > 1:
             verification_results["duplicate_first_names"][surname_lower.capitalize()] = refs
+
+    # ─── Harvard disambiguation check ───────────────────────────────────
+    # Detect same-author, same-base-year pairs in the reference list and
+    # verify that both the references AND the in-text citations use proper
+    # letter suffixes (2022a, 2022b) to distinguish them.
+    # Group references by (surname, base_year) — ignoring any existing suffix
+    base_year_groups = {}
+    for (surname_lower, year_with_suffix), refs in ref_compound_index.items():
+        if not year_with_suffix:
+            continue
+        base_year = year_with_suffix[:4]
+        group_key = (surname_lower, base_year)
+        base_year_groups.setdefault(group_key, []).extend(refs)
+
+    for (surname_lower, base_year), refs in base_year_groups.items():
+        if len(refs) < 2:
+            continue
+        # Multiple references share the same first author + year.
+        # Check if the references themselves already use letter suffixes.
+        ref_years = []
+        for ref in refs:
+            y = extract_year(ref, mode='first')
+            ref_years.append(y)
+        refs_have_suffixes = all(
+            y and re.match(r'\d{4}[a-z]$', y)
+            for y in ref_years
+        )
+        # Check if the citations targeting this author+year use suffixes.
+        matching_citations = [
+            c for c in in_text_citations
+            if (extract_first_author(c) or '').lower().replace('\u2019', "'") == surname_lower
+            and (extract_year(c, mode='last') or '')[:4] == base_year
+        ]
+        cits_have_suffixes = all(
+            re.match(r'\d{4}[a-z]$', extract_year(c, mode='last') or '')
+            for c in matching_citations
+        ) if matching_citations else False
+
+        display_name = surname_lower.capitalize()
+        if not refs_have_suffixes and not cits_have_suffixes:
+            # Neither references nor citations are disambiguated
+            sorted_refs = sorted(refs)  # alphabetical by title for a/b assignment
+            verification_results["disambiguation_warnings"].append({
+                "type": "MISSING_DISAMBIGUATION",
+                "author": display_name,
+                "year": base_year,
+                "references": sorted_refs,
+                "message": (
+                    f"Multiple references by {display_name} ({base_year}) detected. "
+                    f"Harvard style requires letter suffixes to distinguish them. "
+                    f"Please add '{base_year}a' and '{base_year}b' (etc.) to both "
+                    f"the in-text citations and the reference list entries, "
+                    f"assigning letters alphabetically by title."
+                ),
+            })
+        elif refs_have_suffixes and not cits_have_suffixes and matching_citations:
+            # References are disambiguated but citations are not
+            verification_results["disambiguation_warnings"].append({
+                "type": "CITATION_MISSING_SUFFIX",
+                "author": display_name,
+                "year": base_year,
+                "references": refs,
+                "citations": matching_citations,
+                "message": (
+                    f"References by {display_name} ({base_year}) use letter suffixes "
+                    f"but the in-text citations do not. Update citations to use "
+                    f"({display_name}, {base_year}a), ({display_name}, {base_year}b), etc."
+                ),
+            })
+        elif not refs_have_suffixes and cits_have_suffixes:
+            # Citations are disambiguated but references are not
+            verification_results["disambiguation_warnings"].append({
+                "type": "REFERENCE_MISSING_SUFFIX",
+                "author": display_name,
+                "year": base_year,
+                "references": refs,
+                "message": (
+                    f"In-text citations use letter suffixes for {display_name} ({base_year}) "
+                    f"but the reference list entries do not. Add the matching suffixes "
+                    f"to the year in each reference entry."
+                ),
+            })
 
     matched_refs = set()
 
@@ -81,7 +175,11 @@ def verify_matches_with_string_search(in_text_citations, references):
                     candidates = refs
                     break
 
-        # 3. If still nothing, fall back to surname-only match
+        # 3. Fallback: compound surname last-word match (e.g. "Pérez" matches "Bosó Pérez")
+        if not candidates:
+            candidates = ref_lastword_index.get((normalized_cit_surname, cit_year), [])
+
+        # 4. If still nothing, fall back to surname-only match
         if not candidates:
             candidates = ref_surname_index.get(normalized_cit_surname, [])
 
@@ -206,7 +304,7 @@ def detect_irregularities_deterministically(citations_list: list, references: li
         author_part_raw = cit_text[:year_match.start()].strip(' (,')
         cit_author_clean = re.sub(r'(?i)\s+et\s+al\.?', '', author_part_raw)
         cit_author_clean = re.sub(r"['\u2019]s\b", '', cit_author_clean)  # strip possessive 's
-        c_words = [w for w in re.sub(r'[^A-Za-z\s]', '', cit_author_clean).split() if len(w) > 2 and w.lower() not in ('and')]
+        c_words = [w for w in re.sub(r'[^A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\s]', '', cit_author_clean).split() if len(w) > 2 and w.lower() not in ('and',)]
         if not c_words: continue
 
         # 3. Find the best matching reference (match against PRIMARY authors only)
@@ -246,7 +344,8 @@ def detect_irregularities_deterministically(citations_list: list, references: li
                     
             # Strip possessive 's from reference author exactly as we do for the citation author
             ref_author_clean = re.sub(r"['\u2019]s\b", '', ref_author_part, flags=re.IGNORECASE)
-            r_words = [w for w in re.sub(r'[^A-Za-z\s]', '', ref_author_clean).split() if len(w) > 2 and w.lower() not in ('and')]
+            # Include diacritical characters when extracting words
+            r_words = [w for w in re.sub(r'[^A-Za-z\u00C0-\u00D6\u00D8-\u00F6\u00F8-\u00FF\s]', '', ref_author_clean).split() if len(w) > 2 and w.lower() not in ('and',)]
             
             # Simple word overlap scoring
             matches = 0
@@ -255,6 +354,12 @@ def detect_irregularities_deterministically(citations_list: list, references: li
                     matches += 1
             
             score = (matches / len(c_words)) if c_words else 0
+            
+            # Prefer year-matching references to avoid false DATE_MISMATCH on
+            # same-author, different-year works (e.g. Dema et al. 2021 vs 2022).
+            # Give a bonus to candidates whose base year matches the citation year.
+            if ref_year == cit_year:
+                score += 0.1  # Year-match bonus
             
             if score > best_score:
                 best_score = score
@@ -273,12 +378,26 @@ def detect_irregularities_deterministically(citations_list: list, references: li
                     'details': f'Citation year ({cit_year}) does not match the reference year ({best_ref_year}).'
                 })
             
-            # Check Spelling Errors
+            # Check Spelling Errors — normalize diacriticals before comparison
+
+            def _strip_diacritics(s):
+                """Remove diacritical marks: Ç→C, ü→u, é→e, etc."""
+                nfkd = unicodedata.normalize('NFKD', s)
+                return ''.join(c for c in nfkd if not unicodedata.combining(c))
+
             for cw in c_words:
                 best_w_score = 0
                 best_rw = None
                 for rw in best_r_words:
-                    w_score = SequenceMatcher(None, cw.lower(), rw.lower()).ratio()
+                    # Compare with diacritics stripped for fair matching
+                    cw_norm = _strip_diacritics(cw.lower())
+                    rw_norm = _strip_diacritics(rw.lower())
+                    # If normalized forms are identical, it's not a real mismatch
+                    if cw_norm == rw_norm:
+                        best_w_score = 1.0
+                        best_rw = rw
+                        break
+                    w_score = SequenceMatcher(None, cw_norm, rw_norm).ratio()
                     if w_score > best_w_score:
                         best_w_score = w_score
                         best_rw = rw
@@ -336,31 +455,31 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
 
     ref_start_pattern = re.compile(
         r'^(?:'
-        r'[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'
-        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+[A-Z]{1,4},'
+        r'[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+\s*,'
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD]{1,4},'
         # Multi-word surname + initials: "Solberg Nes L," or "Van der Berg AB,"
-        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+[A-Za-z][a-zA-Zà-öø-ÿ\'\-]+)+\s+[A-Z]{1,4},'
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+(?:\s+[A-Za-z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+)+\s+[A-Z\u00C0-\u00D6\u00D8-\u00DD]{1,4},'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
-        r'|[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s+\('
-        r'|[A-Z]\.?\s*,?\s*\('
-        r'|[A-Z]\.?\s*,'
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+\s+\('
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD]\.?\s*,?\s*\('
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD]\.?\s*,'
         r'|\(\d{4}\)'
         # Org-name references: "Department of Health. (2016)." or "World Health Organization. (2020)."
-        r'|(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\.?\s*\(\d{4}'
+        r'|(?:[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+(?:\s+(?:of|for|the|and|on|in|&))?\s+)+[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+\.?\s*\(\d{4}'
         # All-caps abbreviation (2+ letters) followed by digit or letter: "GBD 2021 ...", "UNICEF (2020)", "NCD Risk ..."
-        r'|[A-Z]{2,}\s+[\dA-Z]'
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD]{2,}\s+[\dA-Z]'
         # Lowercase-prefix surname: "de Vries, M.", "van der Berg, A.", "el-Sayed, A.", "al-Rashid, F."
         r'|(?:de|del|della|di|du|da|das|dos|do|van|von|vom|el|al|bin|ibn|abd|abu|la|le|les|lo|den|der|ter|ten|op|het)'
         r'(?:[\s\-]+(?:de|del|della|di|du|da|das|dos|do|van|von|vom|el|al|bin|ibn|abd|abu|la|le|les|lo|den|der|ter|ten|op|het))*'
-        r'[\s\-]+[A-Z][a-zA-Zà-öø-ÿ\'\-]+\s*,'
+        r'[\s\-]+[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+\s*,'
         # Digit-prefixed org: "3ie (2022)"
         r'|\d+[a-zA-Z]+\s*\(\d{4}'
         r')',
     )
 
     # Matches both mixed-case org starts ("Department of ...") and abbreviation starts ("GBD 2021 ...", "WHO ...")
-    org_name_pattern = re.compile(r'^(?:[A-Z][a-zA-Zà-öø-ÿ\'\-]+|[A-Z]{2,})\s+(?:[A-Z]|\d)')
+    org_name_pattern = re.compile(r'^(?:[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'\-]+|[A-Z\u00C0-\u00D6\u00D8-\u00DD]{2,})\s+(?:[A-Z]|\d)')
 
     continuation_pattern = re.compile(
         r'^(?:'
@@ -440,15 +559,15 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
     demerge_pattern = re.compile(
         r'(?:(?<=pdf)|(?<=html)|(?<=org)|(?<=\d)|(?<=/))[.]?\s+'
         r'(?='
-        r'(?:(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'-]+'
-        r'\s*,?\s*(?:[A-Z][A-Z]?\.|[A-Z][A-Z]?[A-Z]?(?=\s*,|\s+&|\s+and|\s+et))'
+        r'(?:(?:[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'-]+|[a-z][a-z]+)[ \u00a0]+)*[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF\'-]+'
+        r'\s*,?\s*(?:[A-Z\u00C0-\u00D6\u00D8-\u00DD][A-Z\u00C0-\u00D6\u00D8-\u00DD]?\.|[A-Z\u00C0-\u00D6\u00D8-\u00DD][A-Z\u00C0-\u00D6\u00D8-\u00DD]?[A-Z\u00C0-\u00D6\u00D8-\u00DD]?(?=\s*,|\s+&|\s+and|\s+et))'
         r'|\[\d+\]'
         r'|\d+\.\s+[A-Z]'
         # Demerge at all-caps abbreviation boundaries: "...doi GBD 2021 Diabetes"
-        r'|[A-Z]{2,}\s+\d'
+        r'|[A-Z\u00C0-\u00D6\u00D8-\u00DD]{2,}\s+\d'
         # Demerge at org-name boundaries: "Nursing and Midwifery Council (NMC). (2018)."
         # Matches Title-Case multi-word name, optional (ABBR), then (YYYY).
-        r'|(?:[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[\.,]?\s*\(\d{4})'
+        r'|(?:[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z\u00C0-\u00D6\u00D8-\u00DD][a-zA-Z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF]+(?:\s+[A-Za-z\u00C0-\u00D6\u00D8-\u00DD\u00E0-\u00F6\u00F8-\u00FF]+)*\s*(?:\([A-Z]+\))?\s*[.,]?\s*\(\d{4})'
         r')'
     )
     demerged_refs = []
@@ -485,8 +604,11 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
     safety_split_pattern = re.compile(
         r'(?<=\.)\s+'                  # split after a period + whitespace
         r'(?='
-        # Standard author start: "Smith, A." / "Van der Berg, A."
-        r'(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,?\s*[A-Z][A-Z]?\.)'
+        # Standard author start: "Smith, A." / "Cu, A." / "Smith A."
+        # Requires comma-or-whitespace before the initial to avoid false
+        # positives on abbreviations like "GOV.UK" where the period is part
+        # of the abbreviation (no space between "GOV" and ".UK").
+        r'(?:[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+(?:\s*,\s+|\s+)[A-Z][A-Z]?\.)'
         # OR lowercase-prefix surname start: "de Vries, A."
         r'|(?:(?:de|del|della|di|du|da|van|von|el|al|bin|ibn|la|le|den|der|ter|ten)\s+[A-Z][a-zA-Z\u00e0-\u00f6\u00f8-\u00ff\'\-]+\s*,)'
         # OR org/abbreviation start with year within 150 chars
@@ -497,8 +619,15 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
         r'|(?:\[\d+\])'
         r'|(?:\d+\.\s+[A-Z])'
         # OR org-name start: "Nursing and Midwifery Council (NMC). (2018)"
-        r'|(?:[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[\.,]?\s*\(\d{4})'
+        r'|(?:[A-Z][a-zA-Z]+(?:\s+(?:and|for|of|the|in|on|&)\s+|\s+)[A-Z][a-zA-Z]+(?:\s+[A-Za-z]+)*\s*(?:\([A-Z]+\))?\s*[.,]?\s*\(\d{4})'
         r')'
+    )
+    # Pattern to detect fragments that start with "Available at", "Accessed",
+    # URLs, etc. — these are NOT standalone references and should be merged back.
+    accessed_only_year = re.compile(
+        r'^\s*(?:Available\s+at|Accessed|Retrieved|https?://)'
+        r'|^\s*\(?Accessed',
+        re.IGNORECASE,
     )
     final_refs = []
     for ref in atomic_refs:
@@ -515,7 +644,12 @@ def _split_ref_section_to_atomic(ref_section: str) -> list:
                         # Previous chunk has no year — merge back
                         rebuilt[-1] = rebuilt[-1] + ' ' + p
                     else:
-                        rebuilt.append(p)
+                        # If this fragment starts with "Available at" / URL /
+                        # "Accessed" it's a continuation, not a new reference.
+                        if rebuilt and accessed_only_year.match(p):
+                            rebuilt[-1] = rebuilt[-1] + ' ' + p
+                        else:
+                            rebuilt.append(p)
                 final_refs.extend(r for r in rebuilt if len(r) > 20)
             else:
                 final_refs.append(ref)

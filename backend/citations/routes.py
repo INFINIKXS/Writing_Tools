@@ -163,11 +163,14 @@ async def verify_citations(file: UploadFile = File(...)):
             matched = len(verification.get("confirmed_matches", []))
             unmatched_cit = len(verification.get("unmatched_citations", []))
             unmatched_ref = len(verification.get("unmatched_references", []))
+            disambig_warnings = len(verification.get("disambiguation_warnings", []))
             summary_parts = [f"{matched} citations matched to references"]
             if unmatched_cit:
                 summary_parts.append(f"{unmatched_cit} citations without matching references")
             if unmatched_ref:
                 summary_parts.append(f"{unmatched_ref} references not cited in text")
+            if disambig_warnings:
+                summary_parts.append(f"{disambig_warnings} author-year disambiguation issue(s)")
             analysis["summary"] = ". ".join(summary_parts) + "."
 
             # Stage 6: Extract verbatim references from source document
