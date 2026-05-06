@@ -5,13 +5,14 @@ import io
 import re
 import json
 import difflib
+import asyncio
 
 import requests
 from PyPDF2 import PdfReader
 from docx import Document
 
 from core.gemini import get_client, gemini_request_with_retry
-from utils.text_utils import classify_source_type
+from utils.text_utils import classify_source_type, extract_doi, extract_all_dois
 
 
 def perform_pubmed_lookup(doi: str, metadata: dict, field_sources: dict, expected_title: str = None) -> bool:
@@ -214,19 +215,11 @@ def perform_crossref_lookup(doi: str, metadata: dict, field_sources: dict, expec
     return False
 
 
-async def extract_pdf_metadata(file_bytes: bytes) -> dict:
-    """
-    Extract metadata from a PDF file using PDF properties + first-3-page text parsing.
-    Enrichment priority: CrossRef DOI > Python regex > Gemini AI fallback.
-    """
-    metadata = {
-        "authors": None, "title": None, "year": None,
-        "source": None, "doi": None, "url": None,
-        "volume": None, "issue": None, "pages": None,
-        "publisher": None, "type": "Other",
-    }
-    field_sources = {}
-    
+def _extract_pdf_metadata_sync(file_bytes: bytes, metadata: dict, field_sources: dict) -> tuple:
+    regex_dois = []
+    first_pages_text = ''
+    api_success = False
+
     with io.BytesIO(file_bytes) as f:
         reader = PdfReader(f)
         
@@ -270,17 +263,8 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
         
         regex_dois = []
         if first_pages_text.strip():
-            # DOI extraction
-            all_doi_matches = re.findall(
-                r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)?(10\.\d{4,}/[a-zA-Z0-9.\-_/:()\\[\]]+)',
-                first_pages_text, re.IGNORECASE
-            )
-            if all_doi_matches:
-                for match in all_doi_matches:
-                    clean_doi = match.rstrip('].;,()')
-                    clean_doi = re.sub(r'(?i)(Research|Article|Review|Copyright|Downloaded)\b.*$', '', clean_doi)
-                    if clean_doi not in regex_dois:
-                        regex_dois.append(clean_doi)
+            # DOI extraction — uses centralised robust extractor
+            regex_dois = extract_all_dois(first_pages_text)
             
             if regex_dois:
                 metadata["doi"] = regex_dois[0]
@@ -369,6 +353,26 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
         api_success = perform_pubmed_lookup(metadata["doi"], metadata, field_sources, expected_title=expected_title_guard)
         if not api_success:
             api_success = perform_crossref_lookup(metadata["doi"], metadata, field_sources)
+    
+    
+    return regex_dois, first_pages_text, api_success
+
+async def extract_pdf_metadata(file_bytes: bytes) -> dict:
+    """
+    Extract metadata from a PDF file using PDF properties + first-3-page text parsing.
+    Enrichment priority: CrossRef DOI > Python regex > Gemini AI fallback.
+    """
+    metadata = {
+        "authors": None, "title": None, "year": None,
+        "source": None, "doi": None, "url": None,
+        "volume": None, "issue": None, "pages": None,
+        "publisher": None, "type": "Other",
+    }
+    field_sources = {}
+    
+    regex_dois, first_pages_text, api_success = await asyncio.to_thread(
+        _extract_pdf_metadata_sync, file_bytes, metadata, field_sources
+    )
     
     metadata["crossref_failed"] = not api_success
     
@@ -648,9 +652,9 @@ def extract_docx_metadata(file_bytes: bytes) -> dict:
             metadata["year"] = str(props.created.year)
         
         full_text = '\n'.join(p.text for p in doc.paragraphs[:5])
-        doi_match = re.search(r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(\S+?)(?:\s|$)', full_text, re.IGNORECASE)
-        if doi_match:
-            metadata["doi"] = doi_match.group(1).rstrip('.,;)')
+        docx_doi = extract_doi(full_text)
+        if docx_doi:
+            metadata["doi"] = docx_doi
         
         if not metadata["title"]:
             lines = [p.text.strip() for p in doc.paragraphs if p.text.strip()]

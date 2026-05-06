@@ -6,20 +6,106 @@ import unicodedata
 from difflib import SequenceMatcher
 
 
-def extract_doi(ref_string):
-    """Extract and normalise DOI from a reference string."""
-    m = re.search(
-        r'\bdoi[:\s]*'           # "doi:" or "doi " prefix
-        r'(10\.\d{4,9}'         # DOI prefix: 10.XXXX
-        r'/[^\s,;\]]+)',         # DOI suffix
-        ref_string,
-        re.IGNORECASE
-    )
+"""
+Comprehensive DOI regex — matches ALL known academic DOI formats.
+
+The pattern is used in two modes:
+  1. PREFIXED mode (with a prefix like "doi:", "doi.org/", etc.) — high confidence.
+  2. BARE mode (just "10.XXXX/...") — used as fallback when no prefix is found.
+
+Known URL prefixes that precede a DOI:
+  - https://doi.org/10.XXXX/...             (standard resolver)
+  - https://dx.doi.org/10.XXXX/...          (legacy resolver)
+  - https://search.informit.org/doi/10.XXXX/...  (Informit)
+  - https://hdl.handle.net/10.XXXX/...      (Handle System)
+  - https://www.tandfonline.com/doi/full/10.XXXX/...
+  - https://onlinelibrary.wiley.com/doi/10.XXXX/...
+  - https://link.springer.com/article/10.XXXX/...
+  - https://journals.sagepub.com/doi/10.XXXX/...
+  - https://www.sciencedirect.com/.../10.XXXX/...
+  - doi: 10.XXXX/...
+  - DOI: 10.XXXX/...
+  - doi 10.XXXX/...
+
+DOI suffix character class (per CrossRef spec):
+  a-zA-Z0-9  .-_/:()
+  Also seen in the wild: [], ;, #, @, !, ~, *, +, <, >, {}
+  We use a conservative set and strip trailing junk.
+"""
+
+# ── Core DOI suffix pattern (shared across all regexes) ──
+_DOI_SUFFIX = r'[a-zA-Z0-9.\-_/:()\\[\]<>#@!~*+]+'
+
+# ── Prefixed DOI pattern — matches any known prefix before 10.XXXX/... ──
+_DOI_PREFIXED_RE = re.compile(
+    r'(?:'
+    r'(?:https?://[^\s/]+/(?:[^\s/]+/)*)'   # Any URL with path segments ending at the DOI
+    r'|'
+    r'(?:\bdoi[:\s]+)'                       # "doi:" or "doi " text prefix
+    r'|'
+    r'(?:\bDOI[:\s]+)'                       # "DOI:" explicit
+    r')'
+    r'(10\.\d{4,9}/' + _DOI_SUFFIX + r')',
+    re.IGNORECASE,
+)
+
+# ── Bare DOI pattern — matches raw "10.XXXX/..." without any prefix ──
+_DOI_BARE_RE = re.compile(
+    r'\b(10\.\d{4,9}/' + _DOI_SUFFIX + r')',
+    re.IGNORECASE,
+)
+
+# ── Words/fragments that should never appear inside a real DOI suffix ──
+_DOI_JUNK_TAIL_RE = re.compile(
+    r'(?i)(?:Research|Article|Review|Copyright|Downloaded|Published|Available|Accessed|Retrieved)\b.*$'
+)
+
+
+def _clean_doi(raw: str) -> str:
+    """Normalise and clean a raw DOI match."""
+    doi = raw.strip()
+    # Strip trailing punctuation that isn't part of the DOI
+    doi = doi.rstrip('.,;:)\'"]}> \t')
+    # Remove garbage words that PDF text extractors append
+    doi = _DOI_JUNK_TAIL_RE.sub('', doi).rstrip('.,;:) ')
+    # Lowercase (DOIs are case-insensitive)
+    return doi.lower()
+
+
+def extract_doi(ref_string: str) -> str | None:
+    """
+    Extract and normalise a single DOI from a reference string.
+    Tries prefixed patterns first (high confidence), then bare "10.XXXX/..." fallback.
+    """
+    m = _DOI_PREFIXED_RE.search(ref_string)
     if m:
-        # Normalise: lowercase, strip trailing punctuation
-        doi = m.group(1).lower().rstrip('.,;)')
-        return doi
+        return _clean_doi(m.group(1))
+    m = _DOI_BARE_RE.search(ref_string)
+    if m:
+        return _clean_doi(m.group(1))
     return None
+
+
+def extract_all_dois(text: str) -> list[str]:
+    """
+    Extract ALL unique DOIs from a block of text (e.g. first 3 pages of a PDF).
+    Returns a deduplicated list in order of appearance.
+    """
+    seen = set()
+    results = []
+    # First pass: prefixed DOIs (high confidence)
+    for m in _DOI_PREFIXED_RE.finditer(text):
+        doi = _clean_doi(m.group(1))
+        if doi and doi not in seen:
+            seen.add(doi)
+            results.append(doi)
+    # Second pass: bare DOIs
+    for m in _DOI_BARE_RE.finditer(text):
+        doi = _clean_doi(m.group(1))
+        if doi and doi not in seen:
+            seen.add(doi)
+            results.append(doi)
+    return results
 
 
 def normalise_text(text):

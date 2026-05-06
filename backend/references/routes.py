@@ -15,6 +15,7 @@ from references.parser import FormatRequest, parse_raw_reference
 from citations.formatting import format_reference
 from references.matcher import parse_reference_list, match_references_to_pdfs, extract_pdf_metadata_fast, parse_raw_reference_fast
 from references.ref_list_verifier import detect_style, verify_single_reference
+from utils.text_utils import extract_doi
 from core.config import API_KEY, KEY_MANAGER_AVAILABLE, get_api_key_manager
 
 router = APIRouter()
@@ -33,9 +34,9 @@ async def extract_reference(file: UploadFile = File(...), style: str = "harvard"
         if magic[:4] == b'%PDF':
             metadata = await extract_pdf_metadata(file_bytes)
         elif magic[:2] == b'PK':
-            metadata = extract_docx_metadata(file_bytes)
+            metadata = await asyncio.to_thread(extract_docx_metadata, file_bytes)
         elif magic[:4] == b'\xd0\xcf\x11\xe0':
-            text = extract_doc_text(file_bytes)
+            text = await asyncio.to_thread(extract_doc_text, file_bytes)
             metadata = {
                 "authors": None, "title": file.filename.rsplit('.', 1)[0],
                 "year": None, "source": None, "doi": None, "url": None,
@@ -43,9 +44,9 @@ async def extract_reference(file: UploadFile = File(...), style: str = "harvard"
                 "publisher": None, "type": "Other",
             }
             if text:
-                doi_match = re.search(r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(\S+?)(?:\s|$)', text, re.IGNORECASE)
-                if doi_match:
-                    metadata["doi"] = doi_match.group(1).rstrip('.,;)')
+                found_doi = extract_doi(text)
+                if found_doi:
+                    metadata["doi"] = found_doi
                 year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
                 if year_match:
                     metadata["year"] = year_match.group(0)

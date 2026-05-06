@@ -776,8 +776,7 @@ export default function LibraryView() {
             </div>
 
             {/* Generator Sub-View */}
-            {activeSubTab === 'generator' && (
-                <div className="flex gap-3 flex-1 min-h-0 min-w-0 w-full">
+            <div style={activeSubTab !== 'generator' ? { display: 'none' } : undefined} className="flex gap-3 flex-1 min-h-0 min-w-0 w-full">
                     {/* Upload Panel — fills height */}
                     <div ref={uploadPanelRef} className="glass-card flex flex-col overflow-hidden w-[340px] shrink-0 self-start border-l-4 border-l-purple-500/50 max-w-[40vw]">
                         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
@@ -875,6 +874,20 @@ export default function LibraryView() {
                                 {completed.length > 0 && <span className="text-[10px] font-bold text-neutral-500 bg-white/5 px-2 py-0.5 rounded-full">{completed.length}</span>}
                             </div>
                             <div className="flex items-center gap-2">
+                                {errors.length > 0 && (
+                                    <button
+                                        onClick={() => {
+                                            for (const r of errors) {
+                                                setResults(prev => prev.map(x => x.id === r.id ? { ...x, loading: true, error: null } : x));
+                                                processFile(r.file, r.id);
+                                            }
+                                        }}
+                                        className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 rounded-lg text-red-400 hover:text-red-300 transition-all active:scale-95"
+                                    >
+                                        <RefreshCw size={12} />
+                                        Retry {errors.length > 1 ? `All (${errors.length})` : 'Failed'}
+                                    </button>
+                                )}
                                 {completed.length > 1 && (
                                     <button onClick={copyAll} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2.5 py-1.5 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-neutral-400 hover:text-white transition-all active:scale-95">
                                         {copiedAll ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
@@ -910,7 +923,20 @@ export default function LibraryView() {
                                         <p className="text-xs text-red-400 font-medium">{r.fileName}</p>
                                         <p className="text-[10px] text-red-400/70 mt-0.5">{r.error}</p>
                                     </div>
-                                    <button onClick={() => removeResult(r.id)} className="text-red-400/50 hover:text-red-300"><X size={12} /></button>
+                                    <div className="flex items-center gap-1.5 shrink-0">
+                                        <button
+                                            onClick={() => {
+                                                setResults(prev => prev.map(x => x.id === r.id ? { ...x, loading: true, error: null } : x));
+                                                processFile(r.file, r.id);
+                                            }}
+                                            className="flex items-center gap-1 text-[10px] font-bold uppercase tracking-wider px-2 py-1 bg-white/5 hover:bg-white/10 border border-white/10 rounded-lg text-neutral-400 hover:text-white transition-all active:scale-95"
+                                            title="Retry extraction"
+                                        >
+                                            <RefreshCw size={10} />
+                                            Retry
+                                        </button>
+                                        <button onClick={() => removeResult(r.id)} className="text-red-400/50 hover:text-red-300 p-1"><X size={12} /></button>
+                                    </div>
                                 </div>
                             ))}
 
@@ -961,13 +987,17 @@ export default function LibraryView() {
                         </div>
                     </div>
                 </div>
-            )}
+
 
             {/* Verifier Sub-View */}
-            {activeSubTab === 'verifier' && <VerifierSubView />}
+            <div style={activeSubTab !== 'verifier' ? { display: 'none' } : undefined} className="flex-1 min-h-0 flex flex-col">
+                <VerifierSubView />
+            </div>
 
             {/* Formatter Sub-View */}
-            {activeSubTab === 'formatter' && <FormatterView />}
+            <div style={activeSubTab !== 'formatter' ? { display: 'none' } : undefined} className="flex-1 min-h-0 flex flex-col">
+                <FormatterView />
+            </div>
         </div>
     );
 }

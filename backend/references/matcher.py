@@ -12,6 +12,8 @@ from typing import List, Optional
 
 from PyPDF2 import PdfReader
 
+from utils.text_utils import extract_doi, extract_all_dois
+
 
 def extract_pdf_metadata_fast(file_bytes: bytes) -> dict:
     """
@@ -57,15 +59,10 @@ def extract_pdf_metadata_fast(file_bytes: bytes) -> dict:
             first_page_text += (reader.pages[i].extract_text() or '') + '\n'
 
         if first_page_text.strip():
-            # DOI
-            doi_matches = re.findall(
-                r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)?(10\.\d{4,}/[a-zA-Z0-9.\-_/:()\\[\]]+)',
-                first_page_text, re.IGNORECASE
-            )
-            if doi_matches:
-                clean_doi = doi_matches[0].rstrip('].;,()')
-                clean_doi = re.sub(r'(?i)(Research|Article|Review|Copyright|Downloaded)\b.*$', '', clean_doi)
-                metadata["doi"] = clean_doi
+            # DOI — uses centralised robust extractor
+            all_dois = extract_all_dois(first_page_text)
+            if all_dois:
+                metadata["doi"] = all_dois[0]
 
             # Title from text (if PDF metadata title was missing or suspicious)
             if not metadata["title"] or len(metadata["title"]) < 10 or ' ' not in metadata["title"]:
@@ -129,13 +126,10 @@ def parse_raw_reference_fast(ref_text: str) -> dict:
         "doi": None, "source": None, "_original": ref_text,
     }
 
-    # DOI
-    doi_match = re.search(
-        r'(?:doi[:\s]*|https?://(?:dx\.)?doi\.org/)(10\.\d{4,}/[a-zA-Z0-9.\-_/:()]+)',
-        ref_text, re.IGNORECASE
-    )
-    if doi_match:
-        metadata["doi"] = doi_match.group(1).rstrip('.,;)')
+    # DOI — uses centralised robust extractor
+    found_doi = extract_doi(ref_text)
+    if found_doi:
+        metadata["doi"] = found_doi
 
     # Year
     year_match = re.search(r'\b((?:19|20)\d{2})\b', ref_text)
