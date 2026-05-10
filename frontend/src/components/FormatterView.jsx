@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useRef } from 'react';
-import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2, ChevronDown, AlertTriangle, Shield, ShieldCheck, ShieldAlert, Edit3 } from 'lucide-react';
+import { Sparkles, Copy, Check, ArrowRightLeft, Quote, Loader2, ChevronDown, AlertTriangle, Shield, ShieldCheck, ShieldAlert, Edit3, StopCircle } from 'lucide-react';
 
 const STYLES = [
     { id: 'harvard', label: 'Harvard', desc: 'Cite Them Right (10th ed.)' },
@@ -61,18 +61,16 @@ export default function FormatterView() {
                     try {
                         const event = JSON.parse(line.slice(6));
 
-                        if (event.stage === 'processing') {
-                            setProgress({ current: (event.data?.index ?? 0) + 1, total: refs.length });
-                        }
-
                         if (event.stage === 'ref_result' && event.data?.result) {
                             const result = event.data.result;
                             setResults(prev => {
                                 const next = [...prev];
                                 next[event.data.index] = result;
+                                // Update progress based on how many slots are filled
+                                const filled = next.filter(Boolean).length;
+                                setProgress({ current: filled, total: refs.length });
                                 return next;
                             });
-                            setProgress({ current: (event.data.index ?? 0) + 1, total: refs.length });
                         }
 
                         if (event.stage === 'complete') {
@@ -158,7 +156,7 @@ export default function FormatterView() {
         }));
         setResults(prev => {
             const map = new Map(updated.map((u, i) => [toReformat[i].original, u]));
-            return prev.map(r => map.get(r.original) || r);
+            return prev.map(r => r ? (map.get(r.original) || r) : r);
         });
     }, [results]);
 
@@ -232,13 +230,24 @@ export default function FormatterView() {
                                     value={inputText}
                                     onChange={(e) => setInputText(e.target.value)}
                                 />
-                                <button onClick={handleFormat} disabled={loading || !inputText.trim()} className="btn-accent shrink-0 mt-4 w-full py-3.5 flex items-center justify-center gap-2 rounded-xl text-sm">
-                                    {loading ? (
-                                        <><Loader2 size={18} className="animate-spin" /> {progress ? `Processing ${progress.current}/${progress.total}...` : 'Starting...'}</>
-                                    ) : (
-                                        <><Sparkles size={18} /> Format to {currentStyle.label} Style</>
+                                <div className="flex gap-2 shrink-0 mt-4">
+                                    <button onClick={handleFormat} disabled={loading || !inputText.trim()} className="btn-accent flex-1 py-3.5 flex items-center justify-center gap-2 rounded-xl text-sm">
+                                        {loading ? (
+                                            <><Loader2 size={18} className="animate-spin" /> {progress ? `Processing ${progress.current}/${progress.total}...` : 'Starting...'}</>
+                                        ) : (
+                                            <><Sparkles size={18} /> Format to {currentStyle.label} Style</>
+                                        )}
+                                    </button>
+                                    {loading && (
+                                        <button
+                                            onClick={() => abortRef.current?.abort()}
+                                            className="px-4 py-3.5 rounded-xl text-sm font-bold bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 hover:text-red-300 transition-all active:scale-95"
+                                            title="Stop formatting"
+                                        >
+                                            <StopCircle size={18} />
+                                        </button>
                                     )}
-                                </button>
+                                </div>
                             </>
                         ) : (
                             <div className="flex flex-col flex-1 min-h-0">

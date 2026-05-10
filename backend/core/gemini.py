@@ -18,7 +18,7 @@ RETRY_BASE_DELAY = 2  # seconds
 # Each entry: (model_id, thinking_level or None)
 FALLBACK_MODELS = [
     ('gemini-3.1-flash-lite-preview', 'low'),
-    ('gemini-2.5-pro', None),
+    ('gemini-3.1-flash-lite', None),
 ]
 
 

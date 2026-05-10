@@ -30,11 +30,25 @@ from pathlib import Path
 from typing import Optional
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from docx import Document
 
 from utils.text_utils import classify_source_type, extract_doi, extract_all_dois
 
 logger = logging.getLogger(__name__)
+
+# ── Global HTTP Session with Connection Pooling ────────────────────────────────
+_http_session = requests.Session()
+_retries = Retry(
+    total=3,
+    backoff_factor=1,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["GET", "POST"]
+)
+_adapter = HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=10)
+_http_session.mount("http://", _adapter)
+_http_session.mount("https://", _adapter)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 GROBID_URL      = os.getenv("GROBID_URL", "http://localhost:8070")
@@ -324,6 +338,17 @@ def _validate_api_result(
     api_authors = api_result.get("authors") or []
     api_year    = api_result.get("year")
 
+    # Container-level records (journals, book-series) typically lack authors.
+    # If the API returned zero authors AND no year, the DOI likely points to a
+    # container, not an article.  Reject to prevent false verification.
+    if not api_authors and not api_year:
+        logger.info(
+            "API result for DOI %s has no authors and no year — likely a "
+            "container-level record.  Rejecting.",
+            api_result.get("doi", "?"),
+        )
+        return False
+
     # Extract API author surnames ("Smith, J." → "Smith")
     api_surnames = [a.split(',')[0].strip() for a in api_authors if ',' in a]
 
@@ -357,7 +382,32 @@ def _validate_api_result(
         if sim >= threshold:
             passes.append(("title", sim))
         else:
-            failures.append(("title", sim))
+            # ── HARD VERIFICATION ──
+            # If the local title is completely corrupted, similarity will fail.
+            # As a bulletproof fallback, we check if the true API title is physically
+            # present in the raw PDF text (ignoring all whitespace and punctuation).
+            # This completely prevents AI hallucination.
+            try:
+                from pypdf import PdfReader
+                reader = PdfReader(pdf_path)
+                pdf_text = ""
+                for i, page in enumerate(reader.pages):
+                    if i >= 2: break
+                    pdf_text += (page.extract_text() or "") + "\n"
+                
+                clean_api_title = re.sub(r'[^\w]', '', api_title.lower())
+                clean_pdf_text = re.sub(r'[^\w]', '', pdf_text.lower())
+                
+                # Only trust it if the title is reasonably long (> 15 chars) to prevent 
+                # false positive matches on short generic strings.
+                if len(clean_api_title) > 15 and clean_api_title in clean_pdf_text:
+                    logger.info("Title mismatch OVERRIDDEN: True API title found perfectly in raw PDF text.")
+                    passes.append(("title_in_pdf", 1.0))
+                else:
+                    failures.append(("title", sim))
+            except Exception as e:
+                logger.warning("Failed to perform deep PDF text search for title: %s", e)
+                failures.append(("title", sim))
 
     # 2. Author surname overlap (at least 1 surname in common)
     if combined_surnames and api_surnames:
@@ -425,7 +475,7 @@ def _validate_api_result(
 def _grobid_is_alive() -> bool:
     """Ping the GROBID server. Returns True if it responds."""
     try:
-        r = requests.get(f"{GROBID_URL}/api/isalive", timeout=5)
+        r = _http_session.get(f"{GROBID_URL}/api/isalive", timeout=5)
         return r.status_code == 200 and r.text.strip().lower() == "true"
     except Exception:
         return False
@@ -501,7 +551,7 @@ def _extract_via_grobid(pdf_path: str) -> dict:
 
     try:
         with open(pdf_path, "rb") as fh:
-            response = requests.post(
+            response = _http_session.post(
                 f"{GROBID_URL}/api/processHeaderDocument",
                 files={"input": (Path(pdf_path).name, fh, "application/pdf")},
                 data={"consolidateHeader": "0"},   # 0 = local parsing only, no external API calls
@@ -560,12 +610,23 @@ def crossref_lookup(doi: str) -> Optional[dict]:
     """
     try:
         url = f"{CROSSREF_API}/{doi}"
-        r   = requests.get(url, timeout=REQUEST_TIMEOUT,
+        r   = _http_session.get(url, timeout=REQUEST_TIMEOUT,
                            headers={"User-Agent": "metadata-extractor/1.0"})
         if r.status_code != 200:
             return None
 
         item = r.json().get("message", {})
+
+        # ── Reject container-level DOIs (journal, journal-issue) ─────────
+        # These DOIs point to a journal/series, not an individual article.
+        # Accepting them produces false "verified" status with wrong metadata.
+        cr_type = item.get("type", "")
+        if cr_type in ("journal", "journal-issue", "journal-volume", "book-series", "report-series"):
+            logger.info(
+                "CrossRef DOI %s is a container-level record (type=%s), not an article. Rejecting.",
+                doi, cr_type,
+            )
+            return None
         authors = []
         for a in item.get("author", []):
             given  = a.get("given", "")
@@ -652,7 +713,7 @@ def _pubmed_search_by_title(title: str) -> Optional[dict]:
     Applies the same strict similarity checks as the CrossRef search.
     """
     try:
-        search_r = requests.get(
+        search_r = _http_session.get(
             PUBMED_SEARCH,
             params={"db": "pubmed", "term": f"{title}[Title]", "retmode": "json", "retmax": 3},
             timeout=REQUEST_TIMEOUT,
@@ -665,7 +726,7 @@ def _pubmed_search_by_title(title: str) -> Optional[dict]:
             return None
 
         # Fetch XML for the top PMIDs
-        fetch_r = requests.get(
+        fetch_r = _http_session.get(
             PUBMED_FETCH,
             params={"db": "pubmed", "id": ",".join(pmids), "retmode": "xml"},
             timeout=REQUEST_TIMEOUT,
@@ -708,7 +769,7 @@ def _crossref_search_by_title(title: str) -> Optional[dict]:
       - 0.80 + prefix check for truncated titles (e.g. PDF line-wrap cut-offs)
     """
     try:
-        r = requests.get(
+        r = _http_session.get(
             CROSSREF_API,
             params={"query.title": title, "rows": 3, "select": "DOI,title,author,issued"},
             timeout=REQUEST_TIMEOUT,
@@ -766,7 +827,7 @@ def pubmed_lookup(doi: str) -> Optional[dict]:
     """
     try:
         # Step 1 — search for the PMID
-        search_r = requests.get(
+        search_r = _http_session.get(
             PUBMED_SEARCH,
             params={"db": "pubmed", "term": f"{doi}[doi]", "retmode": "json", "retmax": 1},
             timeout=REQUEST_TIMEOUT,
@@ -776,7 +837,7 @@ def pubmed_lookup(doi: str) -> Optional[dict]:
             return None
 
         # Step 2 — fetch the record
-        fetch_r = requests.get(
+        fetch_r = _http_session.get(
             PUBMED_FETCH,
             params={"db": "pubmed", "id": pmids[0], "retmode": "xml"},
             timeout=REQUEST_TIMEOUT,
@@ -936,6 +997,7 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
     logger.debug("After Layer 2 (regex): %s", meta)
 
     # ── Layer 3: GROBID — only if something is still missing ─────────────────
+    layer3 = {}
     if not _is_complete(meta):
         layer3 = _extract_via_grobid(pdf_path)
         _merge(meta, layer3)
@@ -982,58 +1044,92 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
     # _validate_api_result uses title, authors, and year as multi-signal checks.
     # It also does an aggressive PDF scan if the local layers found nothing.
 
-    # ── VERIFICATION & RESCUE LOOP ───────────────────────────────────────────
-    # Try PubMed first (cleaner metadata for biomedical), then CrossRef.
-    # If the extracted DOI is invalid, we clear it and try pdf2doi to rescue.
-    for attempt in range(2):
-        if meta.get("doi"):
-            # ── PubMed first ──
-            pubmed = pubmed_lookup(meta["doi"])
-            if pubmed:
-                if _validate_api_result(meta, pubmed, pdf_path):
-                    _merge(meta, pubmed, overwrite=True)
-                    meta["verification_status"] = "verified_pubmed"
-                    if "pubmed_verify" not in meta["extraction_layers"]:
-                        meta["extraction_layers"].append("pubmed_verify")
-                    logger.debug("After PubMed verification: %s", meta)
-                    break
-                else:
-                    logger.info(
-                        "PubMed result for DOI %s failed identity validation.",
-                        meta["doi"]
-                    )
+    # ── COLLECT ALL CANDIDATE DOIs ────────────────────────────────────────────
+    # Gather every DOI found across all extraction layers, deduplicate,
+    # then try each against the APIs.  The first DOI that validates wins —
+    # its API metadata (including DOI) overwrites the local record.
+    # Priority: text-extracted (regex/GROBID) > PDF embedded metadata.
+    candidate_dois = []
+    _seen_dois = set()
+    # Priority: text-extracted (regex) > GROBID > PDF embedded metadata
+    for doi_source in [layer2, layer3, layer1]:
+        d = doi_source.get("doi") if isinstance(doi_source, dict) else None
+        if d and d.lower() not in _seen_dois:
+            candidate_dois.append(d)
+            _seen_dois.add(d.lower())
+    # Also include whatever is currently in meta (in case a later layer set it)
+    if meta.get("doi") and meta["doi"].lower() not in _seen_dois:
+        candidate_dois.append(meta["doi"])
+        _seen_dois.add(meta["doi"].lower())
 
-            # ── CrossRef fallback ──
-            if meta.get("doi"):
-                crossref = crossref_lookup(meta["doi"])
-                if crossref:
-                    if _validate_api_result(meta, crossref, pdf_path):
-                        _merge(meta, crossref, overwrite=True)
-                        meta["verification_status"] = "verified_crossref"
-                        if "crossref_verify" not in meta["extraction_layers"]:
-                            meta["extraction_layers"].append("crossref_verify")
-                        logger.debug("After CrossRef verification: %s", meta)
-                        break
-                    else:
-                        logger.info(
-                            "CrossRef result for DOI %s failed identity validation. Clearing DOI.",
-                            meta["doi"]
-                        )
-                        meta["doi"] = None
+    logger.info("Candidate DOIs for verification: %s", candidate_dois)
 
-            if meta.get("doi"):
-                logger.info("APIs could not verify DOI: %s. Clearing it.", meta["doi"])
-                meta["doi"] = None
+    # ── VERIFICATION LOOP — try each candidate DOI ───────────────────────────
+    verified = False
+    for candidate_doi in candidate_dois:
+        logger.info("Trying DOI candidate: %s", candidate_doi)
 
-        if not meta.get("doi") and "pdf2doi" not in meta["extraction_layers"]:
+        # ── PubMed first (cleaner metadata for biomedical) ──
+        pubmed = pubmed_lookup(candidate_doi)
+        if pubmed:
+            if _validate_api_result(meta, pubmed, pdf_path):
+                _merge(meta, pubmed, overwrite=True)
+                meta["verification_status"] = "verified_pubmed"
+                if "pubmed_verify" not in meta["extraction_layers"]:
+                    meta["extraction_layers"].append("pubmed_verify")
+                logger.info("DOI %s VERIFIED via PubMed.", candidate_doi)
+                verified = True
+                break
+            else:
+                logger.info(
+                    "PubMed result for DOI %s failed identity validation.",
+                    candidate_doi,
+                )
+
+        # ── CrossRef fallback ──
+        crossref = crossref_lookup(candidate_doi)
+        if crossref:
+            if _validate_api_result(meta, crossref, pdf_path):
+                _merge(meta, crossref, overwrite=True)
+                meta["verification_status"] = "verified_crossref"
+                if "crossref_verify" not in meta["extraction_layers"]:
+                    meta["extraction_layers"].append("crossref_verify")
+                logger.info("DOI %s VERIFIED via CrossRef.", candidate_doi)
+                verified = True
+                break
+            else:
+                logger.info(
+                    "CrossRef result for DOI %s failed identity validation.",
+                    candidate_doi,
+                )
+
+    # ── pdf2doi rescue — if none of the candidates verified ──────────────────
+    if not verified:
+        meta["doi"] = None  # Clear any unverified DOI
+        if "pdf2doi" not in meta["extraction_layers"]:
             rescued = _rescue_doi_via_pdf2doi(pdf_path)
             if rescued:
                 meta["doi"] = rescued
                 meta["extraction_layers"].append("pdf2doi")
-                logger.debug("After Layer 4 (pdf2doi rescue): doi=%s", meta.get("doi"))
-                continue  # loop again to verify rescued DOI
+                logger.info("pdf2doi rescued DOI: %s — verifying...", rescued)
 
-        break
+                # Try the rescued DOI
+                pubmed = pubmed_lookup(rescued)
+                if pubmed and _validate_api_result(meta, pubmed, pdf_path):
+                    _merge(meta, pubmed, overwrite=True)
+                    meta["verification_status"] = "verified_pubmed"
+                    meta["extraction_layers"].append("pubmed_verify")
+                    verified = True
+                else:
+                    crossref = crossref_lookup(rescued)
+                    if crossref and _validate_api_result(meta, crossref, pdf_path):
+                        _merge(meta, crossref, overwrite=True)
+                        meta["verification_status"] = "verified_crossref"
+                        meta["extraction_layers"].append("crossref_verify")
+                        verified = True
+                    else:
+                        logger.info("pdf2doi DOI %s also failed verification. Clearing.", rescued)
+                        meta["doi"] = None
 
     # ── Layer 5b: Title search fallback — if still no doi but have title ──────
     if not meta.get("doi") and meta.get("title") and meta["verification_status"] == "not_found":
@@ -1137,7 +1233,7 @@ def extract_docx_metadata(file_bytes: bytes) -> dict:
     if metadata["doi"]:
         try:
             crossref_url = f"https://api.crossref.org/works/{metadata['doi']}"
-            resp = requests.get(crossref_url, timeout=10, headers={
+            resp = _http_session.get(crossref_url, timeout=10, headers={
                 'User-Agent': 'WritingTools/1.0 (mailto:support@paradoxlabs.com)'
             })
             if resp.status_code == 200:

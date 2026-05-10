@@ -20,6 +20,13 @@ from core.config import API_KEY, KEY_MANAGER_AVAILABLE, get_api_key_manager
 
 router = APIRouter()
 
+# ── Concurrency control ──────────────────────────────────────────────────────
+# CrossRef and PubMed allow ~5 requests/second per polite client, but 
+# aggressive connection pooling can cause them to drop SSL connections.
+# This semaphore gates concurrent metadata extraction / API verification
+# across ALL endpoints (generator, formatter, verifier) to a safer limit.
+_API_SEMAPHORE = asyncio.Semaphore(2)
+
 
 @router.post("/api/extract-reference")
 async def extract_reference(file: UploadFile = File(...), style: str = "harvard"):
@@ -31,33 +38,96 @@ async def extract_reference(file: UploadFile = File(...), style: str = "harvard"
     magic = file_bytes[:8]
     
     try:
-        if magic[:4] == b'%PDF':
-            metadata = await extract_pdf_metadata(file_bytes)
-        elif magic[:2] == b'PK':
-            metadata = await asyncio.to_thread(extract_docx_metadata, file_bytes)
-        elif magic[:4] == b'\xd0\xcf\x11\xe0':
-            text = await asyncio.to_thread(extract_doc_text, file_bytes)
-            metadata = {
-                "authors": None, "title": file.filename.rsplit('.', 1)[0],
-                "year": None, "source": None, "doi": None, "url": None,
-                "volume": None, "issue": None, "pages": None,
-                "publisher": None, "type": "Other",
-            }
-            if text:
-                found_doi = extract_doi(text)
-                if found_doi:
-                    metadata["doi"] = found_doi
-                year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
-                if year_match:
-                    metadata["year"] = year_match.group(0)
-        else:
-            raise HTTPException(status_code=400, detail="Unrecognized file format.")
+        async with _API_SEMAPHORE:
+            if magic[:4] == b'%PDF':
+                metadata = await extract_pdf_metadata(file_bytes)
+            elif magic[:2] == b'PK':
+                metadata = await asyncio.to_thread(extract_docx_metadata, file_bytes)
+            elif magic[:4] == b'\xd0\xcf\x11\xe0':
+                text = await asyncio.to_thread(extract_doc_text, file_bytes)
+                metadata = {
+                    "authors": None, "title": file.filename.rsplit('.', 1)[0],
+                    "year": None, "source": None, "doi": None, "url": None,
+                    "volume": None, "issue": None, "pages": None,
+                    "publisher": None, "type": "Other",
+                }
+                if text:
+                    found_doi = extract_doi(text)
+                    if found_doi:
+                        metadata["doi"] = found_doi
+                    year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
+                    if year_match:
+                        metadata["year"] = year_match.group(0)
+            else:
+                raise HTTPException(status_code=400, detail="Unrecognized file format.")
     except HTTPException:
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to read file: {str(e)}")
     
     result = format_reference(metadata, style)
+    return result
+
+
+@router.post("/api/retry-ai-doi")
+async def retry_ai_doi(
+    file: UploadFile = File(...), 
+    metadata: str = Form(...),
+    style: str = Form("harvard")
+):
+    """Fallback endpoint to use AI (Gemini) to find the DOI when standard parsers fail."""
+    import tempfile
+    import os
+    from references.ai_extractor import extract_metadata_with_ai
+    from references.metadata import crossref_lookup, pubmed_lookup, _validate_api_result, _merge
+
+    if not file.filename.lower().endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="AI extraction only supports PDFs.")
+    
+    local_meta = json.loads(metadata)
+    file_bytes = await file.read()
+    
+    fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+    try:
+        with os.fdopen(fd, 'wb') as f:
+            f.write(file_bytes)
+        
+        # 1. Ask Gemini for the metadata
+        ai_data = await extract_metadata_with_ai(tmp_path)
+        if not ai_data or not ai_data.get("doi"):
+            raise HTTPException(status_code=404, detail="AI could not find a DOI in the document.")
+            
+        candidate_doi = ai_data["doi"]
+        
+        # 2. Validation
+        # The validation layer will now verify the CrossRef title directly against the PDF text
+        # if the local_meta title is polluted, completely preventing AI hallucinations.
+        
+        verified = False
+        pubmed = pubmed_lookup(candidate_doi)
+        if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
+            _merge(local_meta, pubmed, overwrite=True)
+            local_meta["verification_status"] = "verified_pubmed"
+            if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+            verified = True
+        else:
+            crossref = crossref_lookup(candidate_doi)
+            if crossref and _validate_api_result(local_meta, crossref, tmp_path):
+                _merge(local_meta, crossref, overwrite=True)
+                local_meta["verification_status"] = "verified_crossref"
+                if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                    local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                verified = True
+                
+        if not verified:
+            raise HTTPException(status_code=400, detail=f"AI found DOI {candidate_doi}, but it failed CrossRef/PubMed identity verification.")
+            
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
+            
+    result = format_reference(local_meta, style)
     return result
 
 
@@ -90,48 +160,61 @@ async def format_references(req: FormatRequest):
 
         api_count = 0
         regex_count = 0
+        queue = asyncio.Queue()
+        tasks = []
 
-        for i, ref in enumerate(req.references):
-            yield event("processing", f"Processing reference {i + 1}/{total}...", data={"index": i})
-            await asyncio.sleep(0)
+        async def worker(i, ref):
+            """Process a single reference, gated by the global API semaphore."""
+            async with _API_SEMAPHORE:
+                try:
+                    metadata = await asyncio.to_thread(parse_raw_reference, ref)
+                    corrections = metadata.pop("corrections", [])
+                    api_verified = metadata.pop("api_verified", False)
+                    api_source = metadata.pop("api_source", None)
 
-            try:
-                # parse_raw_reference is synchronous (no AI) but does network I/O
-                metadata = await asyncio.to_thread(parse_raw_reference, ref)
-                corrections = metadata.pop("corrections", [])
-                api_verified = metadata.pop("api_verified", False)
-                api_source = metadata.pop("api_source", None)
+                    result = format_reference(metadata, req.style)
+                    result["original"] = ref
+                    result["corrections"] = corrections
+                    result["api_verified"] = api_verified
+                    result["api_source"] = api_source
+                    await queue.put((i, result, api_verified))
+                except Exception as e:
+                    await queue.put((i, {"original": ref, "error": str(e)}, False))
 
-                result = format_reference(metadata, req.style)
-                result["original"] = ref
-                result["corrections"] = corrections
-                result["api_verified"] = api_verified
-                result["api_source"] = api_source
+        try:
+            # Launch all workers concurrently (semaphore limits actual parallelism)
+            tasks = [asyncio.create_task(worker(i, ref)) for i, ref in enumerate(req.references)]
 
-                if api_verified:
+            # Consume results as they complete and stream SSE events
+            completed = 0
+            while completed < total:
+                i, result, verified = await queue.get()
+                completed += 1
+                if verified:
                     api_count += 1
-                else:
+                elif "error" not in result:
                     regex_count += 1
 
-                yield event("ref_result", f"Reference {i + 1}/{total} done.", data={
+                yield event("ref_result", f"Processed {completed}/{total}.", data={
                     "index": i,
                     "result": result,
                 })
-            except Exception as e:
-                yield event("ref_result", f"Reference {i + 1}/{total} failed.", data={
-                    "index": i,
-                    "result": {"original": ref, "error": str(e)},
-                })
 
-            await asyncio.sleep(0)
+            # Ensure all tasks finished cleanly
+            await asyncio.gather(*tasks)
 
-        yield event("complete", "All references processed.", data={
-            "summary": {
-                "total": total,
-                "api_verified": api_count,
-                "regex_only": regex_count,
-            }
-        })
+            yield event("complete", "All references processed.", data={
+                "summary": {
+                    "total": total,
+                    "api_verified": api_count,
+                    "regex_only": regex_count,
+                }
+            })
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            return
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
 
@@ -265,6 +348,7 @@ async def verify_reference_list(request: Request):
                 payload["data"] = data
             return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
+        tasks = []
         try:
             # ── 1. Split into individual references ──
             print(f"\n{'='*60}")
@@ -313,20 +397,49 @@ async def verify_reference_list(request: Request):
             yield event("style_detected", "Style determined.", data={"style_info": style_info})
             await asyncio.sleep(0)
 
-            # ── 3. Verify each reference (stream results one by one) ──
+            # ── 3. Verify each reference concurrently (stream results as they complete) ──
             total = len(raw_refs)
             verified_count = 0
             issues_count = 0
             unverifiable_count = 0
+            queue = asyncio.Queue()
 
-            for i, ref in enumerate(raw_refs):
-                print(f"\n{'─'*50}")
-                print(f"[RefVerifier] [{i+1}/{total}] Verifying:")
-                print(f"  Input: {ref[:120]}{'…' if len(ref) > 120 else ''}")
+            async def verify_worker(i, ref):
+                """Verify a single reference, gated by the global API semaphore."""
+                async with _API_SEMAPHORE:
+                    print(f"\n{'─'*50}")
+                    print(f"[RefVerifier] [{i+1}/{total}] Verifying:")
+                    print(f"  Input: {ref[:120]}{'…' if len(ref) > 120 else ''}")
 
-                yield event("verifying", f"Verifying reference {i + 1}/{total}…")
+                    ref_result = await asyncio.to_thread(verify_single_reference, ref, style)
 
-                ref_result = await asyncio.to_thread(verify_single_reference, ref, style)
+                    # Log result details
+                    status = ref_result.get("overall_status", "unverifiable")
+                    print(f"  DOI: {ref_result.get('doi', 'none')}")
+                    print(f"  API source: {ref_result.get('api_source', 'none')}")
+                    print(f"  Status: {status}")
+                    print(f"  Accuracy: {ref_result.get('accuracy_score', 0):.0%}")
+                    meta_issues = [mi for mi in ref_result.get('metadata_issues', []) if mi.get('status') != 'correct']
+                    if meta_issues:
+                        print(f"  Metadata issues:")
+                        for mi in meta_issues:
+                            print(f"    - {mi['field']}: {mi['status']} (user: '{mi.get('user_value', '')}' → correct: '{mi.get('correct_value', '')}')")
+                    fmt_issues = ref_result.get('formatting_issues', [])
+                    if fmt_issues:
+                        print(f"  Formatting issues:")
+                        for fi in fmt_issues:
+                            print(f"    - {fi['issue']}: {fi['detail']}")
+
+                    await queue.put((i, ref_result))
+
+            # Launch all verification workers concurrently
+            tasks = [asyncio.create_task(verify_worker(i, ref)) for i, ref in enumerate(raw_refs)]
+
+            # Consume results as they complete and stream SSE events
+            completed = 0
+            while completed < total:
+                i, ref_result = await queue.get()
+                completed += 1
 
                 status = ref_result.get("overall_status", "unverifiable")
                 if status == "verified":
@@ -336,28 +449,13 @@ async def verify_reference_list(request: Request):
                 else:
                     unverifiable_count += 1
 
-                # Log result details
-                print(f"  DOI: {ref_result.get('doi', 'none')}")
-                print(f"  API source: {ref_result.get('api_source', 'none')}")
-                print(f"  Status: {status}")
-                print(f"  Accuracy: {ref_result.get('accuracy_score', 0):.0%}")
-                meta_issues = [i for i in ref_result.get('metadata_issues', []) if i.get('status') != 'correct']
-                if meta_issues:
-                    print(f"  Metadata issues:")
-                    for mi in meta_issues:
-                        print(f"    - {mi['field']}: {mi['status']} (user: '{mi.get('user_value', '')}' → correct: '{mi.get('correct_value', '')}')")
-                fmt_issues = ref_result.get('formatting_issues', [])
-                if fmt_issues:
-                    print(f"  Formatting issues:")
-                    for fi in fmt_issues:
-                        print(f"    - {fi['issue']}: {fi['detail']}")
-
-                # Stream this result immediately to frontend
-                yield event("ref_result", f"Reference {i + 1}/{total} verified: {status}", data={
+                yield event("ref_result", f"Verified {completed}/{total}: {status}", data={
                     "index": i,
                     "result": ref_result,
                 })
-                await asyncio.sleep(0)
+
+            # Ensure all tasks finished cleanly
+            await asyncio.gather(*tasks)
 
             # ── 4. Summary ──
             summary_text = f"{verified_count} verified, {issues_count} with issues, {unverifiable_count} unverifiable"
@@ -374,6 +472,12 @@ async def verify_reference_list(request: Request):
                 },
             })
 
+        except asyncio.CancelledError:
+            for t in tasks:
+                t.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+            print(f"[RefVerifier] Cancelled by client.")
+            return
         except Exception as e:
             print(f"[RefVerifier] EXCEPTION: {type(e).__name__}: {e}")
             import traceback; traceback.print_exc()

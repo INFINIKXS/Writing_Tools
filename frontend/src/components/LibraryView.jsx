@@ -1,5 +1,5 @@
 import React, { useState, useRef, useCallback, useEffect } from 'react';
-import { Upload, Copy, Check, BookOpen, ChevronDown, FileText, Loader2, AlertCircle, X, ChevronRight, Trash2, ShieldCheck, ShieldAlert, ClipboardCheck, Send, Sparkles, ChevronUp, RefreshCw } from 'lucide-react';
+import { Upload, Copy, Check, BookOpen, ChevronDown, FileText, Loader2, AlertCircle, X, ChevronRight, Trash2, ShieldCheck, ShieldAlert, ClipboardCheck, Send, Sparkles, ChevronUp, RefreshCw, StopCircle } from 'lucide-react';
 import FormatterView from './FormatterView';
 
 const STYLES = [
@@ -8,19 +8,32 @@ const STYLES = [
     { id: 'vancouver', label: 'Vancouver', desc: 'ICMJE / Citing Medicine' },
 ];
 
-function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, toggleMeta }) {
+function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, toggleMeta, onAiRetry }) {
     const vStatus = r.data.metadata?.verification_status;
-    const vBadge = {
-        verified: { icon: '✓', label: 'Verified', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', tooltip: 'All anti-hallucination checks passed. Paper identity confirmed via PubMed/CrossRef with title match.' },
-        partial: { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled by AI. Review recommended.' },
-        unverified: { icon: '!', label: 'Unverified', cls: 'text-red-400 bg-red-500/10 border-red-500/20', tooltip: 'Could not confirm paper identity via external database. Metadata may be inaccurate.' },
-    }[vStatus] || null;
+    const vBadge = (() => {
+        if (!vStatus) return null;
+        if (vStatus.startsWith('verified_')) return { icon: '✓', label: 'Verified (DOI found)', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', tooltip: 'Paper identity confirmed via PubMed/CrossRef with title match.' };
+        if (vStatus === 'partial') return { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled by AI. Review recommended.' };
+        if (vStatus === 'unverified' || vStatus === 'not_found') return { icon: '!', label: 'Unverified', cls: 'text-red-400 bg-red-500/10 border-red-500/20', tooltip: 'Could not confirm paper identity via external database. Metadata may be inaccurate.' };
+        return null;
+    })();
+
+    let apiSource = r.data.metadata?.api_source;
+    if (!apiSource && vStatus) {
+        if (vStatus.startsWith('verified_pubmed')) apiSource = 'PubMed';
+        else if (vStatus.startsWith('verified_crossref')) apiSource = 'CrossRef';
+    }
 
     return (
         <div className="glass-card p-4 border-l-4 border-l-purple-500/50 overflow-hidden">
             <div className="flex justify-between items-start mb-2">
                 <div className="flex items-center gap-2">
                     <span className="badge badge-green">{r.data.type || 'Reference'}</span>
+                    {apiSource && (
+                        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border text-cyan-400 bg-cyan-500/10 border-cyan-500/20 flex items-center">
+                            {apiSource}
+                        </span>
+                    )}
                     {vBadge && (
                         <span title={vBadge.tooltip} className={`text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded border cursor-help flex items-center gap-1 ${vBadge.cls}`}>
                             <span className="text-[10px]">{vBadge.icon}</span>
@@ -44,12 +57,33 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                 dangerouslySetInnerHTML={{ __html: (r.data.formatted_html || r.data.formatted).replace(/<(?!\/?(?:i|em)\b)[^>]*>/gi, '') }}
             />
 
-            {!r.data.metadata?.doi && (
-                <div className="mt-2 flex items-start gap-2 bg-amber-500/5 border border-amber-500/15 rounded-lg px-3 py-1.5">
-                    <span className="text-amber-400 text-[10px] mt-0.5">⚠</span>
-                    <p className="text-[10px] text-amber-400/80 leading-relaxed">
-                        <strong>No DOI found.</strong> Verify the URL/link is correct and attach your source link after copying.
-                    </p>
+            {(!r.data.metadata?.doi && (vStatus === 'unverified' || vStatus === 'not_found')) && (
+                <div className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2 bg-amber-500/5 border border-amber-500/15 rounded-lg p-2.5">
+                    <div className="flex items-start gap-2 flex-1">
+                        <span className="text-amber-400 text-[10px] mt-0.5">⚠</span>
+                        <p className="text-[10px] text-amber-400/80 leading-relaxed">
+                            <strong>No DOI found.</strong> Standard extraction failed to find a valid DOI for this document.
+                        </p>
+                    </div>
+                    {onAiRetry && r.file && (
+                        <button 
+                            onClick={() => onAiRetry(r.id)}
+                            disabled={r.aiRetrying}
+                            className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 rounded-md text-indigo-300 hover:text-indigo-200 text-[10px] font-bold uppercase tracking-wider transition-all disabled:opacity-50 disabled:cursor-not-allowed shrink-0"
+                        >
+                            {r.aiRetrying ? (
+                                <>
+                                    <Loader2 size={12} className="animate-spin" />
+                                    <span>Extracting...</span>
+                                </>
+                            ) : (
+                                <>
+                                    <Sparkles size={12} />
+                                    <span>Retry DOI Search with Advanced Method</span>
+                                </>
+                            )}
+                        </button>
+                    )}
                 </div>
             )}
 
@@ -326,6 +360,7 @@ function VerifierSubView() {
     const [expandedCards, setExpandedCards] = useState({});
     const [copiedId, setCopiedId] = useState(null);
     const [copiedAll, setCopiedAll] = useState(false);
+    const abortRef = useRef(null);
 
     const toggleCard = (idx) => setExpandedCards(prev => ({ ...prev, [idx]: !prev[idx] }));
 
@@ -366,6 +401,9 @@ function VerifierSubView() {
         setProgress([]);
         setExpandedCards({});
 
+        const controller = new AbortController();
+        abortRef.current = controller;
+
         try {
             const res = await fetch('/api/verify-reference-list', {
                 method: 'POST',
@@ -374,6 +412,7 @@ function VerifierSubView() {
                     references_text: refsText.trim(),
                     style: style === 'auto' ? null : style,
                 }),
+                signal: controller.signal,
             });
 
             const reader = res.body.getReader();
@@ -421,9 +460,12 @@ function VerifierSubView() {
                 }
             }
         } catch (err) {
-            setProgress(prev => [...prev, { stage: 'error', message: `Connection error: ${err.message}` }]);
+            if (err.name !== 'AbortError') {
+                setProgress(prev => [...prev, { stage: 'error', message: `Connection error: ${err.message}` }]);
+            }
         } finally {
             setIsVerifying(false);
+            abortRef.current = null;
         }
     };
 
@@ -471,23 +513,34 @@ function VerifierSubView() {
                         className="w-full flex-1 min-h-[150px] shrink-0 bg-white/[0.03] border border-white/10 rounded-xl p-3 text-xs text-neutral-300 placeholder-neutral-700 outline-none resize-none focus:border-cyan-500/30 transition-colors font-mono leading-relaxed"
                     />
 
-                    <button
-                        onClick={handleVerify}
-                        disabled={!refsText.trim() || isVerifying}
-                        className="w-full shrink-0 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-sm transition-all duration-300 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20"
-                    >
-                        {isVerifying ? (
-                            <>
-                                <Loader2 size={16} className="animate-spin" />
-                                Verifying…
-                            </>
-                        ) : (
-                            <>
-                                <Send size={16} />
-                                Verify References
-                            </>
+                    <div className="flex gap-2 shrink-0">
+                        <button
+                            onClick={handleVerify}
+                            disabled={!refsText.trim() || isVerifying}
+                            className="flex-1 flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-bold text-sm transition-all duration-300 active:scale-[0.98] disabled:opacity-40 disabled:cursor-not-allowed bg-gradient-to-r from-cyan-600 to-blue-600 hover:from-cyan-500 hover:to-blue-500 text-white shadow-lg shadow-cyan-500/20"
+                        >
+                            {isVerifying ? (
+                                <>
+                                    <Loader2 size={16} className="animate-spin" />
+                                    Verifying…
+                                </>
+                            ) : (
+                                <>
+                                    <Send size={16} />
+                                    Verify References
+                                </>
+                            )}
+                        </button>
+                        {isVerifying && (
+                            <button
+                                onClick={() => { abortRef.current?.abort(); }}
+                                className="px-3 py-3 rounded-xl font-bold text-sm bg-red-500/15 hover:bg-red-500/25 border border-red-500/30 text-red-400 hover:text-red-300 transition-all active:scale-95"
+                                title="Stop verification"
+                            >
+                                <StopCircle size={16} />
+                            </button>
                         )}
-                    </button>
+                    </div>
 
                     {/* Progress feed */}
                     {progress.length > 0 && (
@@ -619,6 +672,8 @@ export default function LibraryView() {
     const [expandedMeta, setExpandedMeta] = useState({});
     const fileInputRef = useRef(null);
     const idCounter = useRef(0);
+    const abortRef = useRef(null);
+    const styleRef = useRef('harvard');
     const uploadPanelRef = useRef(null);
     const [inputHeight, setInputHeight] = useState(null);
 
@@ -630,20 +685,42 @@ export default function LibraryView() {
     }, []);
 
     const currentStyle = STYLES.find(s => s.id === style);
+    useEffect(() => { styleRef.current = style; }, [style]);
 
-    const processFile = useCallback(async (file, entryId, styleOverride) => {
+    const processFile = useCallback(async (file, entryId, styleOverride, signal) => {
         const useStyle = styleOverride || style;
         try {
             const formData = new FormData();
             formData.append('file', file);
-            const res = await fetch(`/api/extract-reference?style=${useStyle}`, { method: 'POST', body: formData });
+            const res = await fetch(`/api/extract-reference?style=${useStyle}`, { method: 'POST', body: formData, signal });
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
                 throw new Error(errData.detail || 'Failed to extract reference');
             }
             const data = await res.json();
+            // If style changed during extraction, reformat with current style
+            const curStyle = styleRef.current;
+            if (curStyle !== useStyle && data.metadata) {
+                try {
+                    const reformatRes = await fetch(`/api/reformat-reference?style=${curStyle}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ metadata: data.metadata }),
+                        signal,
+                    });
+                    if (reformatRes.ok) {
+                        const reformatted = await reformatRes.json();
+                        setResults(prev => prev.map(r => r.id === entryId ? { ...r, loading: false, data: { ...data, ...reformatted, metadata: { ...data.metadata, ...reformatted.metadata } }, error: null } : r));
+                        return;
+                    }
+                } catch (e) { if (e.name === 'AbortError') throw e; }
+            }
             setResults(prev => prev.map(r => r.id === entryId ? { ...r, loading: false, data, error: null } : r));
         } catch (err) {
+            if (err.name === 'AbortError') {
+                setResults(prev => prev.map(r => r.id === entryId && r.loading ? { ...r, loading: false, error: 'Cancelled' } : r));
+                return;
+            }
             setResults(prev => prev.map(r => r.id === entryId ? { ...r, loading: false, error: err.message } : r));
         }
     }, [style]);
@@ -655,8 +732,61 @@ export default function LibraryView() {
             .map(f => ({ id: ++idCounter.current, fileName: f.name, loading: true, error: null, data: null, file: f }));
         if (newEntries.length === 0) return;
         setResults(prev => [...prev, ...newEntries]);
-        for (const entry of newEntries) processFile(entry.file, entry.id);
+        const controller = new AbortController();
+        abortRef.current = controller;
+        await Promise.allSettled(
+            newEntries.map(entry => processFile(entry.file, entry.id, null, controller.signal))
+        );
+        abortRef.current = null;
     }, [processFile]);
+
+    const handleStop = useCallback(() => {
+        abortRef.current?.abort();
+        abortRef.current = null;
+    }, []);
+
+    const handleAiRetry = useCallback(async (id) => {
+        const target = results.find(r => r.id === id);
+        if (!target || !target.file || !target.data?.metadata) return;
+
+        setResults(prev => prev.map(r => r.id === id ? { ...r, aiRetrying: true, error: null } : r));
+
+        try {
+            const formData = new FormData();
+            formData.append('file', target.file);
+            formData.append('metadata', JSON.stringify(target.data.metadata));
+            formData.append('style', styleRef.current);
+
+            const res = await fetch('/api/retry-ai-doi', {
+                method: 'POST',
+                body: formData
+            });
+
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || 'AI extraction failed');
+            }
+
+            const updatedData = await res.json();
+            
+            setResults(prev => prev.map(r => r.id === id ? { 
+                ...r, 
+                aiRetrying: false, 
+                data: { ...r.data, ...updatedData, metadata: { ...r.data.metadata, ...updatedData.metadata } },
+                error: null
+            } : r));
+
+        } catch (err) {
+            setResults(prev => prev.map(r => r.id === id ? { ...r, aiRetrying: false, error: err.message } : r));
+        }
+    }, [results]);
+
+    const handleAiRetryAll = useCallback(() => {
+        const toRetry = results.filter(r => r.data && !r.data.metadata?.doi && !r.aiRetrying);
+        for (const r of toRetry) {
+            handleAiRetry(r.id);
+        }
+    }, [results, handleAiRetry]);
 
     const handleStyleChange = useCallback(async (newStyle) => {
         setStyle(newStyle);
@@ -664,11 +794,11 @@ export default function LibraryView() {
         const toReformat = results.filter(r => r.data?.metadata);
         if (toReformat.length === 0) return;
 
-        // Mark as loading
-        setResults(prev => prev.map(r => r.data?.metadata ? { ...r, loading: true } : r));
+        // Light loading state — keeps cards visible, just shows a subtle indicator
+        setResults(prev => prev.map(r => r.data?.metadata ? { ...r, _reformatting: true } : r));
 
-        // Reformat each result with the new style
-        for (const entry of toReformat) {
+        // Reformat all in parallel (fast, no re-extraction)
+        const updates = await Promise.all(toReformat.map(async (entry) => {
             try {
                 const res = await fetch(`/api/reformat-reference?style=${newStyle}`, {
                     method: 'POST',
@@ -677,12 +807,18 @@ export default function LibraryView() {
                 });
                 if (!res.ok) throw new Error('Reformat failed');
                 const data = await res.json();
-                setResults(prev => prev.map(r => r.id === entry.id ? { ...r, loading: false, data } : r));
+                return { id: entry.id, data: { ...entry.data, ...data, metadata: { ...entry.data.metadata, ...data.metadata } }, ok: true };
             } catch {
-                // On failure, keep old data
-                setResults(prev => prev.map(r => r.id === entry.id ? { ...r, loading: false } : r));
+                return { id: entry.id, ok: false };
             }
-        }
+        }));
+
+        setResults(prev => prev.map(r => {
+            const u = updates.find(x => x.id === r.id);
+            if (u?.ok) return { ...r, data: u.data, _reformatting: false };
+            if (u) return { ...r, _reformatting: false };
+            return r;
+        }));
     }, [results]);
 
     const onDrop = useCallback((e) => { e.preventDefault(); setIsDragging(false); handleUpload(e.dataTransfer?.files); }, [handleUpload]);
@@ -728,9 +864,7 @@ export default function LibraryView() {
     const withDoi = completed.filter(r => r.data.metadata?.doi);
     const withoutDoi = completed.filter(r => !r.data.metadata?.doi);
     const shouldSplit = withDoi.length > 0 && withoutDoi.length > 0;
-
-    const cardProps = { copiedId, copyRich, removeResult, expandedMeta, toggleMeta };
-
+    const cardProps = { copiedId, copyRich, removeResult, expandedMeta, toggleMeta, onAiRetry: handleAiRetry };
     return (
         <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
             <header className="mb-4">
@@ -846,7 +980,7 @@ export default function LibraryView() {
                                     <div className="space-y-1 flex-1 min-h-0 overflow-y-auto pr-1">
                                         {results.map(r => (
                                             <div key={r.id} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-white/[0.03] rounded-lg border border-white/5">
-                                                {r.loading ? <Loader2 size={12} className="text-purple-400 animate-spin shrink-0" /> :
+                                                {r.loading ? <Loader2 size={12} className="text-purple-400 animate-spin shrink-0" /> : r._reformatting ? <Loader2 size={12} className="text-cyan-400 animate-spin shrink-0" /> :
                                                     r.error ? <AlertCircle size={12} className="text-red-400 shrink-0" /> :
                                                         <Check size={12} className="text-green-400 shrink-0" />}
                                                 <span className={`truncate flex-1 ${r.error ? 'text-red-400' : 'text-neutral-400'}`}>{r.fileName}</span>
@@ -856,9 +990,16 @@ export default function LibraryView() {
                                             </div>
                                         ))}
                                     </div>
-                                    <button onClick={clearAll} className="mt-3 text-[10px] text-neutral-600 hover:text-red-400 self-end flex items-center gap-1 transition-colors shrink-0">
-                                        <Trash2 size={10} /> Clear all
-                                    </button>
+                                    <div className="mt-3 flex items-center justify-between shrink-0">
+                                        {loadingCount > 0 && (
+                                            <button onClick={handleStop} className="text-[10px] font-bold uppercase tracking-wider text-red-400 hover:text-red-300 bg-red-500/10 hover:bg-red-500/20 border border-red-500/20 px-2.5 py-1.5 rounded-lg flex items-center gap-1.5 transition-all active:scale-95">
+                                                <StopCircle size={12} /> Stop All
+                                            </button>
+                                        )}
+                                        <button onClick={clearAll} className="text-[10px] text-neutral-600 hover:text-red-400 ml-auto flex items-center gap-1 transition-colors">
+                                            <Trash2 size={10} /> Clear all
+                                        </button>
+                                    </div>
                                 </div>
                             )}
                         </div>
@@ -973,10 +1114,16 @@ export default function LibraryView() {
                                                 <h4 className="text-xs font-bold text-amber-400 uppercase tracking-wider">Needs Review (No DOI)</h4>
                                                 <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withoutDoi.length}</span>
                                             </div>
-                                            <button onClick={() => copyGroup(withoutDoi, setCopiedWithoutDoi)} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 hover:bg-white/5 rounded text-neutral-500 hover:text-white transition-all">
-                                                {copiedWithoutDoi ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
-                                                {copiedWithoutDoi ? 'Copied' : 'Copy'}
-                                            </button>
+                                            <div className="flex items-center gap-2">
+                                                <button onClick={handleAiRetryAll} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 rounded text-indigo-300 hover:text-indigo-200 transition-all">
+                                                    <Sparkles size={12} />
+                                                    Retry All with Advanced Method
+                                                </button>
+                                                <button onClick={() => copyGroup(withoutDoi, setCopiedWithoutDoi)} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 hover:bg-white/5 rounded text-neutral-500 hover:text-white transition-all">
+                                                    {copiedWithoutDoi ? <Check size={12} className="text-green-400" /> : <Copy size={12} />}
+                                                    {copiedWithoutDoi ? 'Copied' : 'Copy'}
+                                                </button>
+                                            </div>
                                         </div>
                                         <div className="flex-1 overflow-y-auto p-3 space-y-3">
                                             {withoutDoi.map(r => <ReferenceCard key={r.id} r={r} {...cardProps} />)}
