@@ -57,7 +57,21 @@ _DOI_BARE_RE = re.compile(
 
 # ── Words/fragments that should never appear inside a real DOI suffix ──
 _DOI_JUNK_TAIL_RE = re.compile(
-    r'(?i)(?:Research|Article|Review|Copyright|Downloaded|Published|Available|Accessed|Retrieved)\b.*$'
+    r'(?i)(?:Research|Article|Review|Copyright|Downloaded|Published|Available|Accessed|Retrieved'
+    r'|Frontiers|Springer|Elsevier|Wiley|Nature|Science|Taylor|Francis|Oxford|Cambridge|PLOS'
+    r'|Latest|Full|Text|HTML|PDF|Abstract|Supplement|Supporting|Information|Open|Access'
+    r'|ACS|RSC|IEEE|ACM|BMC|BioMed|PubMed|CrossRef|Google|Scholar)\b.*$'
+)
+
+# ── Pattern to detect publisher/site names glued directly onto a DOI suffix ──
+# Real DOI suffixes end in digits (e.g. "798962"). When a word like
+# "frontiers" or "acs" gets concatenated without whitespace
+# (e.g. "10.3389/frai.2021.798962frontiers"), this strips it.
+# IMPORTANT: Only match alpha tails after a DIGIT — NOT after a dot or paren,
+# because "10.1371/journal.pone.0294946" has legitimate alpha segments like "pone".
+_DOI_TRAILING_ALPHA_RE = re.compile(
+    r'(\d)([a-z]{5,})$',   # require 5+ chars (short segments like "pone" are real)
+    re.IGNORECASE,
 )
 
 
@@ -68,6 +82,9 @@ def _clean_doi(raw: str) -> str:
     doi = doi.rstrip('.,;:)\'"]}> \t')
     # Remove garbage words that PDF text extractors append
     doi = _DOI_JUNK_TAIL_RE.sub('', doi).rstrip('.,;:) ')
+    # Strip publisher/site names glued directly to the DOI suffix
+    # e.g. "10.3389/frai.2021.798962frontiers" → "10.3389/frai.2021.798962"
+    doi = _DOI_TRAILING_ALPHA_RE.sub(r'\1', doi)
     # Lowercase (DOIs are case-insensitive)
     return doi.lower()
 

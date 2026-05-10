@@ -778,7 +778,7 @@ export default function LibraryView() {
             {/* Generator Sub-View */}
             <div style={activeSubTab !== 'generator' ? { display: 'none' } : undefined} className="flex gap-3 flex-1 min-h-0 min-w-0 w-full">
                     {/* Upload Panel — fills height */}
-                    <div ref={uploadPanelRef} className="glass-card flex flex-col overflow-hidden w-[340px] shrink-0 self-start border-l-4 border-l-purple-500/50 max-w-[40vw]">
+                    <div ref={uploadPanelRef} className="glass-card flex flex-col overflow-hidden w-[340px] shrink-0 h-full border-l-4 border-l-purple-500/50 max-w-[40vw]">
                         <div className="px-5 py-3 border-b border-white/5 flex items-center justify-between">
                             <div className="flex items-center gap-2">
                                 <Upload size={16} className="text-neutral-400" />
@@ -801,8 +801,8 @@ export default function LibraryView() {
                             </div>
                         </div>
 
-                        <div className="p-4 flex flex-col">
-                            <p className="text-xs text-neutral-600 mb-3 bg-white/3 p-2.5 rounded-lg border border-white/5">
+                        <div className="p-4 flex flex-col flex-1 min-h-0">
+                            <p className="text-xs text-neutral-600 mb-3 bg-white/3 p-2.5 rounded-lg border border-white/5 shrink-0">
                                 Upload <strong className="text-neutral-400">PDF</strong>, <strong className="text-neutral-400">DOCX</strong>, or <strong className="text-neutral-400">DOC</strong> files.
                                 Style: <strong className="text-neutral-400">{currentStyle.label}</strong>
                             </p>
@@ -813,7 +813,7 @@ export default function LibraryView() {
                                 onDragOver={onDragOver}
                                 onDragLeave={onDragLeave}
                                 onClick={() => fileInputRef.current?.click()}
-                                className={`h-[200px] flex flex-col items-center justify-center rounded-xl border-2 border-dashed cursor-pointer transition-all duration-300 ${isDragging
+                                className={`shrink-0 h-[200px] flex flex-col items-center justify-center rounded-xl border-2 border-dashed cursor-pointer transition-all duration-300 ${isDragging
                                     ? 'border-purple-400 bg-purple-500/10 scale-[1.02]'
                                     : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
                                     }`}
@@ -842,30 +842,30 @@ export default function LibraryView() {
 
                             {/* File list */}
                             {results.length > 0 && (
-                                <>
-                                    <div className="mt-3 space-y-1 max-h-[200px] overflow-y-auto">
+                                <div className="flex flex-col flex-1 min-h-0 mt-4">
+                                    <div className="space-y-1 flex-1 min-h-0 overflow-y-auto pr-1">
                                         {results.map(r => (
                                             <div key={r.id} className="flex items-center gap-2 text-xs px-3 py-1.5 bg-white/[0.03] rounded-lg border border-white/5">
                                                 {r.loading ? <Loader2 size={12} className="text-purple-400 animate-spin shrink-0" /> :
                                                     r.error ? <AlertCircle size={12} className="text-red-400 shrink-0" /> :
                                                         <Check size={12} className="text-green-400 shrink-0" />}
                                                 <span className={`truncate flex-1 ${r.error ? 'text-red-400' : 'text-neutral-400'}`}>{r.fileName}</span>
-                                                <button onClick={(e) => { e.stopPropagation(); removeResult(r.id); }} className="text-neutral-600 hover:text-red-400 transition-colors">
+                                                <button onClick={(e) => { e.stopPropagation(); removeResult(r.id); }} className="text-neutral-600 hover:text-red-400 transition-colors shrink-0">
                                                     <X size={12} />
                                                 </button>
                                             </div>
                                         ))}
                                     </div>
-                                    <button onClick={clearAll} className="mt-2 text-[10px] text-neutral-600 hover:text-red-400 self-end flex items-center gap-1 transition-colors">
+                                    <button onClick={clearAll} className="mt-3 text-[10px] text-neutral-600 hover:text-red-400 self-end flex items-center gap-1 transition-colors shrink-0">
                                         <Trash2 size={10} /> Clear all
                                     </button>
-                                </>
+                                </div>
                             )}
                         </div>
                     </div>
 
                     {/* Results Panel — expands to fill remaining width */}
-                    <div className="flex-1 flex flex-col min-w-0 self-start max-h-[calc(100vh-12rem)]">
+                    <div className="flex-1 flex flex-col min-w-0 h-full overflow-hidden">
                         {/* Header */}
                         <div className="glass-card px-5 py-3 flex items-center justify-between mb-3 shrink-0">
                             <div className="flex items-center gap-2">
@@ -946,9 +946,9 @@ export default function LibraryView() {
                                     {completed.map(r => <ReferenceCard key={r.id} r={r} {...cardProps} />)}
                                 </div>
                             ) : (
-                                <div className="flex gap-3 items-start">
+                                <div className="flex gap-3 h-full min-h-0 pb-2">
                                     {/* With DOI — single panel */}
-                                    <div className="flex-1 min-w-0 glass-card border-l-4 border-l-green-500/50 flex flex-col overflow-hidden" style={inputHeight ? { height: inputHeight } : { maxHeight: '60vh' }}>
+                                    <div className="flex-1 min-w-0 glass-card border-l-4 border-l-green-500/50 flex flex-col overflow-hidden">
                                         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
                                             <div className="flex items-center gap-2">
                                                 <ShieldCheck size={14} className="text-green-400" />
@@ -966,7 +966,7 @@ export default function LibraryView() {
                                     </div>
 
                                     {/* Without DOI — single panel */}
-                                    <div className="flex-1 min-w-0 glass-card border-l-4 border-l-amber-500/50 flex flex-col overflow-hidden" style={inputHeight ? { height: inputHeight } : { maxHeight: '60vh' }}>
+                                    <div className="flex-1 min-w-0 glass-card border-l-4 border-l-amber-500/50 flex flex-col overflow-hidden">
                                         <div className="flex items-center justify-between px-4 py-3 border-b border-white/5 shrink-0">
                                             <div className="flex items-center gap-2">
                                                 <ShieldAlert size={14} className="text-amber-400" />

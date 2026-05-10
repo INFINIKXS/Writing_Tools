@@ -19,3 +19,13 @@ pytesseract
 ocrmypdf
 fonttools
 pycryptodome
+grobid-client-python
+grobid-tei-xml
+pdf2doi
+transformers
+torch
+torchvision
+pymupdf
+Pillow
+pytesseract
+spacy

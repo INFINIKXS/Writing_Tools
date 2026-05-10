@@ -5,6 +5,60 @@ import re
 
 from utils.text_utils import make_sentence_case, condense_pages, classify_source_type
 
+def normalize_author_name(name: str) -> str:
+    """
+    Normalizes an author name into 'Surname, Initials.' format.
+    E.g., 'Diomidis Spinellis' -> 'Spinellis, D.'
+          'John von Neumann' -> 'von Neumann, J.'
+    """
+    name = name.strip()
+    if not name:
+        return name
+        
+    group_keywords = re.compile(
+        r'\b(group|consortium|committee|collaboration|network|team|'
+        r'investigators|working party|task force|organization|association)\b',
+        re.IGNORECASE
+    )
+    if group_keywords.search(name):
+        return name
+
+    parts = name.split(',')
+    if len(parts) >= 2:
+        surname = parts[0].strip()
+        given = parts[1].strip()
+    else:
+        words = name.split()
+        if len(words) < 2:
+            return name
+            
+        prefixes = {"de", "la", "van", "von", "der", "den", "di", "da", "le", "du"}
+        surname_parts = []
+        given_parts = []
+        
+        surname_parts.append(words[-1])
+        
+        for i in range(len(words)-2, -1, -1):
+            w = words[i]
+            if w.lower() in prefixes:
+                surname_parts.insert(0, w)
+            else:
+                given_parts = words[:i+1]
+                break
+                
+        surname = " ".join(surname_parts)
+        given = " ".join(given_parts)
+
+    initials = []
+    for w in given.replace('-', ' ').split():
+        w = w.strip('.,')
+        if w:
+            initials.append(w[0].upper() + '.')
+    
+    if initials:
+        return f"{surname}, {' '.join(initials)}"
+    return surname
+
 
 def apply_italic_formatting(ref_text: str) -> str:
     """
@@ -160,12 +214,15 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     Format metadata into a reference string in the specified style.
     Returns { "formatted": "plain text", "formatted_html": "with <i> tags", "metadata": {...} }
     """
-    authors = metadata.get("authors") or ["Unknown Author"]
+    raw_authors = metadata.get("authors") or ["Unknown Author"]
+    authors = [normalize_author_name(a) for a in raw_authors]
     title = metadata.get("title") or "Untitled"
     if isinstance(title, str):
         title = title.rstrip('.')
     year = metadata.get("year") or "n.d."
-    source = metadata.get("source")
+    # 'source' is the canonical journal/source field; fall back to 'journal'
+    # which is what the CrossRef/GROBID layers return before normalisation.
+    source = metadata.get("source") or metadata.get("journal")
     volume = metadata.get("volume")
     issue = metadata.get("issue")
     pages = metadata.get("pages")
@@ -279,9 +336,15 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
             if accessed_date:
                 ending += f" (Accessed: {accessed_date})"
 
-        if ref_type == "Journal Article" and source:
-            ref_plain = f"{author_str} ({year}) '{title}', {source}"
-            ref_html = f"{author_str_html} ({year}) '{title}', <i>{source}</i>"
+        if ref_type == "Journal Article":
+            ref_plain = f"{author_str} ({year}) '{title}'"
+            ref_html = f"{author_str_html} ({year}) '{title}'"
+            if source:
+                ref_plain += f", {source}"
+                ref_html += f", <i>{source}</i>"
+            elif pub_str:
+                ref_plain += f", {pub_str}"
+                ref_html += f", {pub_str}"
             if location:
                 ref_plain += f", {location}"
                 ref_html += f", {location}"
