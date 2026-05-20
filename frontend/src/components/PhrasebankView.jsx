@@ -134,7 +134,7 @@ export default function PhrasebankView() {
                     Academic Phrasebank
                 </h1>
                 <p className="text-sm text-neutral-500">
-                    Browse {stats.total_phrases?.toLocaleString() || 0} curated academic templates. Search, explore by category, or let AI suggest the best match for your text.
+                    Browse {stats.total_phrases?.toLocaleString() || 0} curated academic templates. Search, explore by category, or use advanced matching to find the best fit for your text.
                 </p>
             </header>
 
@@ -269,7 +269,7 @@ export default function PhrasebankView() {
                     {suggestions && !suggesting && (
                         <div className="glass-card p-5 border-l-4 border-l-purple-500/50 shrink-0">
                             <p className="text-[10px] font-bold text-purple-400 uppercase tracking-wider mb-3">
-                                AI-Suggested Phrases ({suggestions.length})
+                                Advanced Suggested Phrases ({suggestions.length})
                             </p>
                             {suggestions.length === 0 ? (
                                 <p className="text-sm text-neutral-500">No relevant phrases found. Try different text or browse by category.</p>

@@ -96,7 +96,7 @@ export default function HumanizerView() {
     return (
         <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
             <header className="mb-6">
-                <h1 className="text-3xl font-extrabold text-white mb-1">AI Humanizer</h1>
+                <h1 className="text-3xl font-extrabold text-white mb-1">Advanced Humanizer</h1>
                 <p className="text-sm text-neutral-500">Retrieval-Augmented Style Transfer — imitates real human writing style from your PDFs while preserving the original meaning.</p>
             </header>
 
@@ -116,7 +116,7 @@ export default function HumanizerView() {
                     </div>
                     <div className="p-4 flex flex-col gap-3">
                         <p className="text-xs text-neutral-600 bg-white/3 p-2.5 rounded-lg border border-white/5">
-                            Upload <strong className="text-neutral-400">human-written PDFs</strong>. The AI imitates their sentence rhythm, connectors, and vocabulary when rewriting.
+                            Upload <strong className="text-neutral-400">human-written PDFs</strong>. The system imitates their sentence rhythm, connectors, and vocabulary when rewriting.
                         </p>
                         <div
                             onDrop={onDrop}
@@ -164,13 +164,13 @@ export default function HumanizerView() {
                     <div className="glass-card p-5 shrink-0">
                         <div className="flex items-center gap-2 mb-3">
                             <Zap size={16} className="text-amber-400" />
-                            <h3 className="text-sm font-bold text-white">AI Text Input</h3>
+                            <h3 className="text-sm font-bold text-white">Draft Text Input</h3>
                         </div>
                         <textarea
                             value={inputText}
                             onChange={(e) => setInputText(e.target.value)}
                             onKeyDown={(e) => { if (e.key === 'Enter' && e.ctrlKey) { e.preventDefault(); handleHumanize(); } }}
-                            placeholder={"Paste AI-generated text here...\n\nCtrl+Enter to humanize."}
+                            placeholder={"Paste draft text here...\n\nCtrl+Enter to humanize."}
                             className="w-full bg-white/[0.02] border border-white/8 rounded-xl p-4 text-sm text-neutral-200 leading-relaxed resize-none outline-none focus:border-white/20 transition-colors placeholder-neutral-700 h-[110px]"
                             spellCheck="false"
                         />
@@ -362,7 +362,7 @@ export default function HumanizerView() {
                                                 {/* Before → After */}
                                                 <div className="flex items-center gap-3 pt-3 border-t border-white/5">
                                                     <div className="flex-1 bg-red-500/5 rounded-lg p-2.5 border border-red-500/10">
-                                                        <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Before (AI)</p>
+                                                        <p className="text-[10px] text-red-400 font-bold uppercase tracking-wider mb-1">Before (Draft)</p>
                                                         <p className="text-xs text-neutral-400">{sent.original}</p>
                                                     </div>
                                                     <ArrowRight size={16} className="text-neutral-600 shrink-0" />
@@ -382,7 +382,7 @@ export default function HumanizerView() {
                     {/* Empty state */}
                     {!result && !processing && !error && (
                         <div className="flex-1 flex flex-col items-center justify-center text-neutral-700 space-y-3 py-12">
-                            <Brain size={40} />
+                            <Wand2 size={40} className="text-neutral-700/50" />
                             <p className="text-sm font-medium">Humanized output will appear here</p>
                             <p className="text-xs text-neutral-700 max-w-md text-center">
                                 RAST: Extract meaning → Retrieve 8 real human sentences → Generate 3 style-guided rewrites → Pick the best one

@@ -12,9 +12,9 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
     const vStatus = r.data.metadata?.verification_status;
     const vBadge = (() => {
         if (!vStatus) return null;
-        if (vStatus === 'verified_ai_strict_scan' || vStatus === 'verified_ai_hard_scan') return { icon: '🤖', label: 'AI Metadata (Strict Scan)', cls: 'text-fuchsia-400 bg-fuchsia-500/10 border-fuchsia-500/20', tooltip: 'No DOI found. Paper identity confirmed via deep physical scan of AI metadata against raw PDF text.' };
+        if (vStatus === 'verified_ai_strict_scan' || vStatus === 'verified_ai_hard_scan') return { icon: '✨', label: 'Advanced Scan', cls: 'text-fuchsia-400 bg-fuchsia-500/10 border-fuchsia-500/20', tooltip: 'No DOI found. Paper identity confirmed via deep physical scan of extracted metadata against raw PDF text.' };
         if (vStatus.startsWith('verified_')) return { icon: '✓', label: 'Verified (DOI found)', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', tooltip: 'Paper identity confirmed via PubMed/CrossRef with title match.' };
-        if (vStatus === 'partial') return { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled by AI. Review recommended.' };
+        if (vStatus === 'partial') return { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled using advanced extraction. Review recommended.' };
         if (vStatus === 'unverified' || vStatus === 'not_found') return { icon: '!', label: 'Unverified', cls: 'text-red-400 bg-red-500/10 border-red-500/20', tooltip: 'Could not confirm paper identity via external database. Metadata may be inaccurate.' };
         return null;
     })();
@@ -60,9 +60,9 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
 
             {(vStatus === 'verified_ai_strict_scan' || vStatus === 'verified_ai_hard_scan') && (
                 <div className="mt-2 flex items-start gap-2 bg-fuchsia-500/5 border border-fuchsia-500/15 rounded-lg px-3 py-2">
-                    <span className="text-fuchsia-400 text-[10px] mt-0.5">🤖</span>
+                    <span className="text-fuchsia-400 text-[10px] mt-0.5">✨</span>
                     <p className="text-[10px] text-fuchsia-400/80 leading-relaxed">
-                        <strong>AI Generated Reference.</strong> The system could not find a DOI, but mathematically verified that this reference exists in the PDF text. Please verify the actual source and ensure accuracy.
+                        <strong>Advanced Reference.</strong> The system could not find a DOI, but mathematically verified that this reference exists in the PDF text. Please verify the actual source and ensure accuracy.
                     </p>
                 </div>
             )}
@@ -101,7 +101,7 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                 <div className="mt-2 flex items-start gap-2 bg-red-500/5 border border-red-500/15 rounded-lg px-3 py-1.5">
                     <span className="text-red-400 text-[10px] mt-0.5">⚠</span>
                     <p className="text-[10px] text-red-400/80 leading-relaxed">
-                        <strong>AI verification failed.</strong> Metadata may be inaccurate — please verify manually.
+                        <strong>Advanced verification failed.</strong> Metadata may be inaccurate — please verify manually.
                     </p>
                 </div>
             )}
@@ -110,7 +110,7 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                 <div className="mt-2 flex items-start gap-2 bg-purple-500/5 border border-purple-500/15 rounded-lg px-3 py-1.5">
                     <span className="text-purple-400 text-[10px] mt-0.5">⚠</span>
                     <p className="text-[10px] text-purple-400/80 leading-relaxed">
-                        <strong>API lookup failed.</strong> Metadata was extracted using AI/Regex and may be inaccurate. Please review.
+                        <strong>API lookup failed.</strong> Metadata was extracted using advanced methods and may be inaccurate. Please review.
                     </p>
                 </div>
             )}
@@ -118,8 +118,8 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
             {r.data.metadata?.ai_filled_fields && Object.keys(r.data.metadata.ai_filled_fields).length > 0 && (
                 <div className="mt-2 bg-violet-500/5 border border-violet-500/15 rounded-lg px-3 py-2">
                     <div className="flex items-center gap-1.5 mb-1.5">
-                        <span className="text-violet-400 text-[10px]">🤖</span>
-                        <span className="text-[10px] font-bold text-violet-400 uppercase tracking-wider">AI-Generated Fields</span>
+                        <span className="text-violet-400 text-[10px]">✨</span>
+                        <span className="text-[10px] font-bold text-violet-400 uppercase tracking-wider">Advanced Extracted Fields</span>
                         <span className="text-[9px] text-violet-400/60 ml-1">— verify these values</span>
                     </div>
                     <div className="space-y-1">
@@ -128,7 +128,7 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                                 <span className="text-[9px] font-bold uppercase tracking-widest text-violet-500/70 w-16 shrink-0 pt-0.5">{key}</span>
                                 <span className="text-[10px] text-violet-300 font-mono break-all flex-1">{info.value}</span>
                                 <span className="text-[8px] font-bold uppercase tracking-wider px-1 py-0.5 rounded border text-amber-400 bg-amber-500/10 border-amber-500/20 shrink-0">
-                                    {info.source === 'ai_verified' ? 'AI ✓' : info.source === 'ai_inferred' ? 'AI ~' : 'AI'}
+                                    {info.source === 'ai_verified' ? 'Adv ✓' : info.source === 'ai_inferred' ? 'Adv ~' : 'Adv'}
                                 </span>
                             </div>
                         ))}
@@ -159,7 +159,7 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
                         ['URL', 'url', r.data.metadata.url],
                     ].filter(([, , val]) => val).map(([label, key, value]) => {
                         const src = r.data.metadata.field_sources?.[key];
-                        const srcLabel = { pubmed: 'PubMed', crossref: 'CrossRef', ai_verified: 'AI ✓', ai: 'AI', text_parsing: 'Regex', pdf_metadata: 'PDF' }[src];
+                        const srcLabel = { pubmed: 'PubMed', crossref: 'CrossRef', ai_verified: 'Adv ✓', ai: 'Adv', text_parsing: 'Regex', pdf_metadata: 'PDF' }[src];
                         const srcColor = { pubmed: 'text-cyan-400 bg-cyan-500/10 border-cyan-500/20', crossref: 'text-blue-400 bg-blue-500/10 border-blue-500/20', ai_verified: 'text-green-400 bg-green-500/10 border-green-500/20', ai: 'text-amber-400 bg-amber-500/10 border-amber-500/20', text_parsing: 'text-neutral-400 bg-white/5 border-white/10', pdf_metadata: 'text-neutral-400 bg-white/5 border-white/10' }[src] || '';
                         return (
                             <div key={label} className="flex items-start gap-2">
@@ -801,7 +801,7 @@ export default function LibraryView() {
             
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'Batch AI extraction failed');
+                throw new Error(errData.detail || 'Batch extraction failed');
             }
             
             const batchResults = await res.json();
@@ -812,7 +812,7 @@ export default function LibraryView() {
                 
                 const match = batchResults.find(b => String(b.id) === String(r.id));
                 if (!match) {
-                    return { ...r, loading: false, error: 'AI failed to process this item' };
+                    return { ...r, loading: false, error: 'Advanced method failed to process this item' };
                 }
                 
                 if (match.result.error) {
@@ -904,7 +904,7 @@ export default function LibraryView() {
         const target = results.find(r => r.id === id);
         if (!target || !target.file || !target.data?.metadata) return;
 
-        setResults(prev => prev.map(r => r.id === id ? { ...r, aiRetrying: true, error: null } : r));
+        setResults(prev => prev.map(r => r.id === id ? { ...r, aiRetrying: true, aiAttempted: true, error: null } : r));
 
         try {
             const formData = new FormData();
@@ -919,7 +919,7 @@ export default function LibraryView() {
 
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
-                throw new Error(errData.detail || 'AI extraction failed');
+                throw new Error(errData.detail || 'Advanced extraction failed');
             }
 
             const updatedData = await res.json();
@@ -937,7 +937,7 @@ export default function LibraryView() {
     }, [results]);
 
     const handleAiRetryAll = useCallback(async () => {
-        const toRetry = results.filter(r => r.data && !r.data.metadata?.doi && !r.aiRetrying);
+        const toRetry = results.filter(r => r.data && !r.data.metadata?.doi && (r.data.metadata?.verification_status === 'unverified' || r.data.metadata?.verification_status === 'not_found') && !r.aiRetrying && !r.aiAttempted);
         if (toRetry.length === 0) return;
 
         const CHUNK_SIZE = 50;
@@ -946,8 +946,8 @@ export default function LibraryView() {
             const chunk = toRetry.slice(i, i + CHUNK_SIZE);
             const chunkIds = new Set(chunk.map(c => c.id));
             
-            // Set loading state for chunk
-            setResults(prev => prev.map(r => chunkIds.has(r.id) ? { ...r, aiRetrying: true, error: null } : r));
+            // Set loading and attempted state for chunk
+            setResults(prev => prev.map(r => chunkIds.has(r.id) ? { ...r, aiRetrying: true, aiAttempted: true, error: null } : r));
             
             try {
                 const formData = new FormData();
@@ -974,7 +974,7 @@ export default function LibraryView() {
 
                 if (!res.ok) {
                     const errData = await res.json().catch(() => ({}));
-                    throw new Error(errData.detail || 'Batch AI extraction failed');
+                    throw new Error(errData.detail || 'Batch extraction failed');
                 }
 
                 const updatedResultsArray = await res.json();
@@ -984,7 +984,7 @@ export default function LibraryView() {
                     
                     const batchMatch = updatedResultsArray.find(u => String(u.id) === String(r.id));
                     if (!batchMatch) {
-                        return { ...r, aiRetrying: false, error: 'AI failed to process this item' };
+                        return { ...r, aiRetrying: false, error: 'Advanced method failed to process this item' };
                     }
                     
                     if (batchMatch.result.error) {
@@ -1082,6 +1082,9 @@ export default function LibraryView() {
     const withDoi = completed.filter(r => r.data.metadata?.doi);
     const withoutDoi = completed.filter(r => !r.data.metadata?.doi);
     const shouldSplit = withDoi.length > 0 && withoutDoi.length > 0;
+    const hasRetryableItems = useMemo(() => {
+        return results.some(r => r.data && !r.data.metadata?.doi && (r.data.metadata?.verification_status === 'unverified' || r.data.metadata?.verification_status === 'not_found') && !r.aiRetrying && !r.aiAttempted);
+    }, [results]);
     const cardProps = { copiedId, copyRich, removeResult, expandedMeta, toggleMeta, onAiRetry: handleAiRetry };
     return (
         <div className="animate-fade-in-up flex-1 min-h-0 flex flex-col w-full overflow-hidden">
@@ -1159,7 +1162,7 @@ export default function LibraryView() {
                                 Style: <strong className="text-neutral-400">{currentStyle.label}</strong>
                             </p>
 
-                            {/* Advanced Mode AI Toggle */}
+                            {/* Advanced Mode Toggle */}
                             <div className={`mb-3 p-3 rounded-xl border transition-all duration-300 ${
                                 advancedMode 
                                     ? 'bg-purple-500/10 border-purple-500/30 shadow-lg shadow-purple-500/5' 
@@ -1173,8 +1176,8 @@ export default function LibraryView() {
                                             <Sparkles size={14} />
                                         </div>
                                         <div>
-                                            <h4 className="text-xs font-bold text-white leading-tight">Advanced Mode (AI)</h4>
-                                            <p className="text-[10px] text-neutral-600 leading-normal mt-0.5 font-medium">Direct Gemini extraction (PDF only)</p>
+                                            <h4 className="text-xs font-bold text-white leading-tight">Advanced Mode</h4>
+                                            <p className="text-[10px] text-neutral-600 leading-normal mt-0.5 font-medium">Direct advanced extraction (PDF only)</p>
                                         </div>
                                     </div>
                                     <button
@@ -1367,7 +1370,11 @@ export default function LibraryView() {
                                                 <span className="text-[10px] text-neutral-600 bg-white/5 px-1.5 py-0.5 rounded">{withoutDoi.length}</span>
                                             </div>
                                             <div className="flex items-center gap-2">
-                                                <button onClick={handleAiRetryAll} className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 rounded text-indigo-300 hover:text-indigo-200 transition-all">
+                                                <button 
+                                                    onClick={handleAiRetryAll} 
+                                                    disabled={!hasRetryableItems}
+                                                    className="flex items-center gap-1.5 text-[10px] font-bold uppercase tracking-wider px-2 py-1 bg-indigo-500/20 hover:bg-indigo-500/30 border border-indigo-500/30 rounded text-indigo-300 hover:text-indigo-200 transition-all disabled:opacity-50 disabled:cursor-not-allowed disabled:pointer-events-none"
+                                                >
                                                     <Sparkles size={12} />
                                                     Retry All with Advanced Method
                                                 </button>

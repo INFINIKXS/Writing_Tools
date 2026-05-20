@@ -7,9 +7,9 @@ class TestBatchRoute(unittest.TestCase):
     def setUp(self):
         self.client = TestClient(app)
 
-    @patch("references.routes.extract_metadata_batch_with_ai", new_callable=AsyncMock)
-    @patch("references.routes.fetch_crossref_batch", new_callable=AsyncMock)
-    @patch("references.routes.strict_ai_verify_against_pdf")
+    @patch("references.ai_extractor.extract_metadata_batch_with_ai", new_callable=AsyncMock)
+    @patch("references.api_batch.fetch_crossref_batch", new_callable=AsyncMock)
+    @patch("references.metadata.strict_ai_verify_against_pdf")
     @patch("pypdf.PdfReader")
     def test_extract_reference_batch_success(
         self,
@@ -55,7 +55,7 @@ class TestBatchRoute(unittest.TestCase):
         mock_record.type = "Journal Article"
         mock_fetch_crossref.return_value = [mock_record]
 
-        with patch("references.routes._validate_api_result", return_value=True):
+        with patch("references.metadata._validate_api_result", return_value=True):
             files = [
                 ("files", ("test1.pdf", b"%PDF-1.4 dummy contents", "application/pdf"))
             ]
@@ -71,7 +71,8 @@ class TestBatchRoute(unittest.TestCase):
             self.assertEqual(len(json_data), 1)
             self.assertEqual(json_data[0]["id"], "item1")
             self.assertIn("result", json_data[0])
-            self.assertIn("bibliography", json_data[0]["result"])
+            self.assertIn("formatted", json_data[0]["result"])
+            self.assertIn("formatted_html", json_data[0]["result"])
             self.assertTrue(mock_page.extract_text.call_count <= 3)
 
 if __name__ == "__main__":

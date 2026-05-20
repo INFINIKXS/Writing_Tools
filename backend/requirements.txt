@@ -8,7 +8,6 @@ fuzzywuzzy
 python-Levenshtein
 python-dotenv
 requests
-spacy
 sentence-transformers
 numpy
 pdf2docx
@@ -19,16 +18,8 @@ pytesseract
 ocrmypdf
 fonttools
 pycryptodome
-grobid-client-python
-grobid-tei-xml
 pdf2doi
-transformers
-torch
-torchvision
 pymupdf
-Pillow
-pytesseract
-spacy
 httpx
 tenacity
 regex

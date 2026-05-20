@@ -1,19 +1,14 @@
 """
 Metadata extraction from PDFs and DOCX files.
-AI-FREE deterministic cascade version.
+Deterministic cascade version.
 ==========================================================
-Replaces Gemini with a deterministic cascade:
+Uses a lightweight deterministic cascade:
 
   Layer 1  →  PDF embedded properties  (fast, zero cost)
   Layer 2  →  Custom regex on first 3 pages  (your existing text_utils.py)
-  Layer 3  →  GROBID header extraction  (fallback for title/authors/year/DOI)
-  Layer 4  →  pdf2doi  (focused DOI rescue if GROBID also misses it)
-  Layer 5  →  CrossRef API  (verification + metadata enrichment)
-  Layer 6  →  PubMed API   (secondary verification)
-
-GROBID must be running locally before importing this module.
-Start it with:
-    docker run --rm --init --ulimit core=0 -p 8070:8070 grobid/grobid:0.9.0-crf
+  Layer 3  →  pdf2doi  (focused DOI rescue)
+  Layer 4  →  CrossRef API  (verification + metadata enrichment)
+  Layer 5  →  PubMed API   (secondary verification)
 """
 
 from __future__ import annotations
@@ -76,12 +71,10 @@ _pubmed_limiter = _RateLimiter(max_per_second=3.0)
 _crossref_limiter = _RateLimiter(max_per_second=10.0)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-GROBID_URL      = os.getenv("GROBID_URL", "http://localhost:8070")
 CROSSREF_API    = "https://api.crossref.org/works"
 PUBMED_SEARCH   = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/esearch.fcgi"
 PUBMED_FETCH    = "https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi"
-TEI_NS          = {"tei": "http://www.tei-c.org/ns/1.0"}
-REQUEST_TIMEOUT = 15   # seconds  (local-only, no CrossRef consolidation)
+REQUEST_TIMEOUT = 15   # seconds
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -658,135 +651,94 @@ def _validate_api_result(
 
 
 
-# ══════════════════════════════════════════════════════════════════════════════
-# LAYER 3 — GROBID fallback
-# ══════════════════════════════════════════════════════════════════════════════
-
-def _grobid_is_alive() -> bool:
-    """Ping the GROBID server. Returns True if it responds."""
-    try:
-        r = _http_session.get(f"{GROBID_URL}/api/isalive", timeout=5)
-        return r.status_code == 200 and r.text.strip().lower() == "true"
-    except Exception:
-        return False
-
-
-def _parse_tei_xml(tei_xml: str) -> dict:
-    """
-    Parse a GROBID TEI-XML string and extract:
-      title, authors (list of full names), year (int), doi (str)
-    Returns a dict; any field may be None / empty list.
-    """
-    result = {"title": None, "authors": [], "year": None, "doi": None}
-    try:
-        root = ET.fromstring(tei_xml)
-
-        # ── Title ──
-        title_el = root.find(".//tei:titleStmt/tei:title[@type='main']", TEI_NS)
-        if title_el is not None and title_el.text:
-            raw_title = title_el.text.strip()
-            if not _is_garbage_title(raw_title):
-                result["title"] = raw_title
-            else:
-                logger.debug("Rejected garbage GROBID title: %r", raw_title)
-
-        # ── Authors ──
-        authors = []
-        for person in root.findall(".//tei:fileDesc//tei:persName", TEI_NS):
-            forename = person.findtext("tei:forename", namespaces=TEI_NS) or ""
-            surname  = person.findtext("tei:surname",  namespaces=TEI_NS) or ""
-            full     = f"{forename} {surname}".strip()
-            if full:
-                authors.append(full)
-        result["authors"] = authors
-
-        # ── Year ──
-        for date_el in root.findall(".//tei:date", TEI_NS):
-            when = date_el.get("when", "")
-            year_match = re.search(r"(\d{4})", when)
-            if year_match:
-                yr = int(year_match.group(1))
-                if 1900 < yr <= 2100:
-                    result["year"] = yr
-                    break
-
-        # ── DOI  (GROBID writes <idno type="DOI">) ──
-        for idno in root.findall(".//tei:idno", TEI_NS):
-            if idno.get("type", "").upper() == "DOI" and idno.text:
-                result["doi"] = idno.text.strip().lower()
-                break
-
-    except ET.ParseError as exc:
-        logger.warning("TEI XML parse error: %s", exc)
-
-    return result
-
-
-def _extract_via_grobid(pdf_path: str) -> dict:
-    """
-    Send the PDF to the local GROBID server's processHeaderDocument endpoint.
-    consolidateHeader=2  →  CrossRef lookup, inject DOI only (no extra API cost).
-    Returns the same dict shape as the other layers.
-    """
-    empty = {"title": None, "authors": [], "year": None, "doi": None}
-
-    if not _grobid_is_alive():
-        logger.warning(
-            "GROBID server not reachable at %s — skipping GROBID layer. "
-            "Start it with: docker run --rm --init --ulimit core=0 "
-            "-p 8070:8070 grobid/grobid:0.9.0-crf",
-            GROBID_URL,
-        )
-        return empty
-
-    try:
-        with open(pdf_path, "rb") as fh:
-            response = _http_session.post(
-                f"{GROBID_URL}/api/processHeaderDocument",
-                files={"input": (Path(pdf_path).name, fh, "application/pdf")},
-                data={"consolidateHeader": "0"},   # 0 = local parsing only, no external API calls
-                timeout=REQUEST_TIMEOUT,
-            )
-
-        if response.status_code != 200:
-            logger.warning("GROBID returned HTTP %s", response.status_code)
-            return empty
-
-        return _parse_tei_xml(response.text)
-
-    except requests.Timeout:
-        logger.warning("GROBID request timed out after %ss", REQUEST_TIMEOUT)
-    except Exception as exc:
-        logger.warning("GROBID extraction failed: %s", exc)
-
-    return empty
-
 
 # ══════════════════════════════════════════════════════════════════════════════
-# LAYER 4 — pdf2doi focused DOI rescue
+# LAYER 3 — pdf2doi focused DOI rescue  (offline-only mode)
 # ══════════════════════════════════════════════════════════════════════════════
 
 def _rescue_doi_via_pdf2doi(pdf_path: str) -> Optional[str]:
     """
-    Last-resort DOI finder. pdf2doi applies multiple methods sequentially:
-      1. PDF metadata fields
-      2. Filename pattern match
-      3. Text regex scan (first 3 pages)
-      4. Web search using paper title (if textract is installed)
+    Last-resort DOI finder using pdf2doi in **offline-only** mode.
+    Online validation and pdfminer fallback are disabled to prevent:
+      - Blocking synchronous HTTP calls to dx.doi.org
+      - Slow pdfminer text re-extraction (5-10s per page)
+    The returned DOI is sanitized through our own _clean_doi to strip
+    any trailing publisher domain concatenations.
     Returns a DOI string or None.
     """
     try:
-        import pdf2doi  # pip install pdf2doi
+        import pdf2doi
+        # Disable pdf2doi's internal blocking web validation calls
+        # and its slow pdfminer text extraction fallback
+        pdf2doi.config.set('verbose', False)
+        pdf2doi.config.set('validation_online', False)
+
         result = pdf2doi.pdf2doi(pdf_path)
         if result and result.get("identifier"):
-            doi = str(result["identifier"]).strip().lower()
-            logger.info("pdf2doi rescued DOI: %s", doi)
+            from utils.text_utils import extract_doi as _sanitize_doi
+            raw_doi = str(result["identifier"]).strip()
+            # Run through our own sanitizer to strip trailing domains
+            clean = _sanitize_doi(raw_doi)
+            if clean:
+                logger.info("pdf2doi rescued DOI (sanitized): %s", clean)
+                return clean
+            # If our sanitizer rejects it, try the raw lowercase
+            doi = raw_doi.lower()
+            logger.info("pdf2doi rescued DOI (raw): %s", doi)
             return doi
     except ImportError:
         logger.warning("pdf2doi not installed — skipping DOI rescue layer.")
     except Exception as exc:
         logger.warning("pdf2doi failed: %s", exc)
     return None
+
+
+def verify_doi_online(doi_str: str) -> bool:
+    """Fast HEAD request using connection-pooled session to ensure the string exists in the global registry."""
+    try:
+        url = f"{CROSSREF_API}/{doi_str}"
+        _crossref_limiter.wait()
+        r = _http_session.head(
+            url, 
+            timeout=5, 
+            headers={"User-Agent": "metadata-extractor/1.0"}
+        )
+        return r.status_code == 200
+    except Exception as exc:
+        logger.warning("Speculative online check failed for %s: %s", doi_str, exc)
+        return False
+
+
+async def robust_doi_resolver(raw_text_chunk: str) -> dict:
+    """
+    Executes a speculative check against CrossRef to guarantee data validity.
+    Step 3 of the Zotero/CrossRef gold standard workflow.
+    """
+    from utils.text_utils import DOI_CAPTURE_REGEX, polish_extracted_string
+    
+    # First attempt: Test the raw regex match directly
+    initial_match = DOI_CAPTURE_REGEX.search(raw_text_chunk)
+    if not initial_match:
+        return {"status": "failed", "doi": None}
+        
+    candidate_doi = initial_match.group(0)
+    
+    # Check if the initial un-truncated match is a valid registered string
+    is_valid_raw = await asyncio.to_thread(verify_doi_online, candidate_doi)
+    if is_valid_raw:
+        logger.info("Speculative check: Raw DOI candidate %s exists!", candidate_doi)
+        return {"status": "verified_raw", "doi": candidate_doi}
+        
+    # Second attempt: Apply the truncation sieve if the raw string fails verification
+    polished_doi = polish_extracted_string(candidate_doi)
+    if polished_doi != candidate_doi:
+        is_valid_polished = await asyncio.to_thread(verify_doi_online, polished_doi)
+        if is_valid_polished:
+            logger.info("Speculative check: Concatenated candidate resolved to verified DOI: %s", polished_doi)
+            return {"status": "verified_after_sieve", "doi": polished_doi}
+            
+    logger.info("Speculative check: Candidate %s is unverifiable.", candidate_doi)
+    return {"status": "unverifiable", "doi": None}
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -1152,7 +1104,7 @@ def _is_complete(meta: dict) -> bool:
 
 def _extract_metadata_local_sync(pdf_path: str) -> tuple[dict, list[str]]:
     """
-    Runs the local CPU-bound extraction layers (PDF meta, Regex, GROBID).
+    Runs the local CPU-bound extraction layers (PDF meta, Regex).
     Returns the partial metadata dict and a list of candidate DOIs found.
     """
     meta = {
@@ -1174,52 +1126,12 @@ def _extract_metadata_local_sync(pdf_path: str) -> tuple[dict, list[str]]:
     if any(v for v in layer2.values() if v):
         meta["extraction_layers"].append("regex")
 
-    # ── Layer 3: GROBID — only if something is still missing ─────────────────
-    layer3 = {}
-    if not _is_complete(meta):
-        layer3 = _extract_via_grobid(pdf_path)
-        _merge(meta, layer3)
-        if any(v for v in layer3.values() if v):
-            meta["extraction_layers"].append("grobid")
 
-    # ── Layer 3b: NER sieve — only if authors still missing after GROBID ──────────
-    if not meta.get("authors"):
-        try:
-            from utils.ner_author_extractor import extract_authors_ner
-            from pypdf import PdfReader
-            reader = PdfReader(pdf_path)
-            first_page_text = reader.pages[0].extract_text() or "" if reader.pages else ""
-
-            ner_authors = extract_authors_ner(
-                first_page_text=first_page_text,
-                title=meta.get("title"),
-            )
-            if ner_authors:
-                meta["authors"] = ner_authors
-                meta["extraction_layers"].append("ner_sieve")
-        except Exception as exc:
-            logger.warning("NER sieve failed: %s", exc)
-
-    # ── Layer 3c: LayoutLM — when GROBID + NER both fail ─────────────────────────
-    if not meta.get("title") or not meta.get("authors"):
-        try:
-            from utils.layoutlm_extractor import extract_title_authors_layoutlm
-            layoutlm = extract_title_authors_layoutlm(pdf_path)
-
-            if layoutlm.get("title") and not meta.get("title"):
-                meta["title"] = layoutlm["title"]
-                meta["extraction_layers"].append("layoutlm_title")
-
-            if layoutlm.get("authors") and not meta.get("authors"):
-                meta["authors"] = layoutlm["authors"]
-                meta["extraction_layers"].append("layoutlm_authors")
-        except Exception as exc:
-            logger.warning("LayoutLM extraction failed: %s", exc)
 
     candidate_dois = []
     _seen_dois = set()
-    # Priority: text-extracted (regex) > GROBID > PDF embedded metadata
-    for doi_source in [layer2, layer3, layer1]:
+    # Priority: text-extracted (regex) > PDF embedded metadata
+    for doi_source in [layer2, layer1]:
         d = doi_source.get("doi") if isinstance(doi_source, dict) else None
         if d and d.lower() not in _seen_dois:
             candidate_dois.append(d)
@@ -1238,6 +1150,27 @@ async def _extract_metadata_async(pdf_path: str) -> dict:
     """
     meta, candidate_dois = await asyncio.to_thread(_extract_metadata_local_sync, pdf_path)
     logger.info("Candidate DOIs for verification: %s", candidate_dois)
+
+    # ── SPECULATIVE SIEVE — run robust_doi_resolver on all candidates ─────
+    resolved_dois = []
+    _seen_resolved = set()
+    for candidate_doi in candidate_dois:
+        resolved = await robust_doi_resolver(candidate_doi)
+        if resolved["status"] in ("verified_raw", "verified_after_sieve"):
+            doi_to_use = resolved["doi"]
+            if doi_to_use and doi_to_use.lower() not in _seen_resolved:
+                resolved_dois.append(doi_to_use)
+                _seen_resolved.add(doi_to_use.lower())
+        else:
+            # Fallback/default: use polished version of candidate if not already in list
+            from utils.text_utils import polish_extracted_string
+            polished = polish_extracted_string(candidate_doi)
+            if polished and polished.lower() not in _seen_resolved:
+                resolved_dois.append(polished)
+                _seen_resolved.add(polished.lower())
+    
+    candidate_dois = resolved_dois
+    logger.info("Resolved/Polished candidate DOIs for verification: %s", candidate_dois)
 
     # ── VERIFICATION LOOP — try each candidate DOI ───────────────────────────
     verified = False

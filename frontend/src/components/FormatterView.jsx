@@ -136,7 +136,7 @@ export default function FormatterView() {
 
     const handleStyleChange = useCallback(async (newStyle) => {
         setStyle(newStyle);
-        // Reformat existing results instantly via lightweight endpoint (no AI)
+        // Reformat existing results instantly via lightweight endpoint (no advanced extraction)
         const toReformat = results.filter(r => r.metadata);
         if (toReformat.length === 0) return;
         setResults(prev => prev.map(r => r.metadata ? { ...r, _reformatting: true } : r));

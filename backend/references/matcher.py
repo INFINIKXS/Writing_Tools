@@ -172,7 +172,7 @@ def parse_raw_reference_fast(ref_text: str) -> dict:
     # Try to split author/title from common patterns:
     # "Author, A. (2020). Title. ..."  or  "Author, A., 2020. Title. ..."
     author_title_m = re.match(
-        r'^(.+?)\s*[\(\.]?\s*(?:19|20)\d{2}\s*[\)\.]?\s*[.\s]+(.+?)(?:\.|$)',
+        r'^(.+?)\s*[\(\.]?\s*(?:19|20)\d{2}(?:,\s*[^)]+)?\s*[\)\.]?\s*[.\s]+(.+?)(?:\.|$)',
         ref_text
     )
     if author_title_m:

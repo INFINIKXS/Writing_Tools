@@ -5,7 +5,7 @@ const STAGE_CONFIG = {
     parsing: { icon: FileSearch, label: 'Parsing Document', step: 1 },
     extracted: { icon: BookOpen, label: 'Text Extracted', step: 2 },
     scanning: { icon: ScanSearch, label: 'Python Regex Scan', step: 3 },
-    analyzing: { icon: Brain, label: 'AI Matching', step: 4 },
+    analyzing: { icon: Brain, label: 'Advanced Matching', step: 4 },
     processing: { icon: Loader2, label: 'Processing', step: 4 },
     validating: { icon: GitCompare, label: 'Cross-Validation', step: 5 },
     verifying: { icon: ShieldCheck, label: 'String Verification', step: 6 },
@@ -405,11 +405,11 @@ export default function VerifierView() {
                         <div className="glass-card overflow-hidden border border-amber-500/20">
                             <div className="bg-amber-500/5 border-b border-amber-500/10 px-5 py-3 flex items-center gap-2">
                                 <ScanSearch size={16} className="text-amber-400" />
-                                <h3 className="text-sm font-bold text-amber-200">AI Found Additional Citations ({results.ai_additional_citations.length})</h3>
+                                <h3 className="text-sm font-bold text-amber-200">Additional Citations Found ({results.ai_additional_citations.length})</h3>
                                 <span className="ml-auto text-[9px] uppercase tracking-widest text-amber-400/60 bg-amber-500/10 px-2 py-0.5 rounded-full">Review Required</span>
                             </div>
                             <div className="p-4 space-y-2">
-                                <p className="text-xs text-neutral-400 mb-3">These citations were found by AI but not by Python regex. They may be valid citations in an unusual format, or they may be false positives. Please review each one.</p>
+                                <p className="text-xs text-neutral-400 mb-3">These citations were found by advanced matching but not by Python regex. They may be valid citations in an unusual format, or they may be false positives. Please review each one.</p>
                                 {results.ai_additional_citations.map((c, i) => (
                                     <div key={i} className="bg-white/[0.02] p-3 rounded-lg border border-amber-500/10 text-sm text-neutral-300 font-mono">{c}</div>
                                 ))}

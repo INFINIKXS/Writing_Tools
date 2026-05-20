@@ -59,7 +59,7 @@ class TestBatchRouteDirect(unittest.IsolatedAsyncioTestCase):
         mock_fetch_crossref.return_value = [mock_record]
 
         # Mock standard API validation to pass
-        with patch("references.routes._validate_api_result", return_value=True):
+        with patch("references.metadata._validate_api_result", return_value=True):
             # Create a real FastAPI UploadFile in-memory
             dummy_file = UploadFile(
                 filename="test1.pdf", 
@@ -77,7 +77,9 @@ class TestBatchRouteDirect(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(len(response), 1)
             self.assertEqual(response[0]["id"], "item1")
             self.assertIn("result", response[0])
-            self.assertIn("bibliography", response[0]["result"])
+            # Response schema uses 'formatted' and 'formatted_html', not 'bibliography'
+            self.assertIn("formatted", response[0]["result"])
+            self.assertIn("formatted_html", response[0]["result"])
             self.assertEqual(response[0]["result"]["metadata"]["title"], "Mocked Title")
             
             # Assert text extraction stopped at page 3 (first 3 pages rule)

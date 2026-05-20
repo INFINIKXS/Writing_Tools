@@ -73,18 +73,63 @@ _DOI_TRAILING_ALPHA_RE = re.compile(
     r'(\d)([a-z]{5,})$',   # require 5+ chars (short segments like "pone" are real)
     re.IGNORECASE,
 )
+# Inspired by Zotero's production translator core
+# Limits the prefix to numeric sequences and prevents greedy capture of illegal markup chars
+DOI_CAPTURE_REGEX = re.compile(
+    r'\b10\.[0-9]{4,9}\/(?:(?!["&\'<>])\S)+', 
+    re.IGNORECASE
+)
+
+
+def polish_extracted_string(raw_match: str) -> str:
+    """
+    Step 2 of the Zotero-style extraction flow.
+    Applies strict context polish and suffix truncation.
+    """
+    return _clean_doi(raw_match)
 
 
 def _clean_doi(raw: str) -> str:
-    """Normalise and clean a raw DOI match."""
+    """Normalise, sanitize, and clean a raw DOI match."""
     doi = raw.strip()
-    # Strip trailing punctuation that isn't part of the DOI
-    doi = doi.rstrip('.,;:)\'"]}> \t')
+    
+    # ── Rule A: Strip Trailing Structural Punctuation and whitespace ──
+    doi = re.sub(r'[\s.\-_/,;:)\]<>\'"’`]+$', '', doi)
+    
+    # ── Rule B: Remove Publisher URL Glitches with Routing Keywords ──
+    # Cleans trailing domains paired with standard platform routing keywords
+    # e.g., "10.1111/dme.70058wileyonlinelibrary.com/journal/dme" -> "10.1111/dme.70058"
+    URL_ROUTING_SIGNALS = r'(?:com|org|net|gov|edu|co\.uk)(?:/[a-zA-Z0-9_\-]+)?/(?:journal|abs|doi|full|article|pmc|pdf|index|main)\b'
+    domain_match = re.search(URL_ROUTING_SIGNALS, doi, re.IGNORECASE)
+    if domain_match:
+        doi = doi[:domain_match.start()]
+        doi = re.sub(r'[\s.\-_/,;:]+$', '', doi)
+
+    # ── Rule C: Remove Glued Publisher Domains/Hosts ──
+    # Cleans trailing host/domain strings that get glued to the end of a digit-ending DOI suffix
+    # e.g., "10.1111/dme.70058wileyonlinelibrary.com" -> "10.1111/dme.70058"
+    PUBLISHER_DOMAINS = r'(?:wileyonlinelibrary|sciencedirect|springer|nature|ieee|tandfonline|frontiersin|plos|elsevier|sagepub|oxfordjournals|cambridge)\.(?:com|org|net|co\.uk)'
+    pub_match = re.search(PUBLISHER_DOMAINS, doi, re.IGNORECASE)
+    if pub_match:
+        doi = doi[:pub_match.start()]
+        doi = re.sub(r'[\s.\-_/,;:]+$', '', doi)
+
+    # Remove generic trailing domains that get glued directly
+    # e.g., "...something.com"
+    generic_domain = re.search(r'([a-zA-Z\-]{3,})\.(?:com|org|net|co\.uk|gov|edu)\b', doi, re.IGNORECASE)
+    if generic_domain:
+        # Check if the domain is part of a valid subsegment (like "10.1371/journal.pone.0294946" - no .com/.org/.net here)
+        # To be safe, if a domain ends in .com, .org, or .net and is glued at the end of the DOI, we strip it
+        doi = doi[:generic_domain.start()]
+        doi = re.sub(r'[\s.\-_/,;:]+$', '', doi)
+
     # Remove garbage words that PDF text extractors append
     doi = _DOI_JUNK_TAIL_RE.sub('', doi).rstrip('.,;:) ')
+    
     # Strip publisher/site names glued directly to the DOI suffix
     # e.g. "10.3389/frai.2021.798962frontiers" → "10.3389/frai.2021.798962"
     doi = _DOI_TRAILING_ALPHA_RE.sub(r'\1', doi)
+    
     # Lowercase (DOIs are case-insensitive)
     return doi.lower()
 
