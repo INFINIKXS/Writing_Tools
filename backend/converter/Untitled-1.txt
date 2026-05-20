@@ -1,0 +1,389 @@
+[Skip to content](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1#start-of-content)
+[All gists](https://gist.github.com/discover)
+[Back to GitHub](https://github.com)
+[Sign in](https://gist.github.com/auth/github?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)
+[Sign up](https://gist.github.com/join?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1&source=header-gist)
+[Sign in](https://gist.github.com/auth/github?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)
+[Sign up](https://gist.github.com/join?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1&source=header-gist)
+[Reload](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+[Reload](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+[Reload](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+Instantly share code, notes, and snippets.
+
+# [miguelsousa](https://gist.github.com/miguelsousa)/[convert_type1_to_opentype-cff.py](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+[miguelsousa](https://gist.github.com/miguelsousa)
+[convert_type1_to_opentype-cff.py](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+- 
+
+
+    [Download ZIP](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/archive/34e20df8fa7ef17e568f94eda5fd5d5a0327aff4.zip)
+
+
+[Download ZIP](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/archive/34e20df8fa7ef17e568f94eda5fd5d5a0327aff4.zip)
+- 
+          [Star
+
+          1
+          (1)](https://gist.github.com/login?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)You must be signed in to star a gist
+
+
+- 
+            [Fork
+
+          3
+          (3)](https://gist.github.com/login?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)You must be signed in to fork a gist
+
+
+[Star
+
+          1
+          (1)](https://gist.github.com/login?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)
+[Fork
+
+          3
+          (3)](https://gist.github.com/login?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)
+- 
+
+
+
+
+
+    Embed
+
+
+
+
+
+
+
+
+
+
+
+
+
+        Select an option
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+           Embed
+      Embed this gist in your website.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+           Share
+      Copy sharable link for this gist.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+          Clone via HTTPS
+      Clone using the web URL.
+
+
+
+
+
+
+
+
+              No results found
+
+
+              [Learn more about clone URLs](https://docs.github.com/articles/which-remote-url-should-i-use)
+
+
+
+
+        Clone this repository at &lt;script src=&quot;https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1.js&quot;&gt;&lt;/script&gt;
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+           Embed
+      Embed this gist in your website.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+           Share
+      Copy sharable link for this gist.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+          Clone via HTTPS
+      Clone using the web URL.
+
+
+
+- 
+
+
+
+Save miguelsousa/66ee9504039a8b64c605defa316516c1 to your computer and use it in GitHub Desktop.
+
+# Select an option
+- 
+
+
+
+
+
+
+
+
+
+
+           Embed
+      Embed this gist in your website.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+           Share
+      Copy sharable link for this gist.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+          Clone via HTTPS
+      Clone using the web URL.
+
+## No results found
+
+[Learn more about clone URLs](https://docs.github.com/articles/which-remote-url-should-i-use)
+[Code](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1)
+[Revisions
+        1](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/revisions)
+[Stars
+        1](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/stargazers)
+[Forks
+        3](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/forks)
+
+# Select an option
+
+- 
+
+
+
+
+
+
+
+
+
+
+           Embed
+      Embed this gist in your website.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+           Share
+      Copy sharable link for this gist.
+
+
+
+- 
+
+
+
+
+
+
+
+
+
+
+          Clone via HTTPS
+      Clone using the web URL.
+
+## No results found
+
+[Learn more about clone URLs](https://docs.github.com/articles/which-remote-url-should-i-use)
+[Download ZIP](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/archive/34e20df8fa7ef17e568f94eda5fd5d5a0327aff4.zip)
+[Raw](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1/raw/34e20df8fa7ef17e568f94eda5fd5d5a0327aff4/convert_type1_to_opentype-cff.py)
+[convert_type1_to_opentype-cff.py](https://gist.github.com/miguelsousa/66ee9504039a8b64c605defa316516c1#file-convert_type1_to_opentype-cff-py)
+[Learn more about bidirectional Unicode characters](https://github.co/hiddenchars)
+[Show hidden characters](https://gist.github.com/miguelsousa/%7B%7B%20revealButtonHref%20%7D%7D)
+[Sign up for free](https://gist.github.com/join?source=comment-gist)
+[Sign in to comment](https://gist.github.com/login?return_to=https%3A%2F%2Fgist.github.com%2Fmiguelsousa%2F66ee9504039a8b64c605defa316516c1)
+
+### Footer navigation
+
+- 
+            [Terms](https://docs.github.com/site-policy/github-terms/github-terms-of-service)
+
+- 
+            [Privacy](https://docs.github.com/site-policy/privacy-policies/github-privacy-statement)
+
+- 
+            [Security](https://github.com/security)
+
+- 
+            [Status](https://www.githubstatus.com/)
+
+- 
+            [Community](https://github.community/)
+
+- 
+            [Docs](https://docs.github.com/)
+
+- 
+            [Contact](https://support.github.com?tags=dotcom-footer)
+
+- 
+
+
+       Manage cookies
+
+
+
+- 
+
+
+      Do not share my personal information
+
+
+
+[Terms](https://docs.github.com/site-policy/github-terms/github-terms-of-service)
+[Privacy](https://docs.github.com/site-policy/privacy-policies/github-privacy-statement)
+[Security](https://github.com/security)
+[Status](https://www.githubstatus.com/)
+[Community](https://github.community/)
+[Docs](https://docs.github.com/)
+[Contact](https://support.github.com?tags=dotcom-footer)

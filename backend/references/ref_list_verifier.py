@@ -377,27 +377,35 @@ def verify_single_reference(original_ref: str, style: str) -> dict:
     field_sources = {}
 
     if doi:
-        # Try PubMed first, then CrossRef
-        success = perform_pubmed_lookup(doi, api_metadata, field_sources)
-        if success:
-            result["api_verified"] = True
-            result["api_source"] = "pubmed"
-            # Supplement with CrossRef for any fields PubMed left empty
-            # (e.g. pages for MDPI/open-access journals with DOI-only elocationids)
-            missing_fields = [f for f in ("pages", "volume", "issue", "source") if not api_metadata.get(f)]
-            if missing_fields:
-                cr_metadata = {k: None for k in api_metadata}
-                cr_sources = {}
-                if perform_crossref_lookup(doi, cr_metadata, cr_sources):
-                    for field in missing_fields:
-                        if cr_metadata.get(field):
-                            api_metadata[field] = cr_metadata[field]
-                            field_sources[field] = "crossref"
-        else:
-            success = perform_crossref_lookup(doi, api_metadata, field_sources)
+        # Try PubMed first, then CrossRef (with one retry for transient failures)
+        for attempt in range(2):
+            if attempt > 0:
+                import time
+                time.sleep(2)  # Wait before retry to let rate limits cool down
+                print(f"[RefVerifier] Retrying DOI lookup for {doi} (attempt {attempt + 1})")
+
+            success = perform_pubmed_lookup(doi, api_metadata, field_sources)
             if success:
                 result["api_verified"] = True
-                result["api_source"] = "crossref"
+                result["api_source"] = "pubmed"
+                # Supplement with CrossRef for any fields PubMed left empty
+                # (e.g. pages for MDPI/open-access journals with DOI-only elocationids)
+                missing_fields = [f for f in ("pages", "volume", "issue", "source") if not api_metadata.get(f)]
+                if missing_fields:
+                    cr_metadata = {k: None for k in api_metadata}
+                    cr_sources = {}
+                    if perform_crossref_lookup(doi, cr_metadata, cr_sources):
+                        for field in missing_fields:
+                            if cr_metadata.get(field):
+                                api_metadata[field] = cr_metadata[field]
+                                field_sources[field] = "crossref"
+                break
+            else:
+                success = perform_crossref_lookup(doi, api_metadata, field_sources)
+                if success:
+                    result["api_verified"] = True
+                    result["api_source"] = "crossref"
+                    break
 
     if not result["api_verified"]:
         # Try searching CrossRef by title if we parsed one

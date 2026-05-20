@@ -12,6 +12,20 @@ from fontTools.pens.recordingPen import RecordingPen
 logger = logging.getLogger(__name__)
 
 
+# ── Feature flag: skip manual cmap rebuilding ─────────────────────────────
+# When True, _inject_cmap skips the cmap-table writing portion (which
+# corrupts text on re-extraction in PyMuPDF 1.26.4+) but STILL performs
+# the hmtx advance-width synchronization (which is essential for correct
+# character spacing — without it, inserted text shows wide gaps between
+# letters because the OTF wrapper's hmtx doesn't match CFF charstring widths).
+#
+# Confirmed clean operation on PyMuPDF 1.27.2.2.
+#
+# If a future PyMuPDF version regresses and characters render as .notdef
+# boxes, set this to False to re-enable full cmap rebuilding.
+SKIP_CMAP_INJECTION_KEEP_HMTX = True
+
+
 # ── Base-14 / common font name aliases ──────────────────────────────────────
 # Maps substrings found in PDF font names to PyMuPDF built-in codes.
 # PyMuPDF supports these without any extra package:
@@ -594,6 +608,118 @@ def _inject_cmap(font_bytes: bytes, doc: fitz.Document, xref: int, page: Optiona
     querying the actual CIDToGIDMap layout, patching zero-width advances,
     and explicitly injecting a WinAnsi cmap subtable into the header.
     """
+    # ── Surgical handling: hmtx-only path ────────────────────────────────
+    # See SKIP_CMAP_INJECTION_KEEP_HMTX flag at top of file for context.
+    # When True, we skip the cmap-table writing (which corrupts re-extract)
+    # but still run the hmtx advance-width sync (essential for correct
+    # character spacing in inserted text).
+    if SKIP_CMAP_INJECTION_KEEP_HMTX:
+        try:
+            logger.info(
+                f"==== HMTX-ONLY PATH for '{basefont_name}' "
+                f"(SKIP_CMAP_INJECTION_KEEP_HMTX=True) ===="
+            )
+            tt = TTFont(io.BytesIO(font_bytes))
+
+            # Apply ONLY the hmtx sync logic from the full path.
+            # CFF-flavoured OTF fonts store widths in TWO places: the
+            # hmtx table and the CFF charstrings. After OTF wrapping
+            # these can diverge (FontMatrix scale factor). PDF renderers
+            # use CFF charstring widths, but MuPDF's insert_text uses
+            # hmtx. Without sync, inserted text has wrong character
+            # spacing — gaps between letters.
+            if "CFF " in tt and "hmtx" in tt:
+                hmtx = tt["hmtx"].metrics
+                try:
+                    cff_top = tt["CFF "].cff.topDictIndex[0]
+                    char_strings = cff_top.CharStrings
+                    font_matrix = getattr(
+                        cff_top, "FontMatrix",
+                        [0.001, 0, 0, 0.001, 0, 0],
+                    )
+                    scale_x = font_matrix[0] * 1000
+
+                    fixed_count = 0
+                    for gname in list(char_strings.keys()):
+                        if gname not in hmtx:
+                            continue
+                        try:
+                            cs = char_strings[gname]
+                            pen = RecordingPen()
+                            cs.draw(pen)
+                            cff_width = cs.width
+                            hmtx_width, lsb = hmtx[gname]
+
+                            if abs(scale_x - 1.0) > 0.001:
+                                scaled_width = round(cff_width * scale_x)
+                            else:
+                                scaled_width = cff_width
+
+                            if hmtx_width != scaled_width and scaled_width > 0:
+                                hmtx[gname] = (scaled_width, lsb)
+                                fixed_count += 1
+                        except Exception:
+                            pass
+
+                    if fixed_count > 0:
+                        logger.info(
+                            f"CFF hmtx sync: fixed {fixed_count} "
+                            f"advance widths (FontMatrix scale={scale_x:.3f})"
+                        )
+                    else:
+                        logger.info(
+                            "CFF hmtx sync: all widths already consistent"
+                        )
+                except Exception as e:
+                    logger.warning(
+                        f"CFF hmtx sync failed (non-fatal): {e}"
+                    )
+            elif "hmtx" in tt and "glyf" in tt:
+                # TTF fallback: patch zero-width glyphs with average advance
+                hmtx = tt["hmtx"].metrics
+                glyf = tt["glyf"]
+                valid_advances = [
+                    adv for gn, (adv, _) in hmtx.items()
+                    if adv > 0 and gn != ".notdef"
+                ]
+                avg_advance = (
+                    sum(valid_advances) // len(valid_advances)
+                    if valid_advances else 500
+                )
+                fixed_count = 0
+                for gname in tt.getGlyphOrder():
+                    if gname not in hmtx:
+                        continue
+                    advance, lsb = hmtx[gname]
+                    if advance == 0:
+                        try:
+                            g = glyf[gname]
+                            has_outline = (
+                                hasattr(g, "numberOfContours")
+                                and g.numberOfContours > 0
+                            )
+                            if has_outline:
+                                hmtx[gname] = (avg_advance, lsb)
+                                fixed_count += 1
+                        except Exception:
+                            pass
+                if fixed_count > 0:
+                    logger.info(
+                        f"TTF hmtx patched {fixed_count} zero-width glyphs"
+                    )
+
+            # Serialize and return — NO cmap manipulation
+            out = io.BytesIO()
+            tt.save(out)
+            logger.info(f"==== HMTX-ONLY PATH SUCCESS ====")
+            return out.getvalue()
+        except Exception as e:
+            logger.warning(
+                f"HMTX-only path failed: {e}. Returning original font_bytes."
+            )
+            return font_bytes
+    # ───────────────────────────────────────────────────────────────────────
+
     try:
         logger.info(f"==== INJECT_CMAP START: {basefont_name} (page {page.number if page else 'none'}) ====")
         single_map, multi_map = _parse_tounicode(doc, xref)

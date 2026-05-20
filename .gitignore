@@ -30,3 +30,6 @@ Thumbs.db
 
 #Ignore vscode AI rules
 .github\instructions\codacy.instructions.md
+
+.google-cookie
+.system design\Engineering_notes.md

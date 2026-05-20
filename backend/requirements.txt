@@ -29,3 +29,5 @@ pymupdf
 Pillow
 pytesseract
 spacy
+httpx
+tenacity

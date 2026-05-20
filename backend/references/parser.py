@@ -330,3 +330,159 @@ def parse_raw_reference(ref_text: str) -> dict:
     metadata["api_source"] = api_source
 
     return metadata
+
+
+async def parse_raw_reference_async(ref_text: str, client=None) -> dict:
+    """
+    Async version of parse_raw_reference that uses rate-limited batch APIs.
+    """
+    import asyncio
+    from references.api_batch import fetch_crossref_batch
+    
+    # Run the fast regex part in a thread
+    parsed = await asyncio.to_thread(parse_raw_reference_fast, ref_text)
+
+    metadata = {
+        "authors": None, "title": None, "year": None,
+        "source": None, "doi": None, "url": None,
+        "volume": None, "issue": None, "pages": None,
+        "publisher": None, "type": "Other",
+    }
+    field_sources = {}
+
+    doi = parsed.get("doi")
+    if doi:
+        metadata["doi"] = doi
+        field_sources["doi"] = "text_parsing"
+
+    api_success = False
+    api_source = None
+
+    if doi:
+        # Try PubMed first (sync in thread, fast enough, not strictly limited yet)
+        api_metadata = {k: None for k in metadata}
+        api_sources = {}
+        def do_pubmed():
+            return perform_pubmed_lookup(doi, api_metadata, api_sources)
+            
+        api_success = await asyncio.to_thread(do_pubmed)
+        if api_success:
+            api_source = "pubmed"
+            
+            # Supplement with Crossref for missing fields using rate-limited batch API
+            missing_fields = [f for f in ("pages", "volume", "issue", "source") if not api_metadata.get(f)]
+            if missing_fields:
+                records = await fetch_crossref_batch([doi], client=client)
+                if records and records[0]:
+                    cr_rec = records[0]
+                    for field in missing_fields:
+                        val = getattr(cr_rec, field, None)
+                        if val:
+                            api_metadata[field] = val
+                            api_sources[field] = "crossref"
+        else:
+            # Fallback to rate-limited Crossref
+            records = await fetch_crossref_batch([doi], client=client)
+            if records and records[0]:
+                cr_rec = records[0]
+                api_metadata.update({
+                    "authors": cr_rec.authors, "title": cr_rec.title, "year": cr_rec.year,
+                    "source": cr_rec.journal, "doi": cr_rec.doi, "url": cr_rec.url,
+                    "volume": cr_rec.volume, "issue": cr_rec.issue, "pages": cr_rec.pages,
+                    "publisher": cr_rec.publisher, "type": cr_rec.type
+                })
+                for k in api_metadata:
+                    if api_metadata[k]: api_sources[k] = "crossref"
+                api_success = True
+                api_source = "crossref"
+
+        if api_success:
+            for key in ("authors", "title", "year", "source", "volume", "issue", "pages", "publisher", "type"):
+                if api_metadata.get(key):
+                    metadata[key] = api_metadata[key]
+                    field_sources[key] = api_sources.get(key, api_source)
+
+    if not api_success:
+        discovered_doi = await asyncio.to_thread(_try_title_search_for_doi, parsed)
+        if discovered_doi:
+            api_metadata = {k: None for k in metadata}
+            api_sources = {}
+            api_metadata["doi"] = discovered_doi
+
+            def do_pubmed_title():
+                return perform_pubmed_lookup(discovered_doi, api_metadata, api_sources)
+            
+            api_success = await asyncio.to_thread(do_pubmed_title)
+            
+            if not api_success:
+                records = await fetch_crossref_batch([discovered_doi])
+                if records and records[0]:
+                    cr_rec = records[0]
+                    api_metadata.update({
+                        "authors": cr_rec.authors, "title": cr_rec.title, "year": cr_rec.year,
+                        "source": cr_rec.journal, "doi": cr_rec.doi, "url": cr_rec.url,
+                        "volume": cr_rec.volume, "issue": cr_rec.issue, "pages": cr_rec.pages,
+                        "publisher": cr_rec.publisher, "type": cr_rec.type
+                    })
+                    for k in api_metadata:
+                        if api_metadata[k]: api_sources[k] = "crossref"
+                    api_success = True
+
+            if api_success:
+                api_source = api_sources.get("doi", "crossref")
+                metadata["doi"] = discovered_doi
+                field_sources["doi"] = "title_search"
+                for key in ("authors", "title", "year", "source", "volume", "issue", "pages", "publisher", "type"):
+                    if api_metadata.get(key):
+                        metadata[key] = api_metadata[key]
+                        field_sources[key] = api_sources.get(key, api_source)
+
+    # Step 4: Regex fallback
+    for key in ("year", "volume", "issue", "pages", "doi"):
+        if not metadata.get(key) and parsed.get(key):
+            metadata[key] = parsed[key]
+            field_sources[key] = "text_parsing"
+
+    if not metadata.get("authors") and parsed.get("authors"):
+        metadata["authors"] = parsed["authors"]
+        field_sources["authors"] = "text_parsing"
+
+    if not metadata.get("title") and parsed.get("title"):
+        metadata["title"] = parsed["title"]
+        field_sources["title"] = "text_parsing"
+
+    if not metadata.get("source") and parsed.get("source"):
+        metadata["source"] = parsed["source"]
+        field_sources["source"] = "text_parsing"
+
+    if not metadata.get("doi") and not metadata.get("url"):
+        import re
+        url_match = re.search(r'(https?://\S+)', ref_text)
+        if url_match:
+            metadata["url"] = url_match.group(1).rstrip('.,;)')
+            field_sources["url"] = "text_parsing"
+
+    if metadata["type"] == "Other":
+        metadata["type"] = classify_source_type(metadata)
+
+    if isinstance(metadata["authors"], str):
+        raw = metadata["authors"]
+        if '; ' in raw:
+            metadata["authors"] = [a.strip() for a in raw.split(';') if a.strip()]
+        elif ' and ' in raw or ' & ' in raw:
+            raw = raw.replace(' & ', ' and ')
+            metadata["authors"] = [a.strip() for a in raw.split(' and ') if a.strip()]
+        else:
+            metadata["authors"] = [raw.strip()]
+
+    corrections = []
+    if api_success:
+        corrections = await asyncio.to_thread(_detect_corrections, parsed, metadata, ref_text)
+
+    metadata["field_sources"] = field_sources
+    metadata["corrections"] = corrections
+    metadata["api_verified"] = api_success
+    metadata["api_source"] = api_source
+
+    return metadata
+

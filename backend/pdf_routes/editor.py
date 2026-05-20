@@ -6,6 +6,8 @@ from fastapi import APIRouter, UploadFile, File, BackgroundTasks, Form
 from fastapi.responses import FileResponse, JSONResponse
 from pypdf import PdfReader, PdfWriter
 import logging
+import base64
+from converter.font_utils import wrap_cff_in_otf
 
 logger = logging.getLogger(__name__)
 
@@ -411,4 +413,99 @@ async def extract_spacing(file: UploadFile = File(...)):
         return JSONResponse(
             status_code=500,
             content={"error": "Failed to extract spacing layout"},
+        )
+
+
+@router.post("/extract-fonts")
+async def extract_fonts(file: UploadFile = File(...)):
+    """
+    Extract all embedded fonts from the PDF and return them as base64-encoded
+    blobs suitable for @font-face injection in the frontend.
+    
+    Returns: {
+      "MetaProLight-Regular": {
+        "data": "<base64>",
+        "format": "otf",  // "otf" | "ttf" | "woff" etc.
+        "postscript_name": "MetaProLight-Regular",
+        "subset_tag": "NBUDXT",  // 6-letter prefix, if any
+      },
+      ...
+    }
+    """
+    
+    try:
+        pdf_bytes = await file.read()
+        doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+        fonts_out = {}
+        seen_xrefs = set()
+        
+        for page_idx in range(len(doc)):
+            page = doc[page_idx]
+            # page.get_fonts(full=True) returns list of tuples:
+            # (xref, ext, type, basename, refname, encoding)
+            for font_info in page.get_fonts(full=True):
+                xref = font_info[0]
+                if xref in seen_xrefs:
+                    continue
+                seen_xrefs.add(xref)
+                
+                basename = font_info[3]  # e.g. "NBUDXT+MetaProLight-Regular"
+                
+                # Parse subset prefix (6 uppercase letters + "+")
+                subset_tag = None
+                postscript_name = basename
+                if len(basename) > 7 and basename[6] == "+" and basename[:6].isupper() and basename[:6].isalpha():
+                    subset_tag = basename[:6]
+                    postscript_name = basename[7:]
+                
+                # Skip duplicate base names (same font embedded multiple times)
+                if basename in fonts_out:
+                    continue
+                
+                try:
+                    font_data = doc.extract_font(xref)
+                    # extract_font returns (basename, ext, encoding, content)
+                    ext = font_data[1]
+                    buffer = font_data[3]
+                    
+                    if not buffer:
+                        logger.warning(f"Font {basename} has empty buffer")
+                        continue
+                    
+                    # Wrap bare CFF in OTF container so the browser can parse it.
+                    # (Browsers don't load naked .cff files via @font-face.)
+                    if ext == "cff":
+                        try:
+                            buffer = wrap_cff_in_otf(buffer)
+                            if buffer:
+                                ext = "otf"
+                            else:
+                                logger.warning(f"CFF→OTF wrap returned None for {basename}")
+                                continue
+                        except Exception as e:
+                            logger.warning(f"CFF→OTF wrap failed for {basename}: {e}")
+                            continue
+                    
+                    # Handle Type1 / Type3 / other unsupported-by-browsers formats
+                    if ext not in ("otf", "ttf", "woff", "woff2"):
+                        logger.info(f"Skipping font {basename} with unsupported ext '{ext}'")
+                        continue
+                    
+                    fonts_out[basename] = {
+                        "data": base64.b64encode(buffer).decode("ascii"),
+                        "format": ext,
+                        "postscript_name": postscript_name,
+                        "subset_tag": subset_tag,
+                    }
+                    logger.info(f"Extracted font {basename} ({len(buffer)} bytes, {ext})")
+                except Exception as e:
+                    logger.warning(f"Failed to extract font {basename}: {e}")
+        
+        doc.close()
+        return JSONResponse(status_code=200, content=fonts_out)
+    except Exception as e:
+        logger.error(f"extract-fonts failed: {e}")
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Failed to extract fonts"},
         )

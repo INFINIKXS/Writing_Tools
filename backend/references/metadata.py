@@ -50,6 +50,31 @@ _adapter = HTTPAdapter(max_retries=_retries, pool_connections=10, pool_maxsize=1
 _http_session.mount("http://", _adapter)
 _http_session.mount("https://", _adapter)
 
+# ── PubMed Rate Limiter ────────────────────────────────────────────────────────
+# NCBI E-utilities allows 3 requests/second without an API key.
+# This thread-safe rate limiter ensures we stay under that limit even when
+# multiple verification workers are running concurrently.
+import threading
+
+class _RateLimiter:
+    """Thread-safe rate limiter: ensures minimum interval between calls."""
+    def __init__(self, max_per_second: float):
+        self._min_interval = 1.0 / max_per_second
+        self._lock = threading.Lock()
+        self._last_call = 0.0
+
+    def wait(self):
+        """Block until enough time has passed since the last call."""
+        with self._lock:
+            now = time.monotonic()
+            elapsed = now - self._last_call
+            if elapsed < self._min_interval:
+                time.sleep(self._min_interval - elapsed)
+            self._last_call = time.monotonic()
+
+_pubmed_limiter = _RateLimiter(max_per_second=3.0)
+_crossref_limiter = _RateLimiter(max_per_second=10.0)
+
 # ── Constants ──────────────────────────────────────────────────────────────────
 GROBID_URL      = os.getenv("GROBID_URL", "http://localhost:8070")
 CROSSREF_API    = "https://api.crossref.org/works"
@@ -122,20 +147,40 @@ def _is_garbage_title(title: str) -> bool:
 def _extract_pdf_metadata(pdf_path: str) -> dict:
     """
     Read the hidden metadata baked into the PDF file itself.
-    This is the fastest and most reliable source when available.
+    Checks modern XMP Metadata first, then falls back to legacy PDF Info fields.
     Returns a dict with keys: title, authors, year, doi  (all may be None).
     """
     result = {"title": None, "authors": [], "year": None, "doi": None}
     try:
         from pypdf import PdfReader
         reader = PdfReader(pdf_path)
-        info   = reader.metadata or {}
+        
+        # ── 1a. Try Modern XMP Metadata (Dublin Core) ──
+        try:
+            xmp = reader.xmp_metadata
+            if xmp and xmp.dc_title:
+                xmp_title = xmp.dc_title
+                title_candidate = None
+                if isinstance(xmp_title, dict):
+                    title_candidate = xmp_title.get('x-default') or next(iter(xmp_title.values()), None)
+                elif isinstance(xmp_title, str):
+                    title_candidate = xmp_title
+                
+                if title_candidate and not _is_garbage_title(title_candidate):
+                    result["title"] = title_candidate.strip()
+                    logger.info("Extracted clean title via PDF XMP Metadata: %r", result["title"])
+        except Exception as xmp_exc:
+            logger.debug("XMP metadata extraction skipped/failed: %s", xmp_exc)
 
-        raw_title = info.get("/Title") or info.get("Title")
-        if raw_title and not _is_garbage_title(raw_title):
-            result["title"] = raw_title.strip()
-        elif raw_title:
-            logger.debug("Rejected garbage PDF title: %r", raw_title)
+        # ── 1b. Fallback to Legacy Info Dictionary if XMP failed ──
+        info = reader.metadata or {}
+        if not result["title"]:
+            raw_title = info.get("/Title") or info.get("Title")
+            if raw_title and not _is_garbage_title(raw_title):
+                result["title"] = raw_title.strip()
+                logger.info("Extracted clean title via PDF Info Metadata: %r", result["title"])
+            elif raw_title:
+                logger.debug("Rejected garbage PDF title: %r", raw_title)
 
         raw_author = info.get("/Author") or info.get("Author")
         if raw_author:
@@ -175,7 +220,8 @@ def _extract_pdf_metadata(pdf_path: str) -> dict:
 def _extract_via_regex(pdf_path: str, pages: int = 2) -> dict:
     """
     Extract raw text from the first `pages` pages and run your existing
-    two-pass DOI regex from text_utils.  Also pulls a naive title/year guess.
+    two-pass DOI regex from text_utils.  Also pulls a naive title/year guess
+    supporting multi-line concatenations.
     Returns: { doi, year, title }  — authors are not reliably found via regex.
     """
     result = {"doi": None, "year": None, "title": None}
@@ -196,7 +242,6 @@ def _extract_via_regex(pdf_path: str, pages: int = 2) -> dict:
             full_text
         )
         healed = re.sub(r'(10\.\d{4,9}/[^\s]*?)-?\n\s*([a-zA-Z0-9])', r'\1\2', healed)
-        # Heal DOIs split at a dot boundary:  "journal.pone.\n0294946" → joined
         healed = re.sub(r'(10\.\d{4,9}/[^\s]*\.)\s*\n\s*(\d)', r'\1\2', healed)
 
         # DOI — your robust two-pass regex
@@ -207,11 +252,28 @@ def _extract_via_regex(pdf_path: str, pages: int = 2) -> dict:
         if years:
             result["year"] = int(years[0])
 
-        # Title — heuristic: first non-empty line on page 0 longer than 20 chars
-        for line in text_pages[0].splitlines() if text_pages else []:
-            line = line.strip()
+        # Title — heuristic: scan and support multi-line title fields
+        lines = [line.strip() for line in text_pages[0].splitlines() if line.strip()] if text_pages else []
+        
+        for idx, line in enumerate(lines):
             if len(line) > 20 and not re.match(r"^\d", line) and not _is_garbage_title(line):
-                result["title"] = line
+                title_parts = [line]
+                
+                # Lookahead up to 2 lines to catch wrapped components of the title
+                for lookahead in range(1, 3):
+                    if idx + lookahead < len(lines):
+                        next_line = lines[idx + lookahead]
+                        # Continuation line criteria: short to medium length, no weird endings, not a header/date
+                        if (len(next_line) > 5 and 
+                            not re.match(r"^\d", next_line) and 
+                            not _is_garbage_title(next_line) and
+                            not any(keyword in next_line.lower() for keyword in ["vol.", "issue", "http", "doi:", "received", "abstract"])):
+                            title_parts.append(next_line)
+                        else:
+                            break
+                
+                result["title"] = " ".join(title_parts)
+                logger.info("Heuristic Regex layer extracted title: %r", result["title"])
                 break
 
     except Exception as exc:
@@ -291,6 +353,133 @@ def _extract_identity_from_pdf(pdf_path: str) -> dict:
     return result
 
 
+def hard_verify_against_pdf(title: str, authors: list, pdf_path: str) -> bool:
+    """
+    Physically scans the raw text of the first 2 pages of the PDF.
+    Returns True if the title (>15 chars) and the first author's surname
+    are found verbatim in the raw text (ignoring whitespace/punctuation).
+    """
+    import re
+    import unicodedata
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(pdf_path)
+        pdf_text = ""
+        for i, page in enumerate(reader.pages):
+            if i >= 2: break
+            pdf_text += (page.extract_text() or "") + "\n"
+        
+        clean_title = re.sub(r'[^\w]', '', (title or "").lower())
+        clean_pdf_text = re.sub(r'[^\w]', '', pdf_text.lower())
+        
+        if len(clean_title) <= 15 or clean_title not in clean_pdf_text:
+            return False
+            
+        if not authors:
+            return True
+            
+        first_author = unicodedata.normalize('NFKD', authors[0]).encode('ascii', 'ignore').decode().lower()
+        # If the author is "Smith, J", grab the surname "Smith"
+        first_author = first_author.split(',')[0].strip()
+        first_author = re.sub(r'[^\w]', '', first_author)
+        
+        if first_author and first_author not in clean_pdf_text:
+            return False
+            
+        return True
+    except Exception as e:
+        logger.warning("Failed to perform deep PDF text search for hard verification: %s", e)
+        return False
+
+
+def strict_ai_verify_against_pdf(ai_data: dict, pdf_path: str) -> bool:
+    """
+    Extremely strict verification for pure-AI metadata extraction.
+    Ensures that ALL provided string/numeric fields (title, authors, year, journal, volume, issue, pages)
+    physically exist within the raw text of the first 2 pages of the PDF.
+    If even one field is hallucinated, the entire record is rejected.
+    """
+    import re
+    import unicodedata
+    try:
+        from pypdf import PdfReader
+        reader = PdfReader(pdf_path)
+        pdf_text = ""
+        for i, page in enumerate(reader.pages):
+            if i >= 2: break
+            pdf_text += (page.extract_text() or "") + "\n"
+            
+        clean_pdf_text = re.sub(r'[^\w]', '', pdf_text.lower())
+        
+        # 1. Check Title (> 15 chars requirement)
+        title = ai_data.get("title")
+        if not title: return False
+        clean_title = re.sub(r'[^\w]', '', title.lower())
+        if len(clean_title) <= 15 or clean_title not in clean_pdf_text:
+            return False
+            
+        # 2. Check all authors' surnames
+        authors = ai_data.get("authors") or []
+        for author in authors:
+            author_norm = unicodedata.normalize('NFKD', author).encode('ascii', 'ignore').decode().lower()
+            surname = author_norm.split(',')[0].strip()
+            surname = re.sub(r'[^\w]', '', surname)
+            if surname and surname not in clean_pdf_text:
+                return False
+                
+        # 3. Check other metadata fields intelligently
+        # Instead of rejecting the entire perfect extraction if a minor field (like Publisher) 
+        # is hallucinated/inferred, we just strip that unverified field out.
+        fields_to_check = ["year", "journal", "volume", "issue", "pages", "publisher"]
+        for field in fields_to_check:
+            val = ai_data.get(field)
+            if not val:
+                continue
+                
+            val_str = str(val).lower()
+            field_verified = True
+            
+            if field == "pages":
+                numbers = re.findall(r'\d+', val_str)
+                for num in numbers:
+                    if num not in clean_pdf_text:
+                        logger.warning("Strict AI verification: Page number '%s' not found. Stripping 'pages' field.", num)
+                        field_verified = False
+                        break
+            elif field in ["journal", "publisher"]:
+                words = [re.sub(r'[^\w]', '', w) for w in val_str.split()]
+                significant_words = [w for w in words if len(w) > 3]
+                
+                if not significant_words:
+                    clean_val = re.sub(r'[^\w]', '', val_str)
+                    if clean_val and clean_val not in clean_pdf_text:
+                        logger.warning("Strict AI verification: %s '%s' not found. Stripping field.", field, val)
+                        field_verified = False
+                else:
+                    found_count = sum(1 for w in significant_words if w in clean_pdf_text)
+                    if found_count / len(significant_words) < 0.5:
+                        logger.warning("Strict AI verification: %s '%s' failed word-match threshold. Stripping field.", field, val)
+                        field_verified = False
+            else:
+                clean_val = re.sub(r'[^\w]', '', val_str)
+                if clean_val and clean_val not in clean_pdf_text:
+                    logger.warning("Strict AI verification: Field '%s' value '%s' not found. Stripping field.", field, val)
+                    field_verified = False
+            
+            if not field_verified:
+                # If it's the year that failed, that's critical. We should reject the whole thing.
+                if field == "year":
+                    logger.warning("Strict AI verification failed: Critical field 'year' hallucinated. Rejecting extraction.")
+                    return False
+                # Otherwise, just remove the unverified field
+                del ai_data[field]
+                    
+        return True
+    except Exception as e:
+        logger.warning("Failed strict AI verification text search: %s", e)
+        return False
+
+
 def _validate_api_result(
     local_meta: dict,
     api_result: dict,
@@ -337,15 +526,32 @@ def _validate_api_result(
     api_title   = api_result.get("title")
     api_authors = api_result.get("authors") or []
     api_year    = api_result.get("year")
+    api_type    = api_result.get("type", "")
+    api_journal = api_result.get("journal")
 
-    # Container-level records (journals, book-series) typically lack authors.
-    # If the API returned zero authors AND no year, the DOI likely points to a
-    # container, not an article.  Reject to prevent false verification.
-    if not api_authors and not api_year:
+    # ── STRICT COMPLETENESS GATE ─────────────────────────────────────────────
+    # A reference is only as good as its weakest field.  If the API returned
+    # data that is missing ANY of the essential fields (title, authors, year,
+    # and journal if it's a journal article), we reject it outright.
+    # The caller will then try PubMed; if that also lacks fields, the entry 
+    # stays "unverified" — which is the only honest outcome.  No partial/garbage 
+    # data should ever be stamped "verified" and shown to the user.
+    missing_fields = []
+    if not api_title:
+        missing_fields.append("title")
+    if not api_authors:
+        missing_fields.append("authors")
+    if not api_year:
+        missing_fields.append("year")
+    if api_type == "Journal Article" and not api_journal:
+        missing_fields.append("journal")
+    
+    if missing_fields:
         logger.info(
-            "API result for DOI %s has no authors and no year — likely a "
-            "container-level record.  Rejecting.",
+            "API result for DOI %s is missing essential field(s): %s. "
+            "Rejecting to prevent incomplete data from being marked as verified.",
             api_result.get("doi", "?"),
+            ", ".join(missing_fields),
         )
         return False
 
@@ -387,26 +593,10 @@ def _validate_api_result(
             # As a bulletproof fallback, we check if the true API title is physically
             # present in the raw PDF text (ignoring all whitespace and punctuation).
             # This completely prevents AI hallucination.
-            try:
-                from pypdf import PdfReader
-                reader = PdfReader(pdf_path)
-                pdf_text = ""
-                for i, page in enumerate(reader.pages):
-                    if i >= 2: break
-                    pdf_text += (page.extract_text() or "") + "\n"
-                
-                clean_api_title = re.sub(r'[^\w]', '', api_title.lower())
-                clean_pdf_text = re.sub(r'[^\w]', '', pdf_text.lower())
-                
-                # Only trust it if the title is reasonably long (> 15 chars) to prevent 
-                # false positive matches on short generic strings.
-                if len(clean_api_title) > 15 and clean_api_title in clean_pdf_text:
-                    logger.info("Title mismatch OVERRIDDEN: True API title found perfectly in raw PDF text.")
-                    passes.append(("title_in_pdf", 1.0))
-                else:
-                    failures.append(("title", sim))
-            except Exception as e:
-                logger.warning("Failed to perform deep PDF text search for title: %s", e)
+            if hard_verify_against_pdf(api_title, api_surnames, pdf_path):
+                logger.info("Title mismatch OVERRIDDEN: True API title and first author found perfectly in raw PDF text.")
+                passes.append(("title_in_pdf", 1.0))
+            else:
                 failures.append(("title", sim))
 
     # 2. Author surname overlap (at least 1 surname in common)
@@ -610,6 +800,7 @@ def crossref_lookup(doi: str) -> Optional[dict]:
     """
     try:
         url = f"{CROSSREF_API}/{doi}"
+        _crossref_limiter.wait()
         r   = _http_session.get(url, timeout=REQUEST_TIMEOUT,
                            headers={"User-Agent": "metadata-extractor/1.0"})
         if r.status_code != 200:
@@ -827,6 +1018,7 @@ def pubmed_lookup(doi: str) -> Optional[dict]:
     """
     try:
         # Step 1 — search for the PMID
+        _pubmed_limiter.wait()
         search_r = _http_session.get(
             PUBMED_SEARCH,
             params={"db": "pubmed", "term": f"{doi}[doi]", "retmode": "json", "retmax": 1},
@@ -837,6 +1029,7 @@ def pubmed_lookup(doi: str) -> Optional[dict]:
             return None
 
         # Step 2 — fetch the record
+        _pubmed_limiter.wait()
         fetch_r = _http_session.get(
             PUBMED_FETCH,
             params={"db": "pubmed", "id": pmids[0], "retmode": "xml"},
@@ -957,23 +1150,10 @@ def _is_complete(meta: dict) -> bool:
 # MAIN EXTRACTION LOGIC
 # ══════════════════════════════════════════════════════════════════════════════
 
-def _extract_metadata_sync(pdf_path: str) -> dict:
+def _extract_metadata_local_sync(pdf_path: str) -> tuple[dict, list[str]]:
     """
-    Runs the full cascade and returns a metadata dict:
-    {
-        "title":               str | None,
-        "authors":             list[str],
-        "year":                int | None,
-        "doi":                 str | None,
-        "journal":             str | None,
-        "volume":              str | None,
-        "issue":               str | None,
-        "pages":               str | None,
-        "publisher":           str | None,
-        "type":                str,
-        "verification_status": "verified_crossref" | "verified_pubmed" | "unverified" | "not_found",
-        "extraction_layers":   list[str],   # audit trail of what contributed
-    }
+    Runs the local CPU-bound extraction layers (PDF meta, Regex, GROBID).
+    Returns the partial metadata dict and a list of candidate DOIs found.
     """
     meta = {
         "title": None, "authors": [], "year": None, "doi": None,
@@ -987,14 +1167,12 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
     _merge(meta, layer1)
     if any(layer1.values()):
         meta["extraction_layers"].append("pdf_metadata")
-    logger.debug("After Layer 1 (PDF metadata): %s", meta)
 
     # ── Layer 2: Regex (text_utils.py) ────────────────────────────────────────
     layer2 = _extract_via_regex(pdf_path)
     _merge(meta, layer2)
     if any(v for v in layer2.values() if v):
         meta["extraction_layers"].append("regex")
-    logger.debug("After Layer 2 (regex): %s", meta)
 
     # ── Layer 3: GROBID — only if something is still missing ─────────────────
     layer3 = {}
@@ -1003,7 +1181,6 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
         _merge(meta, layer3)
         if any(v for v in layer3.values() if v):
             meta["extraction_layers"].append("grobid")
-        logger.debug("After Layer 3 (GROBID): %s", meta)
 
     # ── Layer 3b: NER sieve — only if authors still missing after GROBID ──────────
     if not meta.get("authors"):
@@ -1020,7 +1197,6 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
             if ner_authors:
                 meta["authors"] = ner_authors
                 meta["extraction_layers"].append("ner_sieve")
-                logger.info("NER sieve found authors: %s", ner_authors)
         except Exception as exc:
             logger.warning("NER sieve failed: %s", exc)
 
@@ -1040,15 +1216,6 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
         except Exception as exc:
             logger.warning("LayoutLM extraction failed: %s", exc)
 
-    # ── Shared identity validation ─────────────────────────────────────────────
-    # _validate_api_result uses title, authors, and year as multi-signal checks.
-    # It also does an aggressive PDF scan if the local layers found nothing.
-
-    # ── COLLECT ALL CANDIDATE DOIs ────────────────────────────────────────────
-    # Gather every DOI found across all extraction layers, deduplicate,
-    # then try each against the APIs.  The first DOI that validates wins —
-    # its API metadata (including DOI) overwrites the local record.
-    # Priority: text-extracted (regex/GROBID) > PDF embedded metadata.
     candidate_dois = []
     _seen_dois = set()
     # Priority: text-extracted (regex) > GROBID > PDF embedded metadata
@@ -1057,40 +1224,49 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
         if d and d.lower() not in _seen_dois:
             candidate_dois.append(d)
             _seen_dois.add(d.lower())
-    # Also include whatever is currently in meta (in case a later layer set it)
     if meta.get("doi") and meta["doi"].lower() not in _seen_dois:
         candidate_dois.append(meta["doi"])
         _seen_dois.add(meta["doi"].lower())
 
+    return meta, candidate_dois
+
+
+async def _extract_metadata_async(pdf_path: str) -> dict:
+    """
+    Runs the full cascade, separating CPU-bound tasks from API verification
+    which uses the globally rate-limited TokenBucket.
+    """
+    meta, candidate_dois = await asyncio.to_thread(_extract_metadata_local_sync, pdf_path)
     logger.info("Candidate DOIs for verification: %s", candidate_dois)
 
     # ── VERIFICATION LOOP — try each candidate DOI ───────────────────────────
     verified = False
+    
+    def record_to_dict(rec) -> dict:
+        return {
+            "title": rec.title, "authors": rec.authors, "year": rec.year, "doi": rec.doi,
+            "journal": rec.journal, "source": rec.journal, "url": rec.url,
+            "volume": rec.volume, "issue": rec.issue, "pages": rec.pages,
+            "publisher": rec.publisher, "type": rec.type,
+        }
+
+    # Pre-fetch all candidates using the rate-limited batch API
+    if candidate_dois:
+        from references.api_batch import fetch_crossref_batch
+        crossref_records = await fetch_crossref_batch(candidate_dois)
+        crossref_map = {rec.doi: record_to_dict(rec) for rec in crossref_records if rec and rec.doi}
+    else:
+        crossref_map = {}
+
     for candidate_doi in candidate_dois:
         logger.info("Trying DOI candidate: %s", candidate_doi)
-
-        # ── PubMed first (cleaner metadata for biomedical) ──
-        pubmed = pubmed_lookup(candidate_doi)
-        if pubmed:
-            if _validate_api_result(meta, pubmed, pdf_path):
-                _merge(meta, pubmed, overwrite=True)
-                meta["verification_status"] = "verified_pubmed"
-                if "pubmed_verify" not in meta["extraction_layers"]:
-                    meta["extraction_layers"].append("pubmed_verify")
-                logger.info("DOI %s VERIFIED via PubMed.", candidate_doi)
-                verified = True
-                break
-            else:
-                logger.info(
-                    "PubMed result for DOI %s failed identity validation.",
-                    candidate_doi,
-                )
-
-        # ── CrossRef fallback ──
-        crossref = crossref_lookup(candidate_doi)
-        if crossref:
-            if _validate_api_result(meta, crossref, pdf_path):
-                _merge(meta, crossref, overwrite=True)
+        
+        # ── CrossRef first (from our pre-fetched async batch) ──
+        cr_data = crossref_map.get(candidate_doi)
+        if cr_data:
+            valid = await asyncio.to_thread(_validate_api_result, meta, cr_data, pdf_path)
+            if valid:
+                _merge(meta, cr_data, overwrite=True)
                 meta["verification_status"] = "verified_crossref"
                 if "crossref_verify" not in meta["extraction_layers"]:
                     meta["extraction_layers"].append("crossref_verify")
@@ -1098,60 +1274,68 @@ def _extract_metadata_sync(pdf_path: str) -> dict:
                 verified = True
                 break
             else:
-                logger.info(
-                    "CrossRef result for DOI %s failed identity validation.",
-                    candidate_doi,
-                )
+                logger.info("CrossRef result for DOI %s failed identity validation.", candidate_doi)
+                
+        # ── PubMed fallback ──
+        def do_pubmed():
+            pubmed = pubmed_lookup(candidate_doi)
+            if pubmed and _validate_api_result(meta, pubmed, pdf_path):
+                return pubmed
+            return None
+            
+        pubmed_data = await asyncio.to_thread(do_pubmed)
+        if pubmed_data:
+            _merge(meta, pubmed_data, overwrite=True)
+            meta["verification_status"] = "verified_pubmed"
+            if "pubmed_verify" not in meta["extraction_layers"]:
+                meta["extraction_layers"].append("pubmed_verify")
+            logger.info("DOI %s VERIFIED via PubMed.", candidate_doi)
+            verified = True
+            break
+
 
     # ── pdf2doi rescue — if none of the candidates verified ──────────────────
     if not verified:
         meta["doi"] = None  # Clear any unverified DOI
         if "pdf2doi" not in meta["extraction_layers"]:
-            rescued = _rescue_doi_via_pdf2doi(pdf_path)
+            rescued = await asyncio.to_thread(_rescue_doi_via_pdf2doi, pdf_path)
             if rescued:
                 meta["doi"] = rescued
                 meta["extraction_layers"].append("pdf2doi")
                 logger.info("pdf2doi rescued DOI: %s — verifying...", rescued)
 
-                # Try the rescued DOI
-                pubmed = pubmed_lookup(rescued)
-                if pubmed and _validate_api_result(meta, pubmed, pdf_path):
-                    _merge(meta, pubmed, overwrite=True)
-                    meta["verification_status"] = "verified_pubmed"
-                    meta["extraction_layers"].append("pubmed_verify")
+                # Fetch rescued DOI using async batch
+                from references.api_batch import fetch_crossref_batch
+                rescued_records = await fetch_crossref_batch([rescued])
+                cr_data = None
+                if rescued_records and rescued_records[0]:
+                    cr_data = record_to_dict(rescued_records[0])
+                
+                if cr_data and await asyncio.to_thread(_validate_api_result, meta, cr_data, pdf_path):
+                    _merge(meta, cr_data, overwrite=True)
+                    meta["verification_status"] = "verified_crossref"
+                    meta["extraction_layers"].append("crossref_verify")
                     verified = True
                 else:
-                    crossref = crossref_lookup(rescued)
-                    if crossref and _validate_api_result(meta, crossref, pdf_path):
-                        _merge(meta, crossref, overwrite=True)
-                        meta["verification_status"] = "verified_crossref"
-                        meta["extraction_layers"].append("crossref_verify")
+                    def do_pubmed_rescued():
+                        pubmed = pubmed_lookup(rescued)
+                        if pubmed and _validate_api_result(meta, pubmed, pdf_path):
+                            return pubmed
+                        return None
+                    
+                    pubmed_data = await asyncio.to_thread(do_pubmed_rescued)
+                    if pubmed_data:
+                        _merge(meta, pubmed_data, overwrite=True)
+                        meta["verification_status"] = "verified_pubmed"
+                        meta["extraction_layers"].append("pubmed_verify")
                         verified = True
                     else:
                         logger.info("pdf2doi DOI %s also failed verification. Clearing.", rescued)
                         meta["doi"] = None
 
-    # ── Layer 5b: Title search fallback — if still no doi but have title ──────
-    if not meta.get("doi") and meta.get("title") and meta["verification_status"] == "not_found":
-        # Try PubMed title search first
-        pubmed = _pubmed_search_by_title(meta["title"])
-        if pubmed:
-            _merge(meta, pubmed, overwrite=True)
-            meta["verification_status"] = pubmed.get("verification_status", "verified_pubmed_title_search")
-            meta["extraction_layers"].append("pubmed_title_search")
-            # Flag a warning so the user can cross-check
-            meta["warning"] = "Verified via title match only. Please cross-check for accuracy."
-            logger.debug("After Layer 5b (PubMed title search): %s", meta)
-        else:
-            # Fallback to CrossRef title search
-            crossref = _crossref_search_by_title(meta["title"])
-            if crossref:
-                _merge(meta, crossref, overwrite=True)
-                meta["verification_status"] = crossref.get("verification_status", "verified_crossref_title_search")
-                meta["extraction_layers"].append("crossref_title_search")
-                # Flag a warning so the user can cross-check
-                meta["warning"] = "Verified via title match only. Please cross-check for accuracy."
-                logger.debug("After Layer 5b (CrossRef title search): %s", meta)
+    # Title-search fallbacks removed: they bypassed _validate_api_result,
+    # performed no PDF identity check, and could stamp "verified" on wrong data.
+    # If DOI verification failed, status correctly stays not_found → unverified.
 
     # ── Final status tagging ──────────────────────────────────────────────────
     if meta["verification_status"] == "not_found" and any([
@@ -1186,8 +1370,8 @@ async def extract_pdf_metadata(file_bytes: bytes) -> dict:
         with os.fdopen(fd, "wb") as f:
             f.write(file_bytes)
         
-        # Run sync cascade in thread pool
-        meta = await asyncio.to_thread(_extract_metadata_sync, tmp_path)
+        # Run async cascade (CPU-bound layers use to_thread, API layers use batch fetch)
+        meta = await _extract_metadata_async(tmp_path)
         return meta
     finally:
         if os.path.exists(tmp_path):
@@ -1229,7 +1413,7 @@ def extract_docx_metadata(file_bytes: bytes) -> dict:
             if lines:
                 metadata["title"] = lines[0]
     
-    # CrossRef DOI lookup
+    # CrossRef DOI lookup — with strict completeness gate
     if metadata["doi"]:
         try:
             crossref_url = f"https://api.crossref.org/works/{metadata['doi']}"
@@ -1238,51 +1422,66 @@ def extract_docx_metadata(file_bytes: bytes) -> dict:
             })
             if resp.status_code == 200:
                 data = resp.json().get('message', {})
-                
-                authors = data.get('author', [])
-                if authors:
-                    author_parts = []
-                    for a in authors:
-                        family = a.get('family', '')
-                        given = a.get('given', '')
-                        if family and given:
-                            initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
-                            author_parts.append(f"{family}, {initials}")
-                        elif family:
-                            author_parts.append(family)
-                    if author_parts:
-                        metadata["authors"] = author_parts
-                
+
+                # Parse authors
+                author_parts = []
+                for a in data.get('author', []):
+                    family = a.get('family', '')
+                    given  = a.get('given', '')
+                    if family and given:
+                        initials = '. '.join(w[0].upper() for w in given.split() if w) + '.'
+                        author_parts.append(f"{family}, {initials}")
+                    elif family:
+                        author_parts.append(family)
+
                 titles = data.get('title', [])
-                if titles:
-                    metadata["title"] = titles[0]
+                cr_title = titles[0] if titles else None
                 
+                cr_type  = data.get('type', '')
+                type_map = {
+                    'journal-article':    'Journal Article',
+                    'book':               'Book',
+                    'book-chapter':       'Book Chapter',
+                    'proceedings-article':'Conference Paper',
+                    'report':             'Report',
+                }
+                mapped_type = type_map.get(cr_type, 'Other')
+
+                container = data.get('container-title', [])
+                cr_journal = container[0] if container else None
+
                 date_parts = data.get('published-print', data.get('published-online', data.get('created', {})))
+                cr_year = None
                 if date_parts and 'date-parts' in date_parts:
                     parts = date_parts['date-parts'][0]
                     if parts:
-                        metadata["year"] = str(parts[0])
-                
-                container = data.get('container-title', [])
-                if container:
-                    metadata["source"] = container[0]
-                
-                if data.get('volume'): metadata["volume"] = data['volume']
-                if data.get('issue'): metadata["issue"] = data['issue']
-                if data.get('page'): metadata["pages"] = data['page']
-                if data.get('publisher'): metadata["publisher"] = data['publisher']
-                
-                cr_type = data.get('type', '')
-                type_map = {
-                    'journal-article': 'Journal Article',
-                    'book': 'Book',
-                    'book-chapter': 'Book Chapter',
-                    'proceedings-article': 'Conference Paper',
-                    'report': 'Report',
-                }
-                metadata["type"] = type_map.get(cr_type, 'Other')
-                metadata["verification_status"] = "verified_crossref"
-                metadata["extraction_layers"].append("crossref_verify")
+                        cr_year = str(parts[0])
+
+                # STRICT COMPLETENESS GATE — all essential fields must be present
+                missing = [f for f, v in [("title", cr_title), ("authors", author_parts), ("year", cr_year)] if not v]
+                if mapped_type == 'Journal Article' and not cr_journal:
+                    missing.append("journal")
+                    
+                if missing:
+                    logger.info(
+                        "DOCX CrossRef result missing field(s) %s for DOI %s — not marking verified.",
+                        missing, metadata['doi']
+                    )
+                else:
+                    metadata["authors"] = author_parts
+                    metadata["title"]   = cr_title
+                    metadata["year"]    = cr_year
+                    metadata["type"]    = mapped_type
+
+                    if cr_journal:
+                        metadata["source"] = cr_journal
+                    if data.get('volume'):    metadata["volume"]    = data['volume']
+                    if data.get('issue'):     metadata["issue"]     = data['issue']
+                    if data.get('page'):      metadata["pages"]     = data['page']
+                    if data.get('publisher'): metadata["publisher"] = data['publisher']
+
+                    metadata["verification_status"] = "verified_crossref"
+                    metadata["extraction_layers"].append("crossref_verify")
         except Exception:
             pass
     

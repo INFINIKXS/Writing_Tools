@@ -1,4 +1,4 @@
-import React, { useState, useRef, useCallback, useEffect } from 'react';
+import React, { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Upload, Copy, Check, BookOpen, ChevronDown, FileText, Loader2, AlertCircle, X, ChevronRight, Trash2, ShieldCheck, ShieldAlert, ClipboardCheck, Send, Sparkles, ChevronUp, RefreshCw, StopCircle } from 'lucide-react';
 import FormatterView from './FormatterView';
 
@@ -12,6 +12,7 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
     const vStatus = r.data.metadata?.verification_status;
     const vBadge = (() => {
         if (!vStatus) return null;
+        if (vStatus === 'verified_ai_strict_scan' || vStatus === 'verified_ai_hard_scan') return { icon: '🤖', label: 'AI Metadata (Strict Scan)', cls: 'text-fuchsia-400 bg-fuchsia-500/10 border-fuchsia-500/20', tooltip: 'No DOI found. Paper identity confirmed via deep physical scan of AI metadata against raw PDF text.' };
         if (vStatus.startsWith('verified_')) return { icon: '✓', label: 'Verified (DOI found)', cls: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20', tooltip: 'Paper identity confirmed via PubMed/CrossRef with title match.' };
         if (vStatus === 'partial') return { icon: '~', label: 'Partial', cls: 'text-amber-400 bg-amber-500/10 border-amber-500/20', tooltip: 'API found the paper, but some metadata fields were filled by AI. Review recommended.' };
         if (vStatus === 'unverified' || vStatus === 'not_found') return { icon: '!', label: 'Unverified', cls: 'text-red-400 bg-red-500/10 border-red-500/20', tooltip: 'Could not confirm paper identity via external database. Metadata may be inaccurate.' };
@@ -56,6 +57,15 @@ function ReferenceCard({ r, copiedId, copyRich, removeResult, expandedMeta, togg
             <div className="text-sm text-white bg-white/[0.04] p-3 rounded-lg border border-white/8 leading-relaxed font-medium break-words overflow-hidden"
                 dangerouslySetInnerHTML={{ __html: (r.data.formatted_html || r.data.formatted).replace(/<(?!\/?(?:i|em)\b)[^>]*>/gi, '') }}
             />
+
+            {(vStatus === 'verified_ai_strict_scan' || vStatus === 'verified_ai_hard_scan') && (
+                <div className="mt-2 flex items-start gap-2 bg-fuchsia-500/5 border border-fuchsia-500/15 rounded-lg px-3 py-2">
+                    <span className="text-fuchsia-400 text-[10px] mt-0.5">🤖</span>
+                    <p className="text-[10px] text-fuchsia-400/80 leading-relaxed">
+                        <strong>AI Generated Reference.</strong> The system could not find a DOI, but mathematically verified that this reference exists in the PDF text. Please verify the actual source and ensure accuracy.
+                    </p>
+                </div>
+            )}
 
             {(!r.data.metadata?.doi && (vStatus === 'unverified' || vStatus === 'not_found')) && (
                 <div className="mt-2 flex flex-col sm:flex-row sm:items-center gap-2 bg-amber-500/5 border border-amber-500/15 rounded-lg p-2.5">
@@ -362,6 +372,43 @@ function VerifierSubView() {
     const [copiedAll, setCopiedAll] = useState(false);
     const abortRef = useRef(null);
 
+    // Live reference count — mirrors backend parse_reference_list logic
+    const refCount = useMemo(() => {
+        const text = refsText.trim();
+        if (!text) return 0;
+        const lines = text.split('\n');
+        const numberedRe = /^\s*(?:\[?\d+[\].)]\s*|•\s*|[-–—]\s*)/;
+        const numberedLines = lines.filter(l => numberedRe.test(l));
+        const isNumbered = numberedLines.length >= 2;
+        let refs = [];
+        if (isNumbered) {
+            let current = [];
+            for (const line of lines) {
+                const stripped = line.trim();
+                if (!stripped) continue;
+                if (numberedRe.test(stripped)) {
+                    if (current.length) refs.push(current.join(' '));
+                    current = [stripped.replace(numberedRe, '').trim()];
+                } else {
+                    current.push(stripped);
+                }
+            }
+            if (current.length) refs.push(current.join(' '));
+        } else {
+            let current = [];
+            for (const line of lines) {
+                const stripped = line.trim();
+                if (!stripped) {
+                    if (current.length) { refs.push(current.join(' ')); current = []; }
+                } else {
+                    current.push(stripped);
+                }
+            }
+            if (current.length) refs.push(current.join(' '));
+        }
+        return refs.filter(r => r.length > 20).length;
+    }, [refsText]);
+
     const toggleCard = (idx) => setExpandedCards(prev => ({ ...prev, [idx]: !prev[idx] }));
 
     const stripHtml = (html) => html.replace(/<\/?[^>]*>/g, '');
@@ -383,8 +430,8 @@ function VerifierSubView() {
         if (!results?.results) return;
         const corrected = results.results.filter(r => r.corrected_reference);
         if (corrected.length === 0) return;
-        const allHtml = corrected.map(r => sanitizeHtml(r.corrected_reference_html || r.corrected_reference)).join('<br/>\n');
-        const allPlain = corrected.map(r => stripHtml(r.corrected_reference_html || r.corrected_reference)).join('\n');
+        const allHtml = corrected.map(r => sanitizeHtml(r.corrected_reference_html || r.corrected_reference)).join('<br/><br/>\n');
+        const allPlain = corrected.map(r => stripHtml(r.corrected_reference_html || r.corrected_reference)).join('\n\n');
         navigator.clipboard.write([new ClipboardItem({
             'text/html': new Blob([allHtml], { type: 'text/html' }),
             'text/plain': new Blob([allPlain], { type: 'text/plain' }),
@@ -405,11 +452,12 @@ function VerifierSubView() {
         abortRef.current = controller;
 
         try {
+            const textToSend = refsText.trim();
             const res = await fetch('/api/verify-reference-list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    references_text: refsText.trim(),
+                    references_text: textToSend,
                     style: style === 'auto' ? null : style,
                 }),
                 signal: controller.signal,
@@ -512,6 +560,13 @@ function VerifierSubView() {
                         placeholder={'1. Smith, J. (2020). Title of article. Journal Name, 10(2), 45-67. https://doi.org/10.1234/example\n\n2. Jones, A. & Brown, B. (2019). Another title. Publisher.\n\nOr paste without numbers, separated by blank lines...'}
                         className="w-full flex-1 min-h-[150px] shrink-0 bg-white/[0.03] border border-white/10 rounded-xl p-3 text-xs text-neutral-300 placeholder-neutral-700 outline-none resize-none focus:border-cyan-500/30 transition-colors font-mono leading-relaxed"
                     />
+
+                    {refCount > 0 && (
+                        <div className="flex items-center gap-1.5 text-[11px] text-neutral-500 px-1">
+                            <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-500/60" />
+                            <span><strong className="text-neutral-400">{refCount}</strong> reference{refCount !== 1 ? 's' : ''} detected</span>
+                        </div>
+                    )}
 
                     <div className="flex gap-2 shrink-0">
                         <button
@@ -663,6 +718,7 @@ function VerifierSubView() {
 export default function LibraryView() {
     const [activeSubTab, setActiveSubTab] = useState('generator');
     const [style, setStyle] = useState('harvard');
+    const [advancedMode, setAdvancedMode] = useState(false);
     const [results, setResults] = useState([]);
     const [isDragging, setIsDragging] = useState(false);
     const [copiedId, setCopiedId] = useState(null);
@@ -692,6 +748,7 @@ export default function LibraryView() {
         try {
             const formData = new FormData();
             formData.append('file', file);
+            formData.append('advanced', advancedMode);
             const res = await fetch(`/api/extract-reference?style=${useStyle}`, { method: 'POST', body: formData, signal });
             if (!res.ok) {
                 const errData = await res.json().catch(() => ({}));
@@ -723,6 +780,87 @@ export default function LibraryView() {
             }
             setResults(prev => prev.map(r => r.id === entryId ? { ...r, loading: false, error: err.message } : r));
         }
+    }, [style, advancedMode]);
+
+    const processPdfBatch = useCallback(async (chunk, styleOverride, signal) => {
+        const useStyle = styleOverride || style;
+        const chunkIds = new Set(chunk.map(c => c.id));
+        try {
+            const formData = new FormData();
+            formData.append('style', useStyle);
+            for (const entry of chunk) {
+                formData.append('files', entry.file);
+                formData.append('ids', entry.id);
+            }
+            
+            const res = await fetch('/api/extract-reference-batch', {
+                method: 'POST',
+                body: formData,
+                signal
+            });
+            
+            if (!res.ok) {
+                const errData = await res.json().catch(() => ({}));
+                throw new Error(errData.detail || 'Batch AI extraction failed');
+            }
+            
+            const batchResults = await res.json();
+            
+            // Map results back by ID
+            setResults(prev => prev.map(r => {
+                if (!chunkIds.has(r.id)) return r;
+                
+                const match = batchResults.find(b => String(b.id) === String(r.id));
+                if (!match) {
+                    return { ...r, loading: false, error: 'AI failed to process this item' };
+                }
+                
+                if (match.result.error) {
+                    return { ...r, loading: false, error: match.result.error };
+                }
+                
+                return { ...r, loading: false, data: match.result, error: null };
+            }));
+            
+            // Check if style changed during extraction for any success result
+            const curStyle = styleRef.current;
+            if (curStyle !== useStyle) {
+                const completedChunk = chunk.map(entry => {
+                    const match = batchResults.find(b => String(b.id) === String(entry.id));
+                    if (match && !match.result.error) {
+                        return { id: entry.id, data: match.result };
+                    }
+                    return null;
+                }).filter(Boolean);
+                
+                await Promise.all(completedChunk.map(async (entry) => {
+                    try {
+                        const reformatRes = await fetch(`/api/reformat-reference?style=${curStyle}`, {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({ metadata: entry.data.metadata }),
+                            signal,
+                        });
+                        if (reformatRes.ok) {
+                            const reformatted = await reformatRes.json();
+                            setResults(prev => prev.map(r => r.id === entry.id ? { 
+                                ...r, 
+                                loading: false, 
+                                data: { ...entry.data, ...reformatted, metadata: { ...entry.data.metadata, ...reformatted.metadata } }, 
+                                error: null 
+                            } : r));
+                        }
+                    } catch (e) { if (e.name === 'AbortError') throw e; }
+                }));
+            }
+            
+        } catch (err) {
+            if (err.name === 'AbortError') {
+                setResults(prev => prev.map(r => chunkIds.has(r.id) && r.loading ? { ...r, loading: false, error: 'Cancelled' } : r));
+                return;
+            }
+            setResults(prev => prev.map(r => chunkIds.has(r.id) ? { ...r, loading: false, error: err.message } : r));
+        }
     }, [style]);
 
     const handleUpload = useCallback(async (files) => {
@@ -734,11 +872,28 @@ export default function LibraryView() {
         setResults(prev => [...prev, ...newEntries]);
         const controller = new AbortController();
         abortRef.current = controller;
-        await Promise.allSettled(
-            newEntries.map(entry => processFile(entry.file, entry.id, null, controller.signal))
-        );
+        
+        if (advancedMode) {
+            const pdfs = newEntries.filter(entry => entry.fileName.split('.').pop().toLowerCase() === 'pdf');
+            const nonPdfs = newEntries.filter(entry => entry.fileName.split('.').pop().toLowerCase() !== 'pdf');
+            
+            const pdfChunks = [];
+            for (let i = 0; i < pdfs.length; i += 5) {
+                pdfChunks.push(pdfs.slice(i, i + 5));
+            }
+            
+            await Promise.allSettled([
+                ...pdfChunks.map(chunk => processPdfBatch(chunk, null, controller.signal)),
+                ...nonPdfs.map(entry => processFile(entry.file, entry.id, null, controller.signal))
+            ]);
+        } else {
+            await Promise.allSettled(
+                newEntries.map(entry => processFile(entry.file, entry.id, null, controller.signal))
+            );
+        }
+        
         abortRef.current = null;
-    }, [processFile]);
+    }, [processFile, processPdfBatch, advancedMode]);
 
     const handleStop = useCallback(() => {
         abortRef.current?.abort();
@@ -781,12 +936,75 @@ export default function LibraryView() {
         }
     }, [results]);
 
-    const handleAiRetryAll = useCallback(() => {
+    const handleAiRetryAll = useCallback(async () => {
         const toRetry = results.filter(r => r.data && !r.data.metadata?.doi && !r.aiRetrying);
-        for (const r of toRetry) {
-            handleAiRetry(r.id);
+        if (toRetry.length === 0) return;
+
+        const CHUNK_SIZE = 50;
+        
+        for (let i = 0; i < toRetry.length; i += CHUNK_SIZE) {
+            const chunk = toRetry.slice(i, i + CHUNK_SIZE);
+            const chunkIds = new Set(chunk.map(c => c.id));
+            
+            // Set loading state for chunk
+            setResults(prev => prev.map(r => chunkIds.has(r.id) ? { ...r, aiRetrying: true, error: null } : r));
+            
+            try {
+                const formData = new FormData();
+                formData.append('style', styleRef.current);
+                
+                let hasValidFiles = false;
+                for (const r of chunk) {
+                    if (r.file) {
+                        formData.append('files', r.file);
+                        formData.append('ids', r.id);
+                        formData.append('metadatas', JSON.stringify(r.data.metadata));
+                        hasValidFiles = true;
+                    }
+                }
+
+                if (!hasValidFiles) {
+                    throw new Error("No valid PDF files found for batch extraction.");
+                }
+
+                const res = await fetch('/api/retry-ai-doi-batch', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                if (!res.ok) {
+                    const errData = await res.json().catch(() => ({}));
+                    throw new Error(errData.detail || 'Batch AI extraction failed');
+                }
+
+                const updatedResultsArray = await res.json();
+                
+                setResults(prev => prev.map(r => {
+                    if (!chunkIds.has(r.id)) return r;
+                    
+                    const batchMatch = updatedResultsArray.find(u => String(u.id) === String(r.id));
+                    if (!batchMatch) {
+                        return { ...r, aiRetrying: false, error: 'AI failed to process this item' };
+                    }
+                    
+                    if (batchMatch.result.error) {
+                        return { ...r, aiRetrying: false, error: batchMatch.result.error };
+                    }
+                    
+                    const updatedData = batchMatch.result;
+                    return {
+                        ...r,
+                        aiRetrying: false,
+                        data: { ...r.data, ...updatedData, metadata: { ...r.data.metadata, ...updatedData.metadata } },
+                        error: null
+                    };
+                }));
+
+            } catch (err) {
+                setResults(prev => prev.map(r => chunkIds.has(r.id) ? { ...r, aiRetrying: false, error: err.message } : r));
+            }
         }
-    }, [results, handleAiRetry]);
+    }, [results]);
 
     const handleStyleChange = useCallback(async (newStyle) => {
         setStyle(newStyle);
@@ -839,8 +1057,8 @@ export default function LibraryView() {
 
     const copyGroup = (items, setCopiedState) => {
         if (!items || items.length === 0) return;
-        const allHtml = items.map(r => sanitizeHtml(r.data.formatted_html || r.data.formatted)).join('<br/>\n');
-        const allPlain = items.map(r => stripHtml(r.data.formatted_html || r.data.formatted)).join('\n');
+        const allHtml = items.map(r => sanitizeHtml(r.data.formatted_html || r.data.formatted)).join('<br/><br/>\n');
+        const allPlain = items.map(r => stripHtml(r.data.formatted_html || r.data.formatted)).join('\n\n');
         navigator.clipboard.write([new ClipboardItem({ 'text/html': new Blob([allHtml], { type: 'text/html' }), 'text/plain': new Blob([allPlain], { type: 'text/plain' }) })]).then(() => {
             setCopiedState(true);
             setTimeout(() => setCopiedState(false), 2000);
@@ -941,13 +1159,47 @@ export default function LibraryView() {
                                 Style: <strong className="text-neutral-400">{currentStyle.label}</strong>
                             </p>
 
+                            {/* Advanced Mode AI Toggle */}
+                            <div className={`mb-3 p-3 rounded-xl border transition-all duration-300 ${
+                                advancedMode 
+                                    ? 'bg-purple-500/10 border-purple-500/30 shadow-lg shadow-purple-500/5' 
+                                    : 'bg-white/[0.02] border-white/5 hover:border-white/10'
+                            }`}>
+                                <div className="flex items-center justify-between">
+                                    <div className="flex items-center gap-2">
+                                        <div className={`p-1.5 rounded-lg transition-colors duration-300 ${
+                                            advancedMode ? 'bg-purple-500/20 text-purple-300 animate-pulse' : 'bg-white/5 text-neutral-500'
+                                        }`}>
+                                            <Sparkles size={14} />
+                                        </div>
+                                        <div>
+                                            <h4 className="text-xs font-bold text-white leading-tight">Advanced Mode (AI)</h4>
+                                            <p className="text-[10px] text-neutral-600 leading-normal mt-0.5 font-medium">Direct Gemini extraction (PDF only)</p>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => setAdvancedMode(!advancedMode)}
+                                        className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out outline-none focus:outline-none ${
+                                            advancedMode ? 'bg-purple-500' : 'bg-neutral-800'
+                                        }`}
+                                    >
+                                        <span
+                                            className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+                                                advancedMode ? 'translate-x-4' : 'translate-x-0'
+                                            }`}
+                                        />
+                                    </button>
+                                </div>
+                            </div>
+
                             {/* Drop Zone — fixed height */}
                             <div
                                 onDrop={onDrop}
                                 onDragOver={onDragOver}
                                 onDragLeave={onDragLeave}
                                 onClick={() => fileInputRef.current?.click()}
-                                className={`shrink-0 h-[200px] flex flex-col items-center justify-center rounded-xl border-2 border-dashed cursor-pointer transition-all duration-300 ${isDragging
+                                className={`shrink-0 h-[110px] flex flex-col items-center justify-center rounded-xl border-2 border-dashed cursor-pointer transition-all duration-300 ${isDragging
                                     ? 'border-purple-400 bg-purple-500/10 scale-[1.02]'
                                     : 'border-white/10 bg-white/[0.02] hover:border-white/20 hover:bg-white/[0.04]'
                                     }`}
@@ -960,16 +1212,16 @@ export default function LibraryView() {
                                     className="hidden"
                                     onChange={(e) => { handleUpload(e.target.files); e.target.value = ''; }}
                                 />
-                                <div className="flex flex-col items-center gap-3">
-                                    <div className={`w-14 h-14 rounded-2xl flex items-center justify-center transition-all duration-300 ${isDragging ? 'bg-purple-500/20 border border-purple-400/30 scale-110' : 'bg-white/5 border border-white/10'
+                                <div className="flex flex-col items-center gap-2">
+                                    <div className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all duration-300 ${isDragging ? 'bg-purple-500/20 border border-purple-400/30 scale-110' : 'bg-white/5 border border-white/10'
                                         }`}>
-                                        <FileText size={24} className={isDragging ? 'text-purple-400' : 'text-neutral-600'} />
+                                        <FileText size={16} className={isDragging ? 'text-purple-400' : 'text-neutral-600'} />
                                     </div>
                                     <div className="text-center">
-                                        <p className="text-sm text-neutral-400 font-medium">
+                                        <p className="text-xs text-neutral-400 font-medium">
                                             {isDragging ? 'Drop files here' : 'Drag & drop files'}
                                         </p>
-                                        <p className="text-xs text-neutral-600 mt-1">or click to browse</p>
+                                        <p className="text-[10px] text-neutral-600 mt-0.5">or click to browse</p>
                                     </div>
                                 </div>
                             </div>

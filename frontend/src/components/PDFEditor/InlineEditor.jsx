@@ -159,13 +159,11 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
   // the flags (e.g. regrouped items that skipped the extract-spacing path).
   const [isBold, setIsBold] = useState(() => {
     if (existingEdit) return existingEdit.isBold;
-    if (item.isBold !== undefined) return item.isBold;
-    return item.renderedFontWeight === 'bold' || parseInt(item.renderedFontWeight) >= 600;
+    return item.isBold === true;
   });
   const [isItalic, setIsItalic] = useState(() => {
     if (existingEdit) return existingEdit.isItalic;
-    if (item.isItalic !== undefined) return item.isItalic;
-    return item.renderedFontStyle === 'italic';
+    return item.isItalic === true;
   });
 
   const [keyboardOffset, setKeyboardOffset] = useState(0);
@@ -224,7 +222,25 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
     );
   };
 
-  const currentFontFamily = fontFamily === 'Original' ? `ForceSpace, "${item.fontName}", sans-serif` : fontFamily;
+  // Build font stack using the real embedded font (from /extract-fonts + @font-face).
+  // Try multiple name forms because different PDFs store names differently:
+  //   "NBUDXT+MetaProLight-Regular" (full with subset tag) 
+  //   "MetaProLight-Regular"        (stripped)
+  //   whatever the backend calls item.fontPostScriptName
+  const stripSubset = (name) => (name || '').replace(/^[A-Z]{6}\+/, '');
+  const fontCandidates = [
+    item.fontPostScriptName,
+    stripSubset(item.fontPostScriptName),
+    item.fontName,
+    stripSubset(item.fontName),
+  ].filter(Boolean);
+  // Dedupe while preserving order
+  const uniqueCandidates = [...new Set(fontCandidates)];
+  const realFontStack = uniqueCandidates.map(n => `"${n}"`).join(', ');
+
+  const currentFontFamily = fontFamily === 'Original' 
+    ? `${realFontStack}, serif` 
+    : fontFamily;
 
   return (
     <>
@@ -302,12 +318,12 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
         className="shadow-xl"
         style={{
           position: 'absolute',
-          top: item.top !== undefined ? item.top : r.y,
-          left: item.left !== undefined ? item.left : r.x,
-          transform: item.transform ? (keyboardOffset ? `translateY(${-keyboardOffset}px) ${item.transform}` : item.transform) : `translateY(${-keyboardOffset}px)`,
+          top: r.y,
+          left: r.x,
+          transform: keyboardOffset ? `translateY(${-keyboardOffset}px)` : undefined,
           transformOrigin: '0% 0%',
-          fontFamily: fontFamily !== 'Original' ? currentFontFamily : (item.renderedFontFamily || 'sans-serif'),
-          fontSize: `${(item.renderedFontSize || fsize) + fontSizeAdj}px`,
+          fontFamily: currentFontFamily,
+          fontSize: `${(item.fontSize * scale) + fontSizeAdj}px`,
           fontWeight: isBold ? 'bold' : 'normal',
           fontStyle: isItalic ? 'italic' : 'normal',
           color: color,
@@ -318,7 +334,7 @@ export function InlineEditor({ item, scale, existingEdit, onCommit, onCancel }) 
           display: 'block',
           cursor: 'text',
           zIndex: 100,
-          lineHeight: item.lineHeight || 'normal',
+          lineHeight: 'normal',
           textDecoration: 'underline',
           textDecorationStyle: 'dashed',
           textDecorationColor: '#3b82f6',

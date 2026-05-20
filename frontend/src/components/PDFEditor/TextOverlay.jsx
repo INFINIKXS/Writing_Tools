@@ -7,7 +7,6 @@ import { pdfEditStore, activeFileId } from '../../stores/pdfEditStore';
 /**
  * Renders the replacement text for an edited item, scaling it horizontally
  * to exactly fill the container width — the same trick pdfjs uses with scaleX.
- * Uses the actual renderedFontFamily from pdfjs for exact font matching.
  */
 function ScaledTextSpan({ text, origText, fontFamily, fontSize, fontWeight, fontStyle, color, containerW }) {
   const spanRef = useRef(null);
@@ -17,15 +16,10 @@ function ScaledTextSpan({ text, origText, fontFamily, fontSize, fontWeight, font
     if (!spanRef.current || containerW <= 0) return;
     requestAnimationFrame(() => {
       if (!spanRef.current) return;
-      
-      // If the user actually changed the text content, do not stretch it to fit the old box.
-      // We only stretch if the text is identical (e.g. they only changed the color/style),
-      // to perfectly align with the PDF's native internal kerning.
       if (text !== origText) {
         setScaleX(1);
         return;
       }
-      
       const naturalW = spanRef.current.scrollWidth;
       if (naturalW > 0) {
         setScaleX(containerW / naturalW);
@@ -63,11 +57,8 @@ export function TextOverlay({ items, scale, selectedIdx, onSelect, edits = [] })
         if (!item.str || item.str.trim() === '') return null;
 
         const r = pdfToScreen(item, scale);
-        
-        // Exact top left bounds via MuPDF combined matrix transform
         const boxTop = r.y;
         const boxHeight = r.h;
-
         const hasEdit = edits.find(e => e.nodeIndex === i);
 
         return (
@@ -91,13 +82,13 @@ export function TextOverlay({ items, scale, selectedIdx, onSelect, edits = [] })
                 fontFamily={
                   (hasEdit.customFontFamily && hasEdit.customFontFamily !== 'Original')
                     ? hasEdit.customFontFamily
-                    : (item.renderedFontFamily || `ForceSpace, "${hasEdit.fontName}", sans-serif`)
+                    : `"${hasEdit.fontName || 'sans-serif'}"`
                 }
                 fontSize={
-                  (item.renderedFontSize || Math.max(4, hasEdit.origFontSize * scale)) + hasEdit.fontSizeAdj
+                  Math.max(4, hasEdit.origFontSize * scale) + hasEdit.fontSizeAdj
                 }
-                fontWeight={hasEdit.isBold ? 'bold' : (item.renderedFontWeight || 'normal')}
-                fontStyle={hasEdit.isItalic ? 'italic' : (item.renderedFontStyle || 'normal')}
+                fontWeight={hasEdit.isBold ? 'bold' : 'normal'}
+                fontStyle={hasEdit.isItalic ? 'italic' : 'normal'}
                 color={hasEdit.color !== undefined ? hasEdit.color : (item.color || '#000000')}
                 containerW={r.w}
               />

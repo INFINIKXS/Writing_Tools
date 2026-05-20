@@ -229,7 +229,22 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     doi = metadata.get("doi")
     url = metadata.get("url")
     publisher = metadata.get("publisher")
-    ref_type = metadata.get("type", "Other")
+    ref_type = metadata.get("type") or "Other"
+    
+    # Normalize ref_type to ensure it matches formatting conditions
+    rt_lower = ref_type.lower().replace("-", " ")
+    if "journal" in rt_lower:
+        ref_type = "Journal Article"
+    elif "proceeding" in rt_lower or "conference" in rt_lower:
+        ref_type = "Conference Paper"
+    elif "book chapter" in rt_lower:
+        ref_type = "Book Chapter"
+    elif "book" in rt_lower:
+        ref_type = "Book"
+    elif "report" in rt_lower:
+        ref_type = "Report"
+    elif "thesis" in rt_lower or "dissertation" in rt_lower:
+        ref_type = "Dissertation"
     
     # Format author string
     if len(authors) == 1:

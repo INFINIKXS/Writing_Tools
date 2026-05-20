@@ -4,6 +4,7 @@ Reference extraction and formatting API routes.
 import re
 import json
 import asyncio
+import logging
 from typing import List, Optional
 
 from fastapi import APIRouter, UploadFile, File, Form, HTTPException, Request
@@ -18,48 +19,120 @@ from references.ref_list_verifier import detect_style, verify_single_reference
 from utils.text_utils import extract_doi
 from core.config import API_KEY, KEY_MANAGER_AVAILABLE, get_api_key_manager
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# ── Concurrency control ──────────────────────────────────────────────────────
-# CrossRef and PubMed allow ~5 requests/second per polite client, but 
-# aggressive connection pooling can cause them to drop SSL connections.
-# This semaphore gates concurrent metadata extraction / API verification
-# across ALL endpoints (generator, formatter, verifier) to a safer limit.
-_API_SEMAPHORE = asyncio.Semaphore(2)
 
 
 @router.post("/api/extract-reference")
-async def extract_reference(file: UploadFile = File(...), style: str = "harvard"):
+async def extract_reference(
+    file: UploadFile = File(...),
+    style: str = "harvard",
+    advanced: bool = Form(False)
+):
     """Upload a PDF/DOCX and get a formatted reference for citing it."""
     if not file.filename.lower().endswith(('.pdf', '.docx', '.doc')):
         raise HTTPException(status_code=400, detail="Unsupported file type. Please upload PDF, DOCX, or DOC.")
     
     file_bytes = await file.read()
+    
+    if advanced:
+        if not file.filename.lower().endswith('.pdf'):
+            raise HTTPException(status_code=400, detail="Advanced Mode (AI Extraction) only supports PDF files.")
+        
+        import tempfile
+        import os
+        from references.ai_extractor import extract_metadata_with_ai
+        from references.metadata import crossref_lookup, pubmed_lookup, _validate_api_result, _merge
+        
+        fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+        try:
+            with os.fdopen(fd, 'wb') as f:
+                f.write(file_bytes)
+            
+            # 1. Ask Gemini for the metadata
+            ai_data = await extract_metadata_with_ai(tmp_path)
+            if not ai_data:
+                raise HTTPException(status_code=404, detail="AI failed to extract metadata from the document.")
+                
+            candidate_doi = ai_data.get("doi")
+            verified = False
+            
+            local_meta = {
+                "title": None, "authors": [], "year": None, "doi": None,
+                "journal": None, "volume": None, "issue": None, "pages": None,
+                "publisher": None, "type": "Other", "verification_status": "not_found",
+                "extraction_layers": [],
+            }
+            
+            # 2. Try Standard API Validation if a DOI was found
+            if candidate_doi:
+                pubmed = pubmed_lookup(candidate_doi)
+                if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
+                    _merge(local_meta, pubmed, overwrite=True)
+                    local_meta["verification_status"] = "verified_pubmed"
+                    local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                    verified = True
+                else:
+                    crossref = crossref_lookup(candidate_doi)
+                    if crossref and _validate_api_result(local_meta, crossref, tmp_path):
+                        _merge(local_meta, crossref, overwrite=True)
+                        local_meta["verification_status"] = "verified_crossref"
+                        local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                        verified = True
+                        
+            # 3. AI Full Metadata Fallback - If no DOI found or validation failed
+            if not verified:
+                from references.metadata import strict_ai_verify_against_pdf
+                
+                # Physically verify ALL of the AI hallucination against the raw PDF text
+                if strict_ai_verify_against_pdf(ai_data, tmp_path):
+                    for k in ["title", "authors", "year", "source", "journal", "volume", "issue", "pages", "publisher", "type"]:
+                        if ai_data.get(k):
+                            local_meta[k] = ai_data[k]
+                    
+                    # If it gave a journal but we need 'source'
+                    if not local_meta.get("source") and ai_data.get("journal"):
+                        local_meta["source"] = ai_data["journal"]
+                        
+                    local_meta["verification_status"] = "verified_ai_strict_scan"
+                    local_meta.setdefault("extraction_layers", []).append("ai_full_extract")
+                    verified = True
+                    
+            if not verified:
+                raise HTTPException(status_code=400, detail="AI extraction failed identity verification against the PDF.")
+                
+        finally:
+            if os.path.exists(tmp_path):
+                try: os.unlink(tmp_path)
+                except: pass
+                
+        result = format_reference(local_meta, style)
+        return result
+        
     magic = file_bytes[:8]
     
     try:
-        async with _API_SEMAPHORE:
-            if magic[:4] == b'%PDF':
-                metadata = await extract_pdf_metadata(file_bytes)
-            elif magic[:2] == b'PK':
-                metadata = await asyncio.to_thread(extract_docx_metadata, file_bytes)
-            elif magic[:4] == b'\xd0\xcf\x11\xe0':
-                text = await asyncio.to_thread(extract_doc_text, file_bytes)
-                metadata = {
-                    "authors": None, "title": file.filename.rsplit('.', 1)[0],
-                    "year": None, "source": None, "doi": None, "url": None,
-                    "volume": None, "issue": None, "pages": None,
-                    "publisher": None, "type": "Other",
-                }
-                if text:
-                    found_doi = extract_doi(text)
-                    if found_doi:
-                        metadata["doi"] = found_doi
-                    year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
-                    if year_match:
-                        metadata["year"] = year_match.group(0)
-            else:
-                raise HTTPException(status_code=400, detail="Unrecognized file format.")
+        if magic[:4] == b'%PDF':
+            metadata = await extract_pdf_metadata(file_bytes)
+        elif magic[:2] == b'PK':
+            metadata = await asyncio.to_thread(extract_docx_metadata, file_bytes)
+        elif magic[:4] == b'\xd0\xcf\x11\xe0':
+            text = await asyncio.to_thread(extract_doc_text, file_bytes)
+            metadata = {
+                "authors": None, "title": file.filename.rsplit('.', 1)[0],
+                "year": None, "source": None, "doi": None, "url": None,
+                "volume": None, "issue": None, "pages": None,
+                "publisher": None, "type": "Other",
+            }
+            if text:
+                found_doi = extract_doi(text)
+                if found_doi:
+                    metadata["doi"] = found_doi
+                year_match = re.search(r'\b(19|20)\d{2}\b', text[:2000])
+                if year_match:
+                    metadata["year"] = year_match.group(0)
+        else:
+            raise HTTPException(status_code=400, detail="Unrecognized file format.")
     except HTTPException:
         raise
     except Exception as e:
@@ -94,34 +167,51 @@ async def retry_ai_doi(
         
         # 1. Ask Gemini for the metadata
         ai_data = await extract_metadata_with_ai(tmp_path)
-        if not ai_data or not ai_data.get("doi"):
-            raise HTTPException(status_code=404, detail="AI could not find a DOI in the document.")
+        if not ai_data:
+            raise HTTPException(status_code=404, detail="AI failed to extract metadata from the document.")
             
-        candidate_doi = ai_data["doi"]
-        
-        # 2. Validation
-        # The validation layer will now verify the CrossRef title directly against the PDF text
-        # if the local_meta title is polluted, completely preventing AI hallucinations.
-        
+        candidate_doi = ai_data.get("doi")
         verified = False
-        pubmed = pubmed_lookup(candidate_doi)
-        if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
-            _merge(local_meta, pubmed, overwrite=True)
-            local_meta["verification_status"] = "verified_pubmed"
-            if "ai_rescue" not in local_meta.get("extraction_layers", []):
-                local_meta.setdefault("extraction_layers", []).append("ai_rescue")
-            verified = True
-        else:
-            crossref = crossref_lookup(candidate_doi)
-            if crossref and _validate_api_result(local_meta, crossref, tmp_path):
-                _merge(local_meta, crossref, overwrite=True)
-                local_meta["verification_status"] = "verified_crossref"
+        
+        # 2. Try Standard API Validation if a DOI was found
+        if candidate_doi:
+            pubmed = pubmed_lookup(candidate_doi)
+            if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
+                _merge(local_meta, pubmed, overwrite=True)
+                local_meta["verification_status"] = "verified_pubmed"
                 if "ai_rescue" not in local_meta.get("extraction_layers", []):
                     local_meta.setdefault("extraction_layers", []).append("ai_rescue")
                 verified = True
+            else:
+                crossref = crossref_lookup(candidate_doi)
+                if crossref and _validate_api_result(local_meta, crossref, tmp_path):
+                    _merge(local_meta, crossref, overwrite=True)
+                    local_meta["verification_status"] = "verified_crossref"
+                    if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                        local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                    verified = True
+                    
+        # 3. AI Full Metadata Fallback - If no DOI found or validation failed
+        if not verified:
+            from references.metadata import strict_ai_verify_against_pdf
+            
+            # Physically verify ALL of the AI hallucination against the raw PDF text
+            if strict_ai_verify_against_pdf(ai_data, tmp_path):
+                for k in ["title", "authors", "year", "source", "journal", "volume", "issue", "pages", "publisher", "type"]:
+                    if ai_data.get(k):
+                        local_meta[k] = ai_data[k]
+                
+                # If it gave a journal but we need 'source'
+                if not local_meta.get("source") and ai_data.get("journal"):
+                    local_meta["source"] = ai_data["journal"]
+                    
+                local_meta["verification_status"] = "verified_ai_strict_scan"
+                if "ai_full_extract" not in local_meta.get("extraction_layers", []):
+                    local_meta.setdefault("extraction_layers", []).append("ai_full_extract")
+                verified = True
                 
         if not verified:
-            raise HTTPException(status_code=400, detail=f"AI found DOI {candidate_doi}, but it failed CrossRef/PubMed identity verification.")
+            raise HTTPException(status_code=400, detail="AI extraction failed identity verification against the PDF.")
             
     finally:
         if os.path.exists(tmp_path):
@@ -129,6 +219,339 @@ async def retry_ai_doi(
             
     result = format_reference(local_meta, style)
     return result
+
+
+@router.post("/api/extract-reference-batch")
+async def extract_reference_batch(
+    files: list[UploadFile] = File(...),
+    ids: list[str] = Form(...),
+    style: str = Form("harvard")
+):
+    """
+    Extract metadata from multiple PDFs concurrently using Gemini batch extraction.
+    Takes matching lists of `files` and frontend `ids`.
+    Extracts the first 3 pages of each PDF, bundles them into a single Gemini prompt,
+    and runs concurrent verification & formatting.
+    """
+    import tempfile
+    import os
+    import asyncio
+    from pypdf import PdfReader
+    from references.ai_extractor import extract_metadata_batch_with_ai
+    from references.metadata import crossref_lookup, pubmed_lookup, _validate_api_result, _merge
+
+    if not len(files) == len(ids):
+        raise HTTPException(status_code=400, detail="Mismatched files and ids lists.")
+
+    texts_for_ai = []
+    local_metas_map = {}
+    tmp_paths_map = {}
+    
+    try:
+        # Save files and extract first 3 pages
+        for f, pid in zip(files, ids):
+            if not f.filename.lower().endswith('.pdf'):
+                # We only support PDF for AI batch extraction
+                local_metas_map[pid] = {"error": "AI Extraction only supports PDF files."}
+                continue
+                
+            local_meta = {
+                "title": None, "authors": [], "year": None, "doi": None,
+                "journal": None, "volume": None, "issue": None, "pages": None,
+                "publisher": None, "type": "Other", "verification_status": "not_found",
+                "extraction_layers": [],
+            }
+            local_metas_map[pid] = local_meta
+            
+            file_bytes = await f.read()
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+            tmp_paths_map[pid] = tmp_path
+            with os.fdopen(fd, 'wb') as fout:
+                fout.write(file_bytes)
+                
+            # Extract text (first 3 pages based on user feedback)
+            try:
+                reader = PdfReader(tmp_path)
+                pages_text = []
+                for i, page in enumerate(reader.pages):
+                    if i >= 3: break
+                    text = page.extract_text()
+                    if text: pages_text.append(text)
+                
+                doc_text = "\n\n".join(pages_text)
+                if doc_text.strip():
+                    texts_for_ai.append((pid, doc_text))
+            except Exception as e:
+                logger.warning(f"Failed to read PDF {pid} for batch extraction: {e}")
+                
+        if not texts_for_ai:
+            final_output = []
+            for pid, meta in local_metas_map.items():
+                if "error" in meta:
+                    final_output.append({"id": pid, "result": {"error": meta["error"]}})
+                else:
+                    final_output.append({"id": pid, "result": {"error": "No readable text found in PDF."}})
+            return final_output
+            
+        # Call batch AI
+        ai_results = await extract_metadata_batch_with_ai(texts_for_ai)
+        
+        # Gather all DOIs
+        dois_to_fetch = [res["doi"] for res in ai_results if res.get("doi")]
+        from references.api_batch import fetch_crossref_batch
+        
+        crossref_records = await fetch_crossref_batch(dois_to_fetch)
+        
+        # Convert MetadataRecord dataclass to dict matching the old schema
+        def record_to_dict(rec) -> dict:
+            return {
+                "title": rec.title,
+                "authors": rec.authors,
+                "year": rec.year,
+                "doi": rec.doi,
+                "journal": rec.journal,
+                "source": rec.journal,
+                "url": rec.url,
+                "volume": rec.volume,
+                "issue": rec.issue,
+                "pages": rec.pages,
+                "publisher": rec.publisher,
+                "type": rec.type,
+            }
+            
+        crossref_map = {rec.doi: record_to_dict(rec) for rec in crossref_records if rec and rec.doi}
+        
+        # Process validation concurrently for the pubmed fallbacks + local logic
+        async def process_one(ai_res):
+            pid = str(ai_res.get("id")) if ai_res.get("id") else None
+            candidate_doi = ai_res.get("doi")
+            if not pid or pid not in local_metas_map:
+                return None
+                
+            local_meta = local_metas_map[pid]
+            tmp_path = tmp_paths_map[pid]
+            verified = False
+            
+            # 1. Try API Validation if a DOI was found
+            if candidate_doi:
+                # Crossref first (fast from batch)
+                crossref_data = crossref_map.get(candidate_doi)
+                if crossref_data and _validate_api_result(local_meta, crossref_data, tmp_path):
+                    _merge(local_meta, crossref_data, overwrite=True)
+                    local_meta["verification_status"] = "verified_crossref"
+                    if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                        local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                    verified = True
+                
+                # Fallback to Pubmed if Crossref failed
+                if not verified:
+                    def do_pubmed_lookup():
+                        pubmed = pubmed_lookup(candidate_doi)
+                        if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
+                            _merge(local_meta, pubmed, overwrite=True)
+                            local_meta["verification_status"] = "verified_pubmed"
+                            if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                                local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                            return True
+                        return False
+                    verified = await asyncio.to_thread(do_pubmed_lookup)
+            
+            # 2. AI Full Metadata Fallback - If no DOI or API validation failed
+            if not verified:
+                from references.metadata import strict_ai_verify_against_pdf
+                
+                if strict_ai_verify_against_pdf(ai_res, tmp_path):
+                    for k in ["title", "authors", "year", "source", "journal", "volume", "issue", "pages", "publisher", "type"]:
+                        if ai_res.get(k):
+                            local_meta[k] = ai_res[k]
+                            
+                    if not local_meta.get("source") and ai_res.get("journal"):
+                        local_meta["source"] = ai_res["journal"]
+                        
+                    local_meta["verification_status"] = "verified_ai_strict_scan"
+                    if "ai_full_extract" not in local_meta.get("extraction_layers", []):
+                        local_meta.setdefault("extraction_layers", []).append("ai_full_extract")
+                    verified = True
+            
+            if verified:
+                return pid, format_reference(local_meta, style)
+            else:
+                return pid, {"error": "AI failed identity verification against the PDF."}
+
+        tasks = [process_one(res) for res in ai_results]
+        processed_results = await asyncio.gather(*tasks)
+        
+        final_output = []
+        for res in processed_results:
+            if res:
+                pid, data = res
+                final_output.append({"id": pid, "result": data})
+                
+        return final_output
+
+    finally:
+        for p in tmp_paths_map.values():
+            if os.path.exists(p):
+                try: os.unlink(p)
+                except: pass
+
+
+@router.post("/api/retry-ai-doi-batch")
+async def retry_ai_doi_batch(
+    files: list[UploadFile] = File(...),
+    ids: list[str] = Form(...),
+    metadatas: list[str] = Form(...),
+    style: str = Form("harvard")
+):
+    """Fallback endpoint to process multiple AI DOI extraction retries in a single batch."""
+    import tempfile
+    import os
+    import asyncio
+    from pypdf import PdfReader
+    from references.ai_extractor import extract_metadata_batch_with_ai
+    from references.metadata import crossref_lookup, pubmed_lookup, _validate_api_result, _merge
+
+    if not len(files) == len(ids) == len(metadatas):
+        raise HTTPException(status_code=400, detail="Mismatched input lists.")
+
+    texts_for_ai = []
+    local_metas_map = {}
+    tmp_paths_map = {}
+    
+    try:
+        # Save files and extract first 2 pages
+        for f, pid, meta_str in zip(files, ids, metadatas):
+            if not f.filename.lower().endswith('.pdf'):
+                continue
+                
+            local_meta = json.loads(meta_str)
+            local_metas_map[pid] = local_meta
+            
+            file_bytes = await f.read()
+            fd, tmp_path = tempfile.mkstemp(suffix=".pdf")
+            tmp_paths_map[pid] = tmp_path
+            with os.fdopen(fd, 'wb') as fout:
+                fout.write(file_bytes)
+                
+            # Extract text
+            try:
+                reader = PdfReader(tmp_path)
+                pages_text = []
+                for i, page in enumerate(reader.pages):
+                    if i >= 2: break
+                    text = page.extract_text()
+                    if text: pages_text.append(text)
+                
+                doc_text = "\n\n".join(pages_text)
+                if doc_text.strip():
+                    texts_for_ai.append((pid, doc_text))
+            except Exception as e:
+                logger.warning(f"Failed to read PDF {pid} for batch extraction: {e}")
+                
+        if not texts_for_ai:
+            raise HTTPException(status_code=400, detail="No readable text found in provided PDFs.")
+            
+        # Call batch AI
+        ai_results = await extract_metadata_batch_with_ai(texts_for_ai)
+        
+        # Gather all DOIs
+        dois_to_fetch = [res["doi"] for res in ai_results if res.get("doi")]
+        from references.api_batch import fetch_crossref_batch
+        
+        crossref_records = await fetch_crossref_batch(dois_to_fetch)
+        
+        # Convert MetadataRecord dataclass to dict matching the old schema
+        def record_to_dict(rec) -> dict:
+            return {
+                "title": rec.title,
+                "authors": rec.authors,
+                "year": rec.year,
+                "doi": rec.doi,
+                "journal": rec.journal,
+                "source": rec.journal,
+                "url": rec.url,
+                "volume": rec.volume,
+                "issue": rec.issue,
+                "pages": rec.pages,
+                "publisher": rec.publisher,
+                "type": rec.type,
+            }
+            
+        crossref_map = {rec.doi: record_to_dict(rec) for rec in crossref_records if rec and rec.doi}
+        
+        # Process validation concurrently for the pubmed fallbacks + local logic
+        async def process_one(ai_res):
+            pid = str(ai_res.get("id")) if ai_res.get("id") else None
+            candidate_doi = ai_res.get("doi")
+            if not pid or pid not in local_metas_map:
+                return None
+                
+            local_meta = local_metas_map[pid]
+            tmp_path = tmp_paths_map[pid]
+            verified = False
+            
+            # 1. Try API Validation if a DOI was found
+            if candidate_doi:
+                # Crossref first (fast from batch)
+                crossref_data = crossref_map.get(candidate_doi)
+                if crossref_data and _validate_api_result(local_meta, crossref_data, tmp_path):
+                    _merge(local_meta, crossref_data, overwrite=True)
+                    local_meta["verification_status"] = "verified_crossref"
+                    if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                        local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                    verified = True
+                
+                # Fallback to Pubmed if Crossref failed
+                if not verified:
+                    def do_pubmed_lookup():
+                        pubmed = pubmed_lookup(candidate_doi)
+                        if pubmed and _validate_api_result(local_meta, pubmed, tmp_path):
+                            _merge(local_meta, pubmed, overwrite=True)
+                            local_meta["verification_status"] = "verified_pubmed"
+                            if "ai_rescue" not in local_meta.get("extraction_layers", []):
+                                local_meta.setdefault("extraction_layers", []).append("ai_rescue")
+                            return True
+                        return False
+                    verified = await asyncio.to_thread(do_pubmed_lookup)
+            
+            # 2. AI Full Metadata Fallback - If no DOI or API validation failed
+            if not verified:
+                from references.metadata import strict_ai_verify_against_pdf
+                
+                if strict_ai_verify_against_pdf(ai_res, tmp_path):
+                    for k in ["title", "authors", "year", "source", "journal", "volume", "issue", "pages", "publisher", "type"]:
+                        if ai_res.get(k):
+                            local_meta[k] = ai_res[k]
+                            
+                    if not local_meta.get("source") and ai_res.get("journal"):
+                        local_meta["source"] = ai_res["journal"]
+                        
+                    local_meta["verification_status"] = "verified_ai_strict_scan"
+                    if "ai_full_extract" not in local_meta.get("extraction_layers", []):
+                        local_meta.setdefault("extraction_layers", []).append("ai_full_extract")
+                    verified = True
+            
+            if verified:
+                return pid, format_reference(local_meta, style)
+            else:
+                return pid, {"error": "AI failed identity verification against the PDF."}
+
+        tasks = [process_one(res) for res in ai_results]
+        processed_results = await asyncio.gather(*tasks)
+        
+        final_output = []
+        for res in processed_results:
+            if res:
+                pid, data = res
+                final_output.append({"id": pid, "result": data})
+                
+        return final_output
+
+    finally:
+        for p in tmp_paths_map.values():
+            if os.path.exists(p):
+                try: os.unlink(p)
+                except: pass
 
 
 @router.post("/api/reformat-reference")
@@ -163,45 +586,47 @@ async def format_references(req: FormatRequest):
         queue = asyncio.Queue()
         tasks = []
 
-        async def worker(i, ref):
-            """Process a single reference, gated by the global API semaphore."""
-            async with _API_SEMAPHORE:
-                try:
-                    metadata = await asyncio.to_thread(parse_raw_reference, ref)
-                    corrections = metadata.pop("corrections", [])
-                    api_verified = metadata.pop("api_verified", False)
-                    api_source = metadata.pop("api_source", None)
+        async def worker(i, ref, client):
+            """Process a single reference using the async parser with TokenBucket rate limiting."""
+            try:
+                from references.parser import parse_raw_reference_async
+                metadata = await parse_raw_reference_async(ref, client=client)
+                corrections = metadata.pop("corrections", [])
+                api_verified = metadata.pop("api_verified", False)
+                api_source = metadata.pop("api_source", None)
 
-                    result = format_reference(metadata, req.style)
-                    result["original"] = ref
-                    result["corrections"] = corrections
-                    result["api_verified"] = api_verified
-                    result["api_source"] = api_source
-                    await queue.put((i, result, api_verified))
-                except Exception as e:
-                    await queue.put((i, {"original": ref, "error": str(e)}, False))
+                result = format_reference(metadata, req.style)
+                result["original"] = ref
+                result["corrections"] = corrections
+                result["api_verified"] = api_verified
+                result["api_source"] = api_source
+                await queue.put((i, result, api_verified))
+            except Exception as e:
+                await queue.put((i, {"original": ref, "error": str(e)}, False))
 
+        import httpx
         try:
-            # Launch all workers concurrently (semaphore limits actual parallelism)
-            tasks = [asyncio.create_task(worker(i, ref)) for i, ref in enumerate(req.references)]
+            async with httpx.AsyncClient(timeout=30) as shared_client:
+                # Launch all workers concurrently (semaphore limits actual parallelism)
+                tasks = [asyncio.create_task(worker(i, ref, shared_client)) for i, ref in enumerate(req.references)]
 
-            # Consume results as they complete and stream SSE events
-            completed = 0
-            while completed < total:
-                i, result, verified = await queue.get()
-                completed += 1
-                if verified:
-                    api_count += 1
-                elif "error" not in result:
-                    regex_count += 1
+                # Consume results as they complete and stream SSE events
+                completed = 0
+                while completed < total:
+                    i, result, verified = await queue.get()
+                    completed += 1
+                    if verified:
+                        api_count += 1
+                    elif "error" not in result:
+                        regex_count += 1
 
-                yield event("ref_result", f"Processed {completed}/{total}.", data={
-                    "index": i,
-                    "result": result,
-                })
+                    yield event("ref_result", f"Processed {completed}/{total}.", data={
+                        "index": i,
+                        "result": result,
+                    })
 
-            # Ensure all tasks finished cleanly
-            await asyncio.gather(*tasks)
+                # Ensure all tasks finished cleanly
+                await asyncio.gather(*tasks)
 
             yield event("complete", "All references processed.", data={
                 "summary": {
@@ -403,37 +828,48 @@ async def verify_reference_list(request: Request):
             issues_count = 0
             unverifiable_count = 0
             queue = asyncio.Queue()
+            api_semaphore = asyncio.Semaphore(3)
 
             async def verify_worker(i, ref):
                 """Verify a single reference, gated by the global API semaphore."""
-                async with _API_SEMAPHORE:
-                    print(f"\n{'─'*50}")
-                    print(f"[RefVerifier] [{i+1}/{total}] Verifying:")
-                    print(f"  Input: {ref[:120]}{'…' if len(ref) > 120 else ''}")
+                try:
+                    async with api_semaphore:
+                        print(f"\n{'─'*50}")
+                        print(f"[RefVerifier] [{i+1}/{total}] Verifying:")
+                        print(f"  Input: {ref[:120]}{'…' if len(ref) > 120 else ''}")
 
-                    ref_result = await asyncio.to_thread(verify_single_reference, ref, style)
+                        ref_result = await asyncio.to_thread(verify_single_reference, ref, style)
 
-                    # Log result details
-                    status = ref_result.get("overall_status", "unverifiable")
-                    print(f"  DOI: {ref_result.get('doi', 'none')}")
-                    print(f"  API source: {ref_result.get('api_source', 'none')}")
-                    print(f"  Status: {status}")
-                    print(f"  Accuracy: {ref_result.get('accuracy_score', 0):.0%}")
-                    meta_issues = [mi for mi in ref_result.get('metadata_issues', []) if mi.get('status') != 'correct']
-                    if meta_issues:
-                        print(f"  Metadata issues:")
-                        for mi in meta_issues:
-                            print(f"    - {mi['field']}: {mi['status']} (user: '{mi.get('user_value', '')}' → correct: '{mi.get('correct_value', '')}')")
-                    fmt_issues = ref_result.get('formatting_issues', [])
-                    if fmt_issues:
-                        print(f"  Formatting issues:")
-                        for fi in fmt_issues:
-                            print(f"    - {fi['issue']}: {fi['detail']}")
+                        # Log result details
+                        status = ref_result.get("overall_status", "unverifiable")
+                        print(f"  DOI: {ref_result.get('doi', 'none')}")
+                        print(f"  API source: {ref_result.get('api_source', 'none')}")
+                        print(f"  Status: {status}")
+                        print(f"  Accuracy: {ref_result.get('accuracy_score', 0):.0%}")
+                        meta_issues = [mi for mi in ref_result.get('metadata_issues', []) if mi.get('status') != 'correct']
+                        if meta_issues:
+                            print(f"  Metadata issues:")
+                            for mi in meta_issues:
+                                print(f"    - {mi['field']}: {mi['status']} (user: '{mi.get('user_value', '')}' \u2192 correct: '{mi.get('correct_value', '')}')")
+                        fmt_issues = ref_result.get('formatting_issues', [])
+                        if fmt_issues:
+                            print(f"  Formatting issues:")
+                            for fi in fmt_issues:
+                                print(f"    - {fi['issue']}: {fi['detail']}")
 
-                    await queue.put((i, ref_result))
+                        await queue.put((i, ref_result))
+                except Exception as e:
+                    print(f"[RefVerifier] Worker {i+1} crashed: {e}")
+                    import traceback; traceback.print_exc()
+                    await queue.put((i, {"overall_status": "unverifiable", "error": str(e)}))
 
-            # Launch all verification workers concurrently
-            tasks = [asyncio.create_task(verify_worker(i, ref)) for i, ref in enumerate(raw_refs)]
+            # Launch workers with staggered starts to prevent API burst
+            tasks = []
+            for i, ref in enumerate(raw_refs):
+                tasks.append(asyncio.create_task(verify_worker(i, ref)))
+                # Small delay between launches to spread API requests over time
+                if i < total - 1:
+                    await asyncio.sleep(0.35)
 
             # Consume results as they complete and stream SSE events
             completed = 0
