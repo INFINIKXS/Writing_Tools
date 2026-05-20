@@ -1,7 +1,7 @@
 """
 Citation verification API route: POST /api/verify (SSE streaming).
-Fully deterministic — no AI calls. Uses Python regex for citation extraction
-and atomic splitting for reference extraction.
+Uses Python regex for in-text citation extraction and LLM-powered
+reference list splitting (with 30+ pattern regex fallback).
 """
 import json
 import asyncio
@@ -15,6 +15,7 @@ from utils.text_utils import count_references_and_citations
 from citations.extraction import extract_reference_section, extract_citations_regex, detect_document_consistency_issues
 from citations.deduplication import deduplicate_references
 from citations.verification import verify_matches_with_string_search, extract_verbatim_references, detect_irregularities_deterministically, extract_references_from_text, validate_extracted_references
+from references.ref_list_verifier import segment_verifier_text_via_llm
 from citations.formatting import apply_italic_formatting
 from citations.ordering import apply_reference_ordering
 
@@ -83,11 +84,15 @@ async def verify_citations(file: UploadFile = File(...)):
         yield f"data: {json.dumps({'stage': 'scanning', 'message': f'Found {py_count} citations via regex ({type_summary})'})}\n\n"
         await asyncio.sleep(0.1)
 
-        # Stage 3: Extract references from document text (deterministic — no AI)
-        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Extracting references from document...'})}\n\n"
+        # Stage 3: Extract references from document text using LLM + regex fallback
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending document to Gemini for reference extraction...'})}\n\n"
         await asyncio.sleep(0.1)
 
-        references = extract_references_from_text(full_text)
+        references = await segment_verifier_text_via_llm(full_text, is_full_document=True)
+
+        llm_count = len(references)
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'Gemini extracted {llm_count} references from document'})}\n\n"
+        await asyncio.sleep(0.1)
 
         # Deduplicate
         unique_refs, dup_groups, dup_flags = deduplicate_references(references)

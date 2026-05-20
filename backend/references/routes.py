@@ -15,7 +15,7 @@ from references.metadata import extract_pdf_metadata, extract_docx_metadata
 from references.parser import FormatRequest, parse_raw_reference
 from citations.formatting import format_reference
 from references.matcher import parse_reference_list, match_references_to_pdfs, extract_pdf_metadata_fast, parse_raw_reference_fast
-from references.ref_list_verifier import detect_style, verify_single_reference
+from references.ref_list_verifier import detect_style, verify_single_reference, segment_verifier_text_via_llm
 from utils.text_utils import extract_doi
 from core.config import API_KEY, KEY_MANAGER_AVAILABLE, get_api_key_manager
 
@@ -920,6 +920,30 @@ async def verify_reference_list(request: Request):
             yield event("error", f"Unexpected error: {type(e).__name__}: {e}")
 
     return StreamingResponse(_stream(), media_type="text/event-stream")
+
+
+@router.post("/api/verify-pasted-list")
+async def verify_pasted_list(payload: dict):
+    """
+    Accept raw pasted reference text, use the LLM segmenter to split and heal
+    line-wrapped references, then verify each one individually.
+    """
+    raw_text = payload.get("text", "")
+    expected_style = payload.get("style", "apa")
+
+    # Run the pay-as-you-go LLM machine learning segmentation process
+    individual_references = await segment_verifier_text_via_llm(raw_text)
+
+    results = []
+    for ref_string in individual_references:
+        # Evaluate each healed reference safely inside the core loop
+        verification_result = verify_single_reference(ref_string, expected_style)
+        results.append(verification_result)
+
+    return {
+        "style_detected": expected_style,
+        "references": results
+    }
 
 
 @router.get("/api-key-usage")

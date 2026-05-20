@@ -4,6 +4,7 @@ Citation-to-reference verification, cross-validation, and verbatim reference ext
 import re
 import unicodedata
 from difflib import SequenceMatcher
+from references.ref_list_verifier import split_and_heal_verifier_text_fallback, _extract_ref_section_simple
 
 
 def verify_matches_with_string_search(in_text_citations, references):
@@ -857,18 +858,9 @@ def extract_references_from_text(full_text: str) -> list:
     full_text = _normalize_text(full_text)
 
     # Isolate the reference section
-    ref_section = full_text
-    ref_heading_patterns = [
-        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
-        r'(?im)^\s*(references|bibliography|works\s+cited|reference\s+list)\s*$',
-        r'(?i)^\s*(references|bibliography|works\s+cited|reference\s+list)\s*\n',
-        r'(?i)\n\s*(references|bibliography|works\s+cited|reference\s+list)\s*(?=\S)',
-    ]
-    for pattern in ref_heading_patterns:
-        match = re.search(pattern, full_text)
-        if match:
-            ref_section = full_text[match.end():]
-            break
+    ref_section = _extract_ref_section_simple(full_text)
+    if len(ref_section.strip()) < 100:
+        ref_section = full_text
 
     # Primary extraction
     refs = _split_ref_section_to_atomic(ref_section)
@@ -882,108 +874,168 @@ def extract_references_from_text(full_text: str) -> list:
 def extract_verbatim_references(full_text: str, ai_references: list) -> dict:
     """
     For each reference in the provided list, find the closest verbatim match
-    in the original document text. Includes safeguards against DOI bleeding
-    and cross-reference mixups.
+    in the original document text. Matches directly against the raw reference
+    section using a robust sequence alignment / word overlap sliding window
+    search to completely avoid splitter dependency.
     
     Returns a dict mapping reference -> verbatim source text with confidence.
     """
     full_text = _normalize_text(full_text)
-    # Keep original references for use as dictionary keys (must match frontend lookups),
-    # but create normalized copies for internal comparison against normalized full_text.
     original_ai_references = list(ai_references)
     ai_references_norm = [_normalize_text(r) for r in ai_references]
 
-    # ─── STEP 1: Get atomic references from document ───
-    atomic_refs = extract_references_from_text(full_text)
-    
-    # ─── STEP 2: Match using author + year compound key ───
-    def extract_author_year(text):
-        author = None
-        year = None
-        text_stripped = text.strip()
-        # Try multi-word org name first: "Department of Health" or "GBD 2021 Diabetes Collaborators"
-        # Allow digits/mixed tokens (e.g. "2021") inside the org name
-        org_match = re.match(
-            r'^((?:[A-Za-z0-9][A-Za-z0-9à-öø-ÿ\'\-]*(?:\s+(?:of|for|the|and|on|in|&))?\s+)*[A-Z][a-zA-Zà-öø-ÿ\'\-]+)'
-            r'(?:\s*[.,]|\s*\()',
-            text_stripped
-        )
-        if org_match:
-            candidate = org_match.group(1).strip()
-            # Only use as org name if it contains multiple words (otherwise it's a surname)
-            if ' ' in candidate:
-                author = candidate.lower()
-        # Fallback: single surname
-        if not author:
-            author_match = re.match(r'^[^a-z]*?([A-Z][a-zA-Zà-öø-ÿ\'\-]+)', text_stripped)
-            if author_match:
-                author = author_match.group(1).lower()
-        # Prefer parenthesized year (YYYY) — that's the publication year in APA/Harvard.
-        # Falls back to the first bare year if no parenthesized year is found.
-        paren_year = re.search(r'\((\d{4})\)', text)
-        if paren_year:
-            year = paren_year.group(1)
-        else:
-            year_match = re.search(r'\b(19|20)\d{2}\b', text)
-            if year_match:
-                year = year_match.group(0)
-        return (author, year)
-    
+    # Isolate the references section (or use the full text if not found)
+    ref_section = _extract_ref_section_simple(full_text)
+    if len(ref_section.strip()) < 100:
+        ref_section = full_text
+
+    # Tokenize the ref_section into words and record their exact character positions
+    words_in_doc = []
+    word_pattern = re.compile(r'[a-zA-Z0-9\u00C0-\u00FF\u2019\']+')
+    for m in word_pattern.finditer(ref_section):
+        words_in_doc.append({
+            "word": m.group(0).lower(),
+            "start": m.start(),
+            "end": m.end()
+        })
+
+    # Index by word for fast lookup
+    word_to_indices = {}
+    for idx, w_info in enumerate(words_in_doc):
+        word_to_indices.setdefault(w_info["word"], []).append(idx)
+
     verbatim_map = {}
     used_candidates = {}
-    
+
     for orig_ref, ai_ref in zip(original_ai_references, ai_references_norm):
-        best_score = 0
-        best_match = ai_ref
-        ai_author, ai_year = extract_author_year(ai_ref)
-        ai_ref_lower = ai_ref.lower().strip()
+        ai_ref_stripped = ai_ref.strip()
+        ai_words = [m.group(0).lower() for m in word_pattern.finditer(ai_ref_stripped)]
+        if not ai_words:
+            # Fallback if no words tokenized
+            verbatim_map[orig_ref] = {"verbatim": orig_ref, "confidence": 0.0}
+            continue
+
+        # Extract signature/anchor terms to search
+        # 1. First 3 words (usually author surname(s))
+        # 2. Publication year (if present)
+        anchors = []
+        for w in ai_words[:3]:
+            if len(w) >= 2:
+                anchors.append((w, 2.5 if w == ai_words[0] else 1.5))
         
-        for candidate in atomic_refs:
-            candidate_lower = candidate.lower().strip()
-            
-            len_ratio = len(candidate_lower) / max(len(ai_ref_lower), 1)
-            if len_ratio < 0.3 or len_ratio > 15.0:  # Loosened massively to handle un-split document text
+        # Look for a 4-digit year in ai_words
+        year_match = re.search(r'\b(19|20)\d{2}\b', ai_ref_stripped)
+        if year_match:
+            year_str = year_match.group(0)
+            anchors.append((year_str, 2.0))
+
+        # Look for other longer words in the middle to disambiguate
+        # We can extract words of length >= 6 that aren't common stopwords
+        stopwords = {"journal", "volume", "number", "pages", "article", "university", "press", "association", "http", "https", "www"}
+        for w in ai_words[3:]:
+            if len(w) >= 6 and w not in stopwords:
+                anchors.append((w, 1.0))
+                if len(anchors) >= 8:  # Limit signature words
+                    break
+
+        # Collect candidate starting positions in words_in_doc
+        candidate_indices = set()
+        for term, weight in anchors:
+            indices = word_to_indices.get(term, [])
+            for idx in indices:
+                # If we matched an author name/start word, candidate starts near it
+                # If we matched a year or title word, candidate starts some words before it
+                if term in ai_words[:3]:
+                    candidate_indices.add(max(0, idx - 5))
+                else:
+                    try:
+                        ai_pos = ai_words.index(term)
+                    except ValueError:
+                        ai_pos = 10
+                    candidate_indices.add(max(0, idx - ai_pos - 5))
+
+        # If no candidate indices found, default to scanning everywhere (very rare)
+        if not candidate_indices:
+            first_word_indices = word_to_indices.get(ai_words[0], [])
+            if first_word_indices:
+                for idx in first_word_indices:
+                    candidate_indices.add(max(0, idx - 5))
+            else:
+                candidate_indices = set(range(0, len(words_in_doc), 50))
+
+        # Evaluate each candidate window
+        best_score = 0.0
+        best_window_info = None
+
+        window_size = len(ai_words) + 15
+
+        for start_w_idx in candidate_indices:
+            end_w_idx = min(len(words_in_doc), start_w_idx + window_size)
+            if start_w_idx >= len(words_in_doc) or end_w_idx <= start_w_idx:
                 continue
+
+            doc_subwords = [w["word"] for w in words_in_doc[start_w_idx:end_w_idx]]
             
-            cand_author, cand_year = extract_author_year(candidate)
+            # Sequence match at word level
+            sm = SequenceMatcher(None, ai_words, doc_subwords)
+            ratio = sm.ratio()
+
+            if ratio > best_score:
+                best_score = ratio
+                best_window_info = (start_w_idx, end_w_idx, sm)
+
+        # Refine boundaries within the best window using sequence alignment blocks
+        if best_window_info and best_score >= 0.25:
+            start_w_idx, end_w_idx, sm = best_window_info
+            doc_subwords = [w["word"] for w in words_in_doc[start_w_idx:end_w_idx]]
+            matching_blocks = sm.get_matching_blocks()
             
-            author_ok = (not ai_author) or (not cand_author) or (ai_author in cand_author) or (cand_author in ai_author)
-            year_ok = (not ai_year) or (not cand_year) or (ai_year == cand_year)
-            
-            if not author_ok or not year_ok:
-                continue
-            
-            sm = SequenceMatcher(None, ai_ref_lower, candidate_lower)
-            score = sm.ratio()
-            
-            # If candidate is a massive merged block, calculate partial matching score
-            if len_ratio > 1.5:
-                # Find the longest contiguous matching block
-                match_blocks = sm.get_matching_blocks()
-                if match_blocks:
-                    best_block = max(match_blocks[:-1], key=lambda x: x.size)
-                    # If we matched at least 80% of the AI reference in one contiguous block
-                    if best_block.size / max(len(ai_ref_lower), 1) > 0.8:
-                        score = 1.0
-                        # Slice the candidate down to just the matched area
-                        start_idx = max(0, best_block.b - best_block.a)
-                        end_idx = min(len(candidate), start_idx + len(ai_ref_lower))
-                        candidate = candidate[start_idx:end_idx].strip()
-            
-            if score > best_score:
-                best_score = score
-                best_match = candidate
-        
-        # ─── Conflict detection ───
+            valid_blocks = [b for b in matching_blocks[:-1] if b.size > 0]
+            if valid_blocks:
+                first_block = valid_blocks[0]
+                last_block = valid_blocks[-1]
+                
+                w_start_in_window = max(0, first_block.b - first_block.a)
+                w_end_in_window = min(len(doc_subwords), last_block.b + last_block.size + (len(ai_words) - (last_block.a + last_block.size)))
+                
+                matched_w_start = start_w_idx + w_start_in_window
+                matched_w_end = start_w_idx + w_end_in_window
+                
+                char_start = words_in_doc[matched_w_start]["start"]
+                char_end = words_in_doc[matched_w_end - 1]["end"]
+                
+                # Recalculate confidence based on the trimmed matching segment
+                matched_doc_words = [w["word"] for w in words_in_doc[matched_w_start:matched_w_end]]
+                exact_sm = SequenceMatcher(None, ai_words, matched_doc_words)
+                best_score = exact_sm.ratio()
+
+                pre_text = ref_section[max(0, char_start - 25) : char_start]
+                pre_match = re.search(r'(?:\[\d{1,3}\]|\b\d{1,3}\.)\s*$', pre_text)
+                if pre_match:
+                    char_start -= len(pre_match.group(0))
+
+                verbatim_text = ref_section[char_start:char_end].strip()
+                
+                if len(verbatim_text) / max(1, len(ai_ref_stripped)) < 0.35:
+                    verbatim_text = orig_ref
+                    best_score = 0.0
+            else:
+                verbatim_text = orig_ref
+                best_score = 0.0
+        else:
+            verbatim_text = orig_ref
+            best_score = 0.0
+
+        # Conflict detection
         conflict = None
-        if best_match in used_candidates.values():
-            conflicting_ref = [k for k, v in used_candidates.items() if v == best_match]
+        if verbatim_text in used_candidates.values():
+            conflicting_ref = [k for k, v in used_candidates.items() if v == verbatim_text]
             conflict = f"Warning: This verbatim text was also matched by: {conflicting_ref[0][:50]}..."
         
-        used_candidates[orig_ref] = best_match
+        used_candidates[orig_ref] = verbatim_text
         
         result = {
-            "verbatim": best_match,
+            "verbatim": verbatim_text,
             "confidence": round(best_score, 2)
         }
         if conflict:

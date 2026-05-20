@@ -1,8 +1,8 @@
 {
   "service": "Google",
   "last_reset_date": "2026-05-20",
-  "current_index": 1,
-  "total_requests_today": 39,
+  "current_index": 2,
+  "total_requests_today": 47,
   "quota_limit_per_key": 20,
   "keys": [
     {
@@ -22,20 +22,24 @@
       "index": 1,
       "key_suffix": "...fabg",
       "model_usage": {
-        "gemini-3.1-flash-lite-preview": 19
+        "gemini-3.1-flash-lite-preview": 20
       },
-      "exhausted_models": [],
-      "last_exhausted": null,
-      "quota_used": 19,
+      "exhausted_models": [
+        "gemini-3.1-flash-lite-preview"
+      ],
+      "last_exhausted": "2026-05-20T14:39:05.866788",
+      "quota_used": 20,
       "exhausted": false
     },
     {
       "index": 2,
       "key_suffix": "...bufo",
-      "model_usage": {},
+      "model_usage": {
+        "gemini-3.1-flash-lite-preview": 7
+      },
       "exhausted_models": [],
       "last_exhausted": null,
-      "quota_used": 0,
+      "quota_used": 7,
       "exhausted": false
     },
     {

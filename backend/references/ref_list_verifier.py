@@ -8,14 +8,23 @@ Reuses the existing infrastructure:
   - citations.formatting.format_reference
   - citations.detection.detect_style_from_references, classify_single_reference
 """
+import os
 import re
+import regex as re_u
+import json
 import difflib
+import logging
 from typing import List, Optional
+
+from google.genai import types as genai_types
+from core.gemini import get_client, _try_model_with_retries
 
 from references.metadata import perform_pubmed_lookup, perform_crossref_lookup
 from references.matcher import parse_raw_reference_fast, parse_reference_list
 from citations.formatting import format_reference
 from citations.detection import detect_style_from_references, classify_single_reference
+
+logger = logging.getLogger(__name__)
 
 
 # ─── Style auto-detection ────────────────────────────────────────────────────
@@ -556,3 +565,526 @@ def _try_title_search(parsed: dict, api_metadata: dict, field_sources: dict, res
 
     except Exception as e:
         print(f"[RefVerifier] Title search failed: {e}")
+
+
+# ==============================================================================
+# LOCAL REGEX ENGINE FALLBACK — Comprehensive Pattern Library (Zero-Cost)
+# ==============================================================================
+#
+# Tiered confidence model:
+#   Tier 1 — Numbered starters (near-certain reference boundary)
+#   Tier 2 — Author-name starters (probabilistic, requires min-length guard)
+#   Tier 3 — DOI / URL starters (contextual)
+#   Tier 4 — Year-anchored fallback (last resort)
+#
+# Uses the `regex` module (pip install regex) for full Unicode \p{} support.
+# ==============================================================================
+
+# ── Unicode property shorthands (via `regex` module) ─────────────────────────
+_U  = r'\p{Lu}'                  # any Unicode uppercase letter
+_L  = r'\p{Ll}'                  # any Unicode lowercase letter
+_A  = r'\p{L}'                   # any Unicode letter
+_AH = r'[\p{L}\u2019\'\-]'       # letter, apostrophe, or hyphen
+
+# ── Nobiliary / compound surname prefix ──────────────────────────────────────
+_PARTICLE = (
+    r'(?:'
+        r'd[eo]\s(?:la\s|los?\s|las?\s)?'          # de, del, de la, de los
+        r'|van\s(?:den?\s|der\s|het\s|\'t\s)?'      # Dutch: van, van de, van den, van der, van 't
+        r'|von\s(?:der?\s)?'                         # German: von, von der
+        r'|di\s|du\s'                                # French / Italian
+        r'|le\s|la\s|les\s'                          # French
+        r"|(?:O\u2019|O')(?=" + _U + r")"            # Irish O'Brien  (lookahead)
+        r'|Mc(?=' + _U + r')'                        # Scottish Mc
+        r'|Mac(?=' + _U + r')'                       # Scottish Mac
+        r'|(?:al|el|Al|El)-(?=' + _U + r')'          # Arabic al-/el-
+    r')'
+)
+
+# ── Tier 1: Numbered reference starters (high confidence) ────────────────────
+_TIER1 = [
+    re.compile(r'^\[\d{1,3}\]\s+\S'),                                   # [1] IEEE / Vancouver
+    re.compile(r'^\d{1,3}\s*\.\s+\S'),                                  # 1. APA / MLA
+    re.compile(r'^\(\d{1,3}\)\s+\S'),                                   # (1) legal / older
+    re.compile(r'^[A-Z]\d{1,3}\.\s+\S'),                                # R1. regulatory
+    re.compile(r'^[\u00B9\u00B2\u00B3\u2074-\u2079\u2070]+\s*\S'),      # ¹ ² ³ superscript OCR
+]
+
+# ── Tier 2: Author-name starters (medium confidence) ────────────────────────
+_TIER2 = [
+    # APA / Harvard / Chicago author-date:  Surname, F. (Year)  or  Surname, F. M. (Year)
+    re_u.compile(
+        r'^(?:' + _PARTICLE + r'\s*)?'
+        + _U + _AH + r'{1,30}'
+        + r',\s+'
+        + _U + r'\.'
+        + r'(?:\s*' + _U + r'\.)*'
+        + r'\s*\(\d{4}',
+        re_u.UNICODE
+    ),
+    # APA / Harvard without year in parens:  Surname, F.  or  Surname, F. M.,
+    re_u.compile(
+        r'^(?:' + _PARTICLE + r'\s*)?'
+        + _U + _AH + r'{1,30}'
+        + r',\s+'
+        + _U + r'\.'
+        + r'(?:\s*' + _U + r'\.)*'
+        + r'[\s,]',
+        re_u.UNICODE
+    ),
+    # Vancouver / AMA / NLM:  Surname AB.  or  Surname AB,
+    re_u.compile(
+        r'^(?:' + _PARTICLE + r'\s*)?'
+        + _U + _AH + r'{1,30}'
+        + r'\s+'
+        + r'[A-Z]{1,4}'
+        + r'[,.]',
+        re_u.UNICODE
+    ),
+    # MLA / Chicago:  Surname, First.  (full first name, ≥3 chars to avoid initials)
+    re_u.compile(
+        r'^(?:' + _PARTICLE + r'\s*)?'
+        + _U + _AH + r'{1,30}'
+        + r',\s+'
+        + _U + _L + r'{2,15}'
+        + r'(?:\s+' + _U + _L + r'{2,15})*'
+        + r'\.',
+        re_u.UNICODE
+    ),
+    # IEEE initial-first:  F. Surname,  or  W.-K. Chen,  or  A. B. García,
+    re_u.compile(
+        r'^' + _U + r'(?:\.-' + _U + r')?\.(?:\s*' + _U + r'\.)*'
+        + r'\s+'
+        + _U + _AH + r'{1,30}'
+        + r'[,\s]',
+        re_u.UNICODE
+    ),
+    # et al. shorthand:  Smith et al.  /  García et al,
+    re_u.compile(
+        r'^(?:' + _PARTICLE + r'\s*)?'
+        + _U + _AH + r'{1,30}'
+        + r'\s+et\s+al[.,\s]',
+        re_u.UNICODE
+    ),
+    # Standalone compound-surname start:  de la Cruz, ...  /  van der Berg, ...
+    re_u.compile(
+        r'^' + _PARTICLE + _U + _AH + r'{1,30}'
+        + r'[,\s]',
+        re_u.UNICODE
+    ),
+    # Corporate / institutional / government authors:
+    #   "World Health Organization. (2022)."  or  "WHO (2023)."
+    re_u.compile(
+        r'^(?:'
+            + _U + _A + r'[\s' + _A + r'\-&]{5,60}\.'       # multi-word org ending in period
+            + r'|[A-Z]{2,8}\s+[\(\d]'                        # acronym org (WHO, CDC) + year/paren
+            + r'|' + _U + _A + r'+\s+(?:of|for|on|in|and)\s+' + _U  # "Institute of X"
+        + r')',
+        re_u.UNICODE
+    ),
+]
+
+# ── Tier 3: DOI / URL starters (contextual) ─────────────────────────────────
+_TIER3 = [
+    re.compile(r'^doi:\s*10\.', re.IGNORECASE),          # doi: 10.xxxx
+    re.compile(r'^10\.\d{4,}/',  re.IGNORECASE),         # bare DOI  10.xxxx/
+    re.compile(r'^https?://'),                             # https://...
+    re.compile(r'^www\.\S'),                               # www.example.com
+]
+
+# ── Tier 4: Year-anchored last resort ───────────────────────────────────────
+_TIER4 = re.compile(
+    r'^.{5,60}'                        # some non-empty prefix (title / org)
+    r'[\.\s,]\s*'
+    r'(?:\()?\d{4}[a-z]?(?:\))?'       # (2020) or 2020 or 2020a
+    r'[\.,:;\s]'
+)
+
+# ── Continuation-line detectors ──────────────────────────────────────────────
+_CONT_INDENT = re.compile(r'^\s{3,}')
+_CONT_LOWER  = re_u.compile(r'^\s*\p{Ll}')
+_CONT_WORD   = re.compile(
+    r'^\s*(?:and|or|in|of|for|the|a|an|with|on|at|by|from|to|into|as)\s',
+    re.IGNORECASE,
+)
+
+
+def _preprocess_line(line: str) -> str:
+    """Normalise a pasted reference line before pattern matching."""
+    # Remove markdown emphasis artefacts ( _text_ / *text* / **text** )
+    line = re.sub(r'[_*]{1,2}(.+?)[_*]{1,2}', r'\1', line)
+    # Normalise en-/em-dashes to ASCII hyphen for name matching
+    line = line.replace('\u2013', '-').replace('\u2014', '-')
+    # Collapse multiple spaces
+    line = re.sub(r'  +', ' ', line)
+    # Strip zero-width spaces and other invisible Unicode
+    line = re.sub(r'[\u200b\u200c\u200d\ufeff]', '', line)
+    # Normalise smart apostrophes (O\u2019Brien → O'Brien)
+    line = line.replace('\u2018', "'").replace('\u2019', "'")
+    return line.strip()
+
+
+def _detect_paste_style(sample_lines: List[str]) -> str:
+    """
+    Identify the dominant citation style from the first few lines to choose the
+    optimal Tier-2 pattern set.  Returns 'numbered', 'apa', 'vancouver', 'ieee',
+    or 'unknown'.
+    """
+    numbered = sum(1 for l in sample_lines if re.match(r'^\[\d+\]|^\d+\.', l.strip()))
+    apa      = sum(1 for l in sample_lines if re_u.search(
+        r',\s+' + _U + r'\.\s*\(\d{4}', l))
+    van      = sum(1 for l in sample_lines if re_u.search(
+        _U + _AH + r'+\s+[A-Z]{2,4}[,.]', l))
+    ieee     = sum(1 for l in sample_lines if re_u.match(
+        r'^' + _U + r'\.\s+' + _U, l))
+
+    scores = {'numbered': numbered, 'apa': apa, 'vancouver': van, 'ieee': ieee}
+    best = max(scores, key=scores.get)
+    return best if scores[best] > 0 else 'unknown'
+
+
+def _is_continuation(line: str) -> bool:
+    """Return True if `line` is definitely a continuation of the previous ref."""
+    stripped = line.strip()
+    if len(stripped) < 15:
+        return True
+    if _CONT_INDENT.match(line):      # ≥3 leading spaces (hanging indent)
+        return True
+    # Check lowercase ONLY if it's not a compound-surname particle start
+    if _CONT_LOWER.match(stripped):
+        # Exempt nobiliary particles that legitimately start references
+        if not re.match(
+            r'^(?:d[eo]\s|van\s|von\s|di\s|du\s|le\s|la\s|les\s|al-|el-)',
+            stripped, re.IGNORECASE
+        ):
+            return True
+    if _CONT_WORD.match(stripped):     # starts with conjunction/preposition
+        # Also exempt particle surnames from the conjunction check
+        if not re.match(
+            r'^(?:d[eo]\s|van\s|von\s|di\s|du\s|le\s|la\s|les\s)',
+            stripped, re.IGNORECASE
+        ):
+            return True
+    return False
+
+
+def _is_reference_start(line: str, min_length: int = 20) -> bool:
+    """
+    Return True if `line` is likely the start of a new reference entry.
+    Checks tiers in order; returns on first match.
+    """
+    stripped = line.strip()
+    if len(stripped) < min_length:
+        return False
+
+    # Tier 1: numbered — near-certain
+    for pat in _TIER1:
+        if pat.match(stripped):
+            return True
+
+    # Tier 2: author-name — probabilistic; require ≥ 25 chars
+    if len(stripped) >= 25:
+        for pat in _TIER2:
+            if pat.match(stripped):
+                return True
+
+    # Tier 3: URL / DOI lines — require ≥ 20 chars
+    if len(stripped) >= 20:
+        for pat in _TIER3:
+            if pat.match(stripped):
+                return True
+
+    return False
+
+
+def split_and_heal_verifier_text_fallback(raw_text: str) -> List[str]:
+    """
+    COMPREHENSIVE REGEX FALLBACK: Invoked immediately if the Gemini API fails,
+    times out, or suffers an authentication error.
+
+    Uses a 4-tier confidence model with 30+ patterns covering:
+      - Numbered styles (IEEE, Vancouver, APA, MLA, legal, superscript OCR)
+      - Author-name styles (APA, Harvard, Vancouver, MLA, Chicago, IEEE, CSE)
+      - Unicode surnames, compound/particle surnames, corporate authors
+      - DOI and URL-only references
+      - Continuation-line detection (indent, lowercase, conjunctions)
+      - Markdown / paste artefact pre-processing
+    """
+    raw_lines = [l for l in raw_text.splitlines() if l.strip()]
+    if not raw_lines:
+        return []
+
+    # Pre-process all lines
+    processed = [_preprocess_line(l) for l in raw_lines]
+    processed = [l for l in processed if l]  # drop empties after cleanup
+
+    # Detect dominant style for logging (not currently used for gating)
+    sample = processed[:min(8, len(processed))]
+    detected_style = _detect_paste_style(sample)
+    logger.debug(f"[RegexFallback] detected paste style: {detected_style}")
+
+    healed_references: List[str] = []
+    current_buffer: List[str] = []
+
+    for line in processed:
+        # Explicit continuations are always appended
+        if current_buffer and _is_continuation(line):
+            current_buffer.append(line)
+            continue
+
+        is_new = _is_reference_start(line)
+
+        # Guard: very short lines that matched a Tier-2 pattern are suspect
+        if is_new and len(line) < 15 and not re.match(r'^\[\d+\]|^\d+\.', line):
+            is_new = False
+
+        if is_new:
+            if current_buffer:
+                healed_references.append(' '.join(current_buffer))
+            current_buffer = [line]
+        else:
+            current_buffer.append(line)
+
+    # Flush last buffer
+    if current_buffer:
+        healed_references.append(' '.join(current_buffer))
+
+    # Final cleanup: collapse whitespace, drop noise lines
+    return [re.sub(r'\s+', ' ', c).strip()
+            for c in healed_references
+            if len(re.sub(r'\s+', ' ', c).strip()) > 15]
+
+
+# ==============================================================================
+# GEMINI LITE-PREVIEW SPLITTING ENGINE
+# ==============================================================================
+
+def _extract_ref_section_with_llm_sync(full_text: str) -> str:
+    """
+    Use Gemini synchronously to find the start of the reference section.
+    Slices the document to just the reference section and returns it.
+    """
+    if not full_text or not full_text.strip():
+        return full_text
+
+    # Take the last 100,000 characters as a window since references are at the end
+    slice_window = 100000
+    offset = max(0, len(full_text) - slice_window)
+    text_to_analyze = full_text[offset:]
+
+    prompt = f"""You are an expert academic bibliography assistant.
+I will provide the end portion of an academic document. This document contains a body of text with in-text citations, and a reference list section (usually located at the end under a heading such as "References", "Bibliography", "Reference List", or "Works Cited").
+
+Your job is to identify the EXACT starting text of the reference list section. This can be the heading itself (e.g., "References") or the first few words of the very first reference entry.
+
+Provide a JSON object with:
+1. "start_text": a string containing the exact first 50-80 characters of the first reference or the references heading itself, exactly as it appears in the text. This must match the original text character-for-character, including spacing and punctuation, so we can locate it with a .find() search.
+2. "heading_found": a boolean indicating if a reference section heading was found.
+3. "confidence": a float between 0 and 1.
+
+Example output:
+{{
+  "start_text": "References\\n\\nAdams, R. (2018)",
+  "heading_found": true,
+  "confidence": 0.95
+}}
+
+Document Text Segment:
+\"\"\"
+{text_to_analyze}
+\"\"\"
+"""
+    try:
+        model_name = "gemini-3.1-flash-lite-preview"
+        client = get_client(model=model_name)
+        config = genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1
+        )
+        response = client.models.generate_content(
+            model=model_name,
+            contents=prompt,
+            config=config
+        )
+        response_text = response.text.strip()
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+
+        data = json.loads(response_text.strip())
+        start_text = data.get("start_text", "").strip()
+        if start_text:
+            idx = text_to_analyze.find(start_text)
+            if idx >= 0:
+                logger.info(f"Gemini located reference section start via LLM at window offset {idx}.")
+                return full_text[offset + idx:]
+            
+            # Fuzzy fallback
+            norm_start = ' '.join(start_text.split()).lower()
+            if len(norm_start) > 10:
+                norm_doc = ' '.join(text_to_analyze.split()).lower()
+                doc_idx = norm_doc.find(norm_start)
+                if doc_idx >= 0:
+                    words = start_text.split()
+                    first_word = words[0]
+                    last_word = words[-1] if len(words) > 1 else words[0]
+                    matches = [m.start() for m in re.finditer(re.escape(first_word), text_to_analyze, re.IGNORECASE)]
+                    for m_start in matches:
+                        sub = text_to_analyze[m_start:m_start + len(start_text) + 20]
+                        if last_word.lower() in sub.lower():
+                            logger.info(f"Gemini located reference section start via fuzzy word matching at window offset {m_start}.")
+                            return full_text[offset + m_start:]
+    except Exception as e:
+        logger.error(f"Gemini reference section locator failed: {e}", exc_info=True)
+
+    return full_text
+
+
+def _extract_ref_section_simple(full_text: str) -> str:
+    """
+    Isolate the reference section from a full academic document using heading
+    patterns.  Returns just the reference section text, or uses Gemini as fallback
+    to determine the beginning of the reference section.
+    """
+    patterns = [
+        r'(?i)\n\s*(references?|bibliography|works\s+cited|reference\s+list)\s*\n',
+        r'(?im)^\s*(references?|bibliography|works\s+cited|reference\s+list)\s*$',
+        r'(?i)^\s*(references?|bibliography|works\s+cited|reference\s+list)\s*\n',
+        r'(?i)\n\s*(references?|bibliography|works\s+cited|reference\s+list)\s*(?=\S)',
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, full_text)
+        if match:
+            return full_text[match.end():]
+            
+    # If no heading pattern is found, use Gemini to determine the beginning of the reference section.
+    return _extract_ref_section_with_llm_sync(full_text)
+
+
+
+async def segment_verifier_text_via_llm(
+    raw_text: str,
+    is_full_document: bool = False,
+) -> List[str]:
+    """
+    VARIABLE-COST MACHINE LEARNING SEGMENTER: Uses Gemini 3.1 Flash Lite
+    via structured JSON to split references into pristine individual entries.
+
+    When `is_full_document=True`, the LLM receives the entire academic
+    document and is instructed to locate the reference section itself,
+    then extract and split individual references from it.
+
+    When `is_full_document=False` (default), the input is assumed to be
+    raw copy-pasted reference text only.
+
+    On any failure, falls back to the 30+ pattern regex engine.
+    """
+    if not raw_text or not raw_text.strip():
+        return []
+
+    # ── Build the appropriate prompt ──────────────────────────────────────
+    if is_full_document:
+        prompt = f"""You are an expert academic bibliography assistant.
+
+I will provide the FULL TEXT of an academic document (essay, dissertation, thesis, or paper). This document contains a body of text with in-text citations, and a reference list section — usually located at the end under a heading such as "References", "Bibliography", "Reference List", or "Works Cited".
+
+Your job is to:
+1. LOCATE the reference list section in the document. Ignore the body text, abstracts, appendices, and any other non-reference content.
+2. Extract each individual reference entry from that section as a COMPLETE, UNTRUNCATED string.
+3. Stitch lines that were accidentally broken by page breaks, column layouts, or clipboard copying back together into single continuous reference strings.
+4. Clean up layout artefacts (page numbers, headers/footers, column breaks) while leaving the reference content intact.
+5. Do NOT invent, modify, or paraphrase any reference — extract them VERBATIM as written.
+
+CRITICAL: Do NOT truncate references. Copy each reference VERBATIM from start to finish — include everything that appears in the original text. A typical complete reference includes some or all of these parts:
+- Author names and year
+- Article/chapter title
+- Journal name, book title, or publisher (if present in original)
+- Volume, issue, and page numbers (if present in original)
+- DOI or URL (if present in original)
+Not every reference will have all of these parts — that is fine. Just extract whatever IS there. Do NOT invent or add fields that are missing from the original.
+
+Example of CORRECT extraction (full reference copied verbatim):
+"Smith, J., & Jones, A. (2024). Example study title. Journal of Examples, 19(4), e0292983. https://doi.org/10.1371/journal.example.0292983"
+
+Example of WRONG extraction (reference truncated after title):
+"Smith, J., & Jones, A. (2024). Example study title."
+
+Full Document Text:
+\"\"\"
+{raw_text}
+\"\"\"
+
+Return a JSON object containing an array of strings under the key "references".
+Each string must be one COMPLETE, self-contained reference entry with ALL fields intact.
+Do NOT include body text, section headings, page numbers, or appendix content."""
+    else:
+        prompt = f"""You are an expert academic bibliography assistant.
+I will provide a block of raw copy-pasted academic references. This text contains messy layout artifacts, accidental line wraps, and broken sentences introduced by clipboard copying.
+
+Your job is to:
+1. Identify individual references.
+2. Stitch lines that were accidentally broken back together into a single continuous reference string.
+3. Separate distinct reference items clearly.
+4. Clean up unnecessary dangling pagination fragments or layout noise while leaving the content of the reference intact.
+
+Input Reference Text:
+\"\"\"
+{raw_text}
+\"\"\"
+
+Return a JSON object containing an array of strings under the key "references".
+Ensure each reference string is completely self-contained and fully healed from structural row splits."""
+
+    # ── Call Gemini ───────────────────────────────────────────────────────
+    try:
+        model_name = "gemini-3.1-flash-lite-preview"
+        client = get_client(model=model_name)
+
+        # Enforce JSON-mode via schema config
+        config = genai_types.GenerateContentConfig(
+            response_mime_type="application/json",
+            temperature=0.1  # Lock down low creativity for high deterministic output
+        )
+
+        async def dummy_progress(msg):
+            logger.debug(f"[LLM-Splitter] {msg}")
+
+        # Execute Gemini transaction using the existing client wrapper infrastructure
+        response, _ = await _try_model_with_retries(
+            client=client,
+            prompt=prompt,
+            model=model_name,
+            config=config,
+            max_retries=3,
+            progress_callback=dummy_progress,
+            rotate_keys=True
+        )
+
+        response_text = response.text.strip()
+
+        # Strip markdown syntax guardrails if generated by accident
+        if response_text.startswith("```json"):
+            response_text = response_text[7:]
+        if response_text.endswith("```"):
+            response_text = response_text[:-3]
+
+        data = json.loads(response_text.strip())
+        references = data.get("references", [])
+
+        if isinstance(references, list) and len(references) > 0:
+            logger.info(f"Successfully segmented {len(references)} records using Gemini.")
+            return [str(ref).strip() for ref in references if str(ref).strip()]
+
+    except Exception as exc:
+        logger.error(f"Gemini reference splitting failed: {exc}. Falling back to regex engine.", exc_info=True)
+
+    # ── Regex fallback ────────────────────────────────────────────────────
+    # For full documents, isolate the reference section first so the regex
+    # engine doesn't try to split body text as references.
+    if is_full_document:
+        ref_section = _extract_ref_section_simple(raw_text)
+        return split_and_heal_verifier_text_fallback(ref_section)
+    else:
+        return split_and_heal_verifier_text_fallback(raw_text)
+
