@@ -533,6 +533,9 @@ def format_reference(metadata: dict, style: str = "harvard") -> dict:
     
     # ─── APA 7th Style ───
     elif style == "apa":
+        # APA 7th requires sentence case for article/chapter titles
+        # with the first word after a colon capitalized (subtitle rule)
+        title = make_sentence_case(title, capitalize_after_colon=True)
         if ref_type == "Journal Article" and source:
             ref_plain = f"{apa_author_str} ({year}). {title}. {source}"
             ref_html = f"{apa_author_str} ({year}). {title}. <i>{source}</i>"

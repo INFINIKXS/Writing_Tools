@@ -212,8 +212,15 @@ def condense_pages(pages_str: str) -> str:
     return f"{start}-{end}"  # Identical numbers, keep as-is
 
 
-def make_sentence_case(text: str) -> str:
-    """Intelligently downcase titles while preserving internal acronyms and proper nouns."""
+def make_sentence_case(text: str, capitalize_after_colon: bool = False) -> str:
+    """Intelligently downcase titles while preserving internal acronyms and proper nouns.
+
+    Args:
+        text: The title string to convert.
+        capitalize_after_colon: If True, capitalize the first word after a colon
+            (APA 7th edition subtitle rule). If False (default), lowercase it
+            per NLM/Vancouver rules.
+    """
     if not text: return ""
     words = text.split()
     
@@ -229,13 +236,15 @@ def make_sentence_case(text: str) -> str:
             res.append(w.capitalize())
             continue
             
-        # NLM Rule: ALWAYS lowercase the word immediately following a colon
-        # (unless it's an acronym like USA)
+        # Word immediately following a colon — subtitle first word.
+        # APA: capitalize (subtitle rule). NLM/Vancouver: lowercase.
         if i > 0 and words[i-1].endswith(':'):
             if w.isupper() and len(w) > 1:
-                res.append(w) # Preserve acronym after colon
+                res.append(w)  # Always preserve acronyms (e.g. USA, GHQ-12)
+            elif capitalize_after_colon:
+                res.append(w.capitalize())  # APA subtitle rule
             else:
-                res.append(w.lower())
+                res.append(w.lower())  # NLM/Vancouver rule
             continue
             
         # Preserve acronyms anywhere
