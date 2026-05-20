@@ -85,13 +85,13 @@ async def verify_citations(file: UploadFile = File(...)):
         await asyncio.sleep(0.1)
 
         # Stage 3: Extract references from document text using LLM + regex fallback
-        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending document to Gemini for reference extraction...'})}\n\n"
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': 'Sending document to AI for reference extraction...'})}\n\n"
         await asyncio.sleep(0.1)
 
         references = await segment_verifier_text_via_llm(full_text, is_full_document=True)
 
         llm_count = len(references)
-        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'Gemini extracted {llm_count} references from document'})}\n\n"
+        yield f"data: {json.dumps({'stage': 'analyzing', 'message': f'AI extracted {llm_count} references from document'})}\n\n"
         await asyncio.sleep(0.1)
 
         # Deduplicate
